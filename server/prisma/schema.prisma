@@ -1,0 +1,275 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STUDENT
+  ADMIN
+}
+
+enum SubscriptionPlan {
+  FREE
+  BASIC
+  PREMIUM
+  INSTITUTION
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum SessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+}
+
+enum MessageRole {
+  STUDENT
+  PATIENT
+  EXAMINER
+  SYSTEM
+}
+
+enum Language {
+  AR
+  EN
+  AUTO
+}
+
+enum KnowledgeType {
+  QUESTION
+  TOPIC
+  GUIDELINE
+  TEACHING
+}
+
+model KnowledgeCategory {
+  id          String              @id @default(cuid())
+  parentId    String?
+  nameEn      String
+  nameAr      String
+  description String?
+  sortOrder   Int                 @default(0)
+  isActive    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  parent      KnowledgeCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children    KnowledgeCategory[] @relation("CategoryTree")
+  items       KnowledgeItem[]
+  cases       Case[]
+}
+
+model KnowledgeItem {
+  id         String            @id @default(cuid())
+  categoryId String
+  titleEn    String
+  titleAr    String
+  content    String
+  type       KnowledgeType     @default(QUESTION)
+  isActive   Boolean           @default(true)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  category   KnowledgeCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  passwordHash  String
+  firstName     String
+  lastName      String
+  phone         String?
+  university    String?
+  avatarUrl     String?
+  role          Role           @default(STUDENT)
+  isActive      Boolean        @default(true)
+  resetToken    String?
+  resetExpires  DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  sessions      Session[]
+  subscriptions Subscription[]
+  auditLogs     AuditLog[]
+}
+
+model Specialty {
+  id          String   @id @default(cuid())
+  nameEn      String
+  nameAr      String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  cases       Case[]
+}
+
+model DifficultyLevel {
+  id        String   @id @default(cuid())
+  nameEn    String
+  nameAr    String
+  level     Int      @unique
+  color     String   @default("#3B82F6")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  cases     Case[]
+}
+
+model Case {
+  id                  String          @id @default(cuid())
+  titleEn             String
+  titleAr             String
+  specialtyId         String
+  difficultyId        String
+  categoryId          String?
+  patientName         String
+  patientAge          Int
+  patientGender       String
+  patientNationality  String
+  chiefComplaint      String
+  medicalHistory      String
+  medicationHistory   String
+  surgicalHistory     String
+  familyHistory       String
+  socialHistory       String
+  physicalExam        String
+  labResults          String
+  examImages          String          @default("[]")
+  finalDiagnosis      String
+  teachingPoints      String
+  evaluationRubric    String
+  vitalSigns          String
+  patientPersonality  String?
+  scenarioPrompt      String
+  isPublished         Boolean         @default(true)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  specialty           Specialty       @relation(fields: [specialtyId], references: [id])
+  difficulty          DifficultyLevel @relation(fields: [difficultyId], references: [id])
+  category            KnowledgeCategory? @relation(fields: [categoryId], references: [id])
+  sessions            Session[]
+}
+
+model Session {
+  id              String        @id @default(cuid())
+  userId          String
+  caseId          String
+  status          SessionStatus @default(IN_PROGRESS)
+  currentStage    String        @default("history")
+  activeManeuver  String?
+  completedManeuvers String     @default("[]")
+  language        Language      @default(AUTO)
+  startedAt       DateTime      @default(now())
+  completedAt     DateTime?
+  durationSeconds Int           @default(0)
+  user            User          @relation(fields: [userId], references: [id])
+  case            Case          @relation(fields: [caseId], references: [id])
+  messages        Message[]
+  result          Result?
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  sessionId String
+  role      MessageRole
+  content   String
+  stage     String      @default("history")
+  createdAt DateTime    @default(now())
+  session   Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+model Result {
+  id                  String   @id @default(cuid())
+  sessionId           String   @unique
+  totalScore          Float
+  communicationScore  Float
+  historyTakingScore  Float
+  clinicalReasonScore Float
+  organizationScore   Float
+  closingScore        Float
+  strengths           String
+  weaknesses          String
+  missedQuestions     String
+  clinicalErrors      String
+  recommendations     String
+  idealApproach       String
+  fullReport          String
+  createdAt           DateTime @default(now())
+  session             Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+model Subscription {
+  id        String             @id @default(cuid())
+  userId    String
+  plan      SubscriptionPlan   @default(FREE)
+  status    SubscriptionStatus @default(ACTIVE)
+  startDate DateTime           @default(now())
+  endDate   DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  user      User               @relation(fields: [userId], references: [id])
+}
+
+model AISettings {
+  id              String   @id @default(cuid())
+  provider        String   @default("mock")
+  patientModel    String   @default("gpt-5-mini")
+  examinerModel   String   @default("gpt-5-mini")
+  temperature     Float    @default(0.7)
+  maxTokens       Int      @default(1024)
+  systemPromptAr  String?
+  systemPromptEn  String?
+  updatedAt       DateTime @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String?
+  entityId  String?
+  details   String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+}
+
+model SiteContent {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  valueEn   String
+  valueAr   String
+  updatedAt DateTime @updatedAt
+}
+
+model PartnerUniversity {
+  id        String   @id @default(cuid())
+  nameEn    String
+  nameAr    String
+  logoUrl   String?
+  website   String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SiteSettings {
+  id              String   @id @default("default")
+  footerTaglineEn String   @default("AI-Powered OSCE Medical Training Platform")
+  footerTaglineAr String   @default("منصة التدريب الطبي بالذكاء الاصطناعي - OSCE")
+  contactPhone    String   @default("01024828652")
+  contactEmail    String?
+  ctaTitleEn      String   @default("Ready to practice?")
+  ctaTitleAr      String   @default("جاهز للتدريب؟")
+  ctaSubtitleEn   String   @default("Join Synoza and start your OSCE training today.")
+  ctaSubtitleAr   String   @default("انضم إلى Synoza وابدأ تدريب OSCE اليوم.")
+  updatedAt       DateTime @updatedAt
+}

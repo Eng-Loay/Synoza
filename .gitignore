@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.db
+*.db-journal
+Thumbs.db
+*.log
+.vite/
+coverage/

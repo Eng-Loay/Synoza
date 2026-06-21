@@ -1,0 +1,372 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-primary: #0d9488;
+  --color-primary-dark: #0f766e;
+  --color-primary-light: #2dd4bf;
+  --color-accent: #0891b2;
+  --color-surface: #f8fafc;
+  --color-surface-dark: #0f172a;
+  --color-medical-bg: #f0fdfa;
+  --font-sans: "Inter", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  --font-arabic: "Cairo", "Segoe UI", Tahoma, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-medical-bg);
+  color: #1e293b;
+  overflow-x: hidden;
+}
+
+.dark body,
+html.dark body {
+  background: #020617;
+  color: #e2e8f0;
+}
+
+html[lang="ar"],
+[dir="rtl"] {
+  font-family: var(--font-arabic);
+}
+
+html[lang="ar"] body,
+[dir="rtl"] body,
+[dir="rtl"] input,
+[dir="rtl"] textarea,
+[dir="rtl"] select,
+[dir="rtl"] button {
+  font-family: var(--font-arabic);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #475569;
+}
+
+/* ── Keyframes ── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes blink-cursor {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes gradient-shift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* ── Animation utilities ── */
+.animate-fade-up {
+  animation: fade-up 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.5s ease both;
+}
+
+.animate-scale-in {
+  animation: scale-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-page-enter {
+  animation: page-enter 0.35s ease both;
+}
+
+.animate-slide-down {
+  animation: slide-down 0.3s ease both;
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 2s ease-in-out infinite;
+}
+
+.stagger-1 {
+  animation-delay: 80ms;
+}
+.stagger-2 {
+  animation-delay: 160ms;
+}
+.stagger-3 {
+  animation-delay: 240ms;
+}
+.stagger-4 {
+  animation-delay: 320ms;
+}
+.stagger-5 {
+  animation-delay: 400ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Components ── */
+.card {
+  @apply bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm;
+}
+
+.card-interactive {
+  @apply transition-all duration-300 ease-out;
+}
+
+.card-interactive:hover {
+  @apply shadow-lg shadow-slate-200/60 dark:shadow-black/30 -translate-y-0.5 border-primary/20;
+}
+
+.btn-primary {
+  @apply bg-primary text-white px-4 py-2.5 rounded-xl font-medium shadow-sm shadow-primary/25
+    hover:bg-primary-dark hover:shadow-md hover:shadow-primary/30 hover:-translate-y-px
+    active:translate-y-0 active:scale-[0.98]
+    transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none disabled:transform-none;
+}
+
+.btn-secondary {
+  @apply bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-4 py-2.5 rounded-xl font-medium
+    border border-slate-200 dark:border-slate-700
+    hover:bg-slate-50 dark:hover:bg-slate-700 hover:border-slate-300 hover:-translate-y-px
+    active:scale-[0.98] transition-all duration-200;
+}
+
+.input-field {
+  @apply w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700
+    bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-base sm:text-sm
+    focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary
+    transition-all duration-200;
+}
+
+.badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+
+.stat-card {
+  @apply bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm p-5 sm:p-6 relative overflow-hidden
+    transition-all duration-300 hover:shadow-md hover:-translate-y-0.5;
+}
+
+.stat-card::before {
+  content: "";
+  @apply absolute top-0 right-0 w-24 h-24 rounded-full opacity-10 -translate-y-1/2 translate-x-1/2;
+}
+
+.dashboard-table {
+  @apply w-full text-sm min-w-[640px];
+}
+
+.dashboard-table thead {
+  @apply bg-slate-50 dark:bg-slate-800/50;
+}
+
+.dashboard-table th {
+  @apply text-left p-3 sm:p-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider;
+}
+
+.dashboard-table td {
+  @apply p-3 sm:p-4 border-t border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300;
+}
+
+.dashboard-table tbody tr {
+  @apply hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors;
+}
+
+.typewriter-cursor {
+  animation: blink-cursor 0.9s step-end infinite;
+}
+
+/* Auth pages gradient mesh */
+.auth-bg {
+  background:
+    radial-gradient(
+      ellipse 80% 60% at 20% 10%,
+      rgba(13, 148, 136, 0.1),
+      transparent
+    ),
+    radial-gradient(
+      ellipse 60% 50% at 80% 90%,
+      rgba(8, 145, 178, 0.08),
+      transparent
+    ),
+    var(--color-medical-bg);
+}
+
+.dark .auth-bg {
+  background:
+    radial-gradient(
+      ellipse 80% 60% at 20% 10%,
+      rgba(13, 148, 136, 0.14),
+      transparent
+    ),
+    radial-gradient(
+      ellipse 60% 50% at 80% 90%,
+      rgba(8, 145, 178, 0.1),
+      transparent
+    ),
+    #0f172a;
+}
+
+.hero-gradient {
+  background: linear-gradient(
+    145deg,
+    #0f172a 0%,
+    #134e4a 30%,
+    #0d9488 55%,
+    #115e59 80%,
+    #042f2e 100%
+  );
+  background-size: 200% 200%;
+  animation: gradient-shift 14s ease infinite;
+}
+
+.cta-gradient {
+  background: linear-gradient(
+    145deg,
+    #0f172a 0%,
+    #134e4a 35%,
+    #0d9488 60%,
+    #115e59 100%
+  );
+}
+
+.glass-nav {
+  @apply bg-white/85 dark:bg-slate-900/85 backdrop-blur-xl border-b border-slate-200/80 dark:border-slate-800/80;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+.dark .skeleton {
+  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+  background-size: 200% 100%;
+}
+
+.table-scroll {
+  @apply overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0;
+}
+button {
+  cursor: pointer;
+}
