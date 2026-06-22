@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Activity } from 'lucide-react';
+import { Stethoscope } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Navbar } from '../components/Navbar';
 import { PasswordInput } from '../components/PasswordInput';
+import { IconBox } from '../components/IconBox';
 import api from '../lib/api';
 
 interface UniversityOption {
@@ -56,10 +57,8 @@ export default function RegisterPage() {
       <div className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
         <div className="w-full max-w-md animate-scale-in">
           <div className="text-center mb-6">
-            <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-teal-600 to-cyan-600 flex items-center justify-center shadow-lg shadow-teal-500/25">
-              <Activity className="text-white" size={28} />
-            </div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">{t('register')}</h1>
+            <IconBox icon={Stethoscope} variant="brand" size="xl" className="mx-auto mb-4" />
+            <h1 className="text-heading text-2xl sm:text-3xl">{t('register')}</h1>
           </div>
 
           <div className="card p-6 sm:p-8 shadow-xl shadow-slate-200/50 dark:shadow-black/20">

@@ -6,6 +6,7 @@ interface TypewriterTextProps {
   deletingSpeed?: number;
   pauseMs?: number;
   className?: string;
+  cursorClassName?: string;
   dir?: 'ltr' | 'rtl';
 }
 
@@ -27,6 +28,7 @@ export function TypewriterText({
   deletingSpeed = 35,
   pauseMs = 2200,
   className = '',
+  cursorClassName = 'text-blue-600 dark:text-blue-400',
   dir = 'ltr',
 }: TypewriterTextProps) {
   const reducedMotion = usePrefersReducedMotion();
@@ -64,10 +66,10 @@ export function TypewriterText({
 
   return (
     <span className={`inline ${className}`} dir={dir}>
-      <span className="text-white">{text}</span>
+      <span className={className || 'text-inherit'}>{text}</span>
       {!reducedMotion && (
         <span
-          className={`typewriter-cursor text-teal-300 font-light ${dir === 'rtl' ? 'mr-0.5' : 'ml-0.5'}`}
+          className={`typewriter-cursor font-light ${cursorClassName} ${dir === 'rtl' ? 'mr-0.5' : 'ml-0.5'}`}
           aria-hidden="true"
         >
           |

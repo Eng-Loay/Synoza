@@ -13,6 +13,7 @@ import adminRoutes from './routes/admin.js';
 import studentRoutes from './routes/student.js';
 import categoriesRoutes from './routes/categories.js';
 import siteRoutes from './routes/site.js';
+import transcribeRoutes from './routes/transcribe.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,7 +31,7 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '8mb' }));
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -65,6 +66,7 @@ app.use('/api/student', studentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/site', siteRoutes);
+app.use('/api/transcribe', transcribeRoutes);
 
 const clientPublicExam = path.join(__dirname, '../../client/public/exam');
 app.use('/exam', express.static(clientPublicExam));

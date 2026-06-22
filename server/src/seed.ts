@@ -36,6 +36,29 @@ async function main() {
     },
   });
 
+  const testStudent = await prisma.user.upsert({
+    where: { email: 'test@synoza.com' },
+    update: {},
+    create: {
+      email: 'test@synoza.com',
+      passwordHash: await bcrypt.hash('Test@123456', 12),
+      firstName: 'Test',
+      lastName: 'Student',
+      role: 'STUDENT',
+      university: 'Synoza Demo',
+    },
+  });
+
+  await prisma.subscription.updateMany({
+    where: { userId: testStudent.id, status: 'ACTIVE' },
+    data: { status: 'CANCELLED', endDate: new Date() },
+  });
+  await prisma.subscription.create({
+    data: { userId: testStudent.id, plan: 'FREE', status: 'ACTIVE' },
+  });
+  await prisma.caseAccess.deleteMany({ where: { userId: testStudent.id } });
+  await prisma.session.deleteMany({ where: { userId: testStudent.id } });
+
   const specialties = [
     { nameEn: 'Cardiology', nameAr: 'أمراض القلب', description: 'Cardiovascular clinical cases' },
     { nameEn: 'Internal Medicine', nameAr: 'الباطنة', description: 'General internal medicine' },
@@ -74,6 +97,22 @@ async function main() {
       sortOrder: 1,
     },
   });
+
+  const placeholderBoards = [
+    { id: 'seed-surgery', nameEn: 'Surgery', nameAr: 'الجراحة', sortOrder: 2 },
+    { id: 'seed-pediatrics', nameEn: 'Pediatrics', nameAr: 'طب الأطفال', sortOrder: 3 },
+    { id: 'seed-obgyn', nameEn: 'Obstetrics & Gynecology', nameAr: 'النساء والتوليد', sortOrder: 4 },
+  ];
+  for (const board of placeholderBoards) {
+    await prisma.knowledgeCategory.upsert({
+      where: { id: board.id },
+      update: {},
+      create: {
+        ...board,
+        description: `${board.nameEn} OSCE stations — coming soon`,
+      },
+    });
+  }
 
   const chest = await prisma.knowledgeCategory.upsert({
     where: { id: 'seed-chest' },
@@ -212,7 +251,7 @@ async function main() {
       }),
       patientPersonality: 'Anxious teenager, cooperative but worried about sports participation.',
       scenarioPrompt:
-        'You are a 17-year-old Egyptian male student worried about breathlessness during football practice.',
+        'Background: 17-year-old Egyptian male student. Worried about breathlessness during football. Do not mention this unless the doctor asks.',
       isPublished: true,
     };
 
@@ -326,7 +365,7 @@ async function main() {
       patientPersonality:
         'Anxious older woman, breathless when speaking, cooperative but fatigued.',
       scenarioPrompt:
-        'You are a 58-year-old Egyptian woman in the emergency clinic with breathlessness and swollen ankles for 3 weeks.',
+        'Background: 58-year-old Egyptian woman with breathlessness and ankle swelling for 3 weeks. Do not mention any details unless the doctor asks.',
       isPublished: true,
     };
 
@@ -389,6 +428,7 @@ async function main() {
   console.log('Seed completed!');
   console.log(`Admin: ${adminEmail} / ${adminPassword}`);
   console.log('Student: student@synoza.com / Student@123456');
+  console.log('Test student (fresh attempts): test@synoza.com / Test@123456');
 }
 
 main()

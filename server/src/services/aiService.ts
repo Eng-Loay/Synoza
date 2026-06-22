@@ -115,24 +115,29 @@ function buildPatientSystemPrompt(caseData: Case, language: Language, knowledgeC
 
   return `You are a simulated patient in an OSCE clinical examination. Stay fully in character.
 
-PATIENT: ${caseData.patientName}, ${caseData.patientAge} years old, ${caseData.patientGender}, ${caseData.patientNationality}
-CHIEF COMPLAINT: ${caseData.chiefComplaint}
-MEDICAL HISTORY: ${caseData.medicalHistory}
-MEDICATION HISTORY: ${caseData.medicationHistory}
-SURGICAL HISTORY: ${caseData.surgicalHistory}
-FAMILY HISTORY: ${caseData.familyHistory}
-SOCIAL HISTORY: ${caseData.socialHistory}
-PERSONALITY: ${caseData.patientPersonality || 'Cooperative but anxious about symptoms'}
+INTERNAL BACKGROUND (never volunteer this — only reveal the specific fact if directly asked):
+- Name: ${caseData.patientName}
+- Age: ${caseData.patientAge} | Gender: ${caseData.patientGender} | Nationality: ${caseData.patientNationality}
+- Chief complaint: ${caseData.chiefComplaint}
+- Medical history: ${caseData.medicalHistory}
+- Medications: ${caseData.medicationHistory}
+- Surgical history: ${caseData.surgicalHistory}
+- Family history: ${caseData.familyHistory}
+- Social history: ${caseData.socialHistory}
+- Personality: ${caseData.patientPersonality || 'Cooperative but anxious about symptoms'}
+- Scenario: ${caseData.scenarioPrompt || 'Standard OSCE patient encounter'}
 
-RULES:
+STRICT RULES — violating these fails the simulation:
 1. NEVER reveal the diagnosis (${caseData.finalDiagnosis}) directly.
-2. Only provide information when the student asks appropriate questions.
-3. Do not volunteer information the student did not ask about.
-4. Respond realistically as a patient would — use lay language, not medical jargon.
-5. If asked something not in your history, say you don't know or aren't sure.
-6. ${langNote}
-
-${caseData.scenarioPrompt}${knowledgeContext}`;
+2. Answer ONLY the specific question asked. One topic per answer. No extra sentences.
+3. NEVER volunteer symptoms, name, age, history, medications, or complaints unprompted.
+4. Greeting only (Hello / Hi / السلام عليكم / صباح الخير) → reply ONLY "Hello doctor." or "أهلاً دكتور." — nothing else.
+5. Doctor introduces themselves → brief polite greeting back only. Do NOT describe your problem.
+6. Asked your name → name only. Asked age → age only. Asked "what brought you" / symptoms → chief complaint only.
+7. Lay language, not medical jargon. If unsure, say you don't know.
+8. Unclear question → ask the doctor to clarify. Do NOT guess or dump information.
+9. ${langNote}
+${knowledgeContext}`;
 }
 
 function pickLang(en: string, ar: string, lang: 'AR' | 'EN'): string {
@@ -284,39 +289,109 @@ async function callOpenAISafe(
   }
 }
 
-function mockPatientResponse(
+function resolvePatientLanguage(language: Language, userMessage: string): boolean {
+  return language === 'AR' || /[\u0600-\u06FF]/.test(userMessage);
+}
+
+function isGreetingOnly(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return /^(hi+|hello+|hey+|good\s+(morning|afternoon|evening)|السلام\s*عليكم|السلام|سلام\s*عليكم|سلام|مرحب|أهلا|اهلا|هاي|صباح\s*الخير|مساء\s*الخير)[!.?\s]*$/i.test(
+    t,
+  );
+}
+
+function isDoctorIntroduction(text: string): boolean {
+  return /^(good\s+(morning|afternoon|evening)|nice to meet|pleased to meet|i'?m\s+(dr|doctor)|my name is.*(dr|doctor)|أنا\s+(د|دكتور)|اسمي\s+(د|دكتور)|تشرفنا|نورت)/i.test(
+    text.trim(),
+  );
+}
+
+function asksAboutSymptoms(text: string): boolean {
+  return /why|what brought|what brings|present|complain|symptom|problem|chief|feel|wrong|happening|issue|breath|dyspnea|swell|pain|chest|tell me about|describe|history of|إيه|ليه|سبب|شكو|عرض|عندك|وجع|ألم|الم|ضيق|تنفس|تورم|حاس|حاسس|إيه اللي|ما الذي/i.test(
+    text,
+  );
+}
+
+function asksName(text: string): boolean {
+  return /name|your name|اسم|اسمك|who are you|مين|من انت|may i have your name|what is your name/i.test(
+    text,
+  );
+}
+
+function asksAge(text: string): boolean {
+  return /age|old are you|how old|years old|سن|عمر|كم عمر|سنك/i.test(text);
+}
+
+function sanitizePatientResponse(
+  caseData: Case,
+  userMessage: string,
+  response: string,
+  language: Language,
+): string {
+  const isArabic = resolvePatientLanguage(language, userMessage);
+  const text = userMessage.trim().toLowerCase();
+  const trimmed = response.trim();
+  if (!trimmed) return trimmed;
+
+  if (isGreetingOnly(userMessage) || isDoctorIntroduction(userMessage)) {
+    return isArabic ? 'أهلاً دكتور.' : 'Hello doctor.';
+  }
+
+  if (asksName(userMessage) && !asksAboutSymptoms(userMessage)) {
+    return isArabic ? `اسمي ${caseData.patientName}.` : `My name is ${caseData.patientName}.`;
+  }
+
+  if (asksAge(userMessage) && !asksAboutSymptoms(userMessage)) {
+    return isArabic
+      ? `عندي ${caseData.patientAge} سنة.`
+      : `I am ${caseData.patientAge} years old.`;
+  }
+
+  if (!asksAboutSymptoms(userMessage)) {
+    const complaintSnippet = caseData.chiefComplaint.toLowerCase().slice(0, 40);
+    const responseLower = trimmed.toLowerCase();
+    const dumpsComplaint =
+      complaintSnippet.length > 10 && responseLower.includes(complaintSnippet.slice(0, 20));
+    const dumpsNameAndMore =
+      trimmed.includes(caseData.patientName) &&
+      (dumpsComplaint || /shortness|breath|swell|swelling|dyspnea|تنفس|تورم|ضيق/i.test(trimmed));
+
+    if (dumpsNameAndMore || dumpsComplaint) {
+      if (asksName(userMessage)) {
+        return isArabic ? `اسمي ${caseData.patientName}.` : `My name is ${caseData.patientName}.`;
+      }
+      return isArabic ? 'أهلاً دكتور.' : 'Hello doctor.';
+    }
+  }
+
+  return trimmed;
+}
+
+function getDeterministicPatientResponse(
   caseData: Case,
   userMessage: string,
   language: Language,
-  history: { role: string; content: string }[] = []
-): string {
-  const isArabic = language === 'AR' || /[\u0600-\u06FF]/.test(userMessage);
+  history: { role: string; content: string }[] = [],
+): string | null {
+  const isArabic = resolvePatientLanguage(language, userMessage);
   const text = userMessage.trim().toLowerCase();
   const name = caseData.patientName;
   const complaint = caseData.chiefComplaint.split('.')[0].trim();
   const studentTurn = history.filter((m) => m.role === 'STUDENT').length;
 
-  if (/^(hi+|hello+|hey+|good morning|good afternoon|السلام|سلام|مرحب|أهلا|اهلا|هاي)/i.test(text)) {
-    return isArabic
-      ? studentTurn <= 1
-        ? `أهلاً دكتور، أنا ${name}. ${complaint}.`
-        : 'أهلاً دكتور، اتفضل.'
-      : studentTurn <= 1
-        ? `Hello doctor, I'm ${name}. ${complaint}.`
-        : 'Hello doctor, go ahead.';
+  if (isGreetingOnly(userMessage) || isDoctorIntroduction(userMessage)) {
+    return isArabic ? 'أهلاً دكتور.' : 'Hello doctor.';
   }
 
-  if (/name|your name|اسم|اسمك|مين|من انت|who are you/i.test(text)) {
+  if (asksName(userMessage) && !asksAboutSymptoms(userMessage)) {
     return isArabic ? `اسمي ${name}.` : `My name is ${name}.`;
   }
 
   if (/how are you|how r u|عامل|إزيك|ازيك|كيف حال|حالك/i.test(text)) {
-    return isArabic
-      ? 'مش في أحسن حالي، بضيق نفس مع المجهود من شهور.'
-      : "Not great, doctor. I get breathless and tight in the chest with exertion.";
+    return isArabic ? 'مش في أحسن حالي.' : 'Not great, doctor.';
   }
 
-  if (/age|old are you|سن|عمر|كم عمر/i.test(text)) {
+  if (asksAge(userMessage) && !asksAboutSymptoms(userMessage)) {
     return isArabic
       ? `عندي ${caseData.patientAge} سنة.`
       : `I am ${caseData.patientAge} years old.`;
@@ -334,26 +409,34 @@ function mockPatientResponse(
     return isArabic ? 'مفيش حد في العيلة عنده نفس المشكلة.' : 'No similar conditions run in my family.';
   }
 
-  if (/pain|hurt|sympt|complain|وجع|ألم|الم|عندك|symptom|breath|dyspnea|ضيق|تنفس/i.test(text)) {
-    return isArabic
-      ? `${complaint}. بيزيد مع المجهود ويتحسن شوية بالراحة.`
-      : `${complaint}. It gets worse with exertion and eases a little with rest.`;
+  if (asksAboutSymptoms(text)) {
+    return isArabic ? `${complaint}.` : `${complaint}.`;
   }
 
+  return null;
+}
+
+function mockPatientResponse(
+  caseData: Case,
+  userMessage: string,
+  language: Language,
+  history: { role: string; content: string }[] = []
+): string {
+  const deterministic = getDeterministicPatientResponse(caseData, userMessage, language, history);
+  if (deterministic !== null) return deterministic;
+
+  const isArabic = resolvePatientLanguage(language, userMessage);
+  const studentTurn = history.filter((m) => m.role === 'STUDENT').length;
   const fallbacks = isArabic
     ? [
-        `${complaint}.`,
-        'بدأت الأعراض تدريجياً من حوالي 6 شهور.',
-        'مش عندي حساسية من أدوية.',
-        'مش باخد أدوية بانتظام حالياً.',
-        'مفيش حد في العيلة عنده نفس المشكلة.',
+        'ممكن توضح سؤالك أكتر؟',
+        'مش فاهم قصدك، ممكن تسأل بطريقة أوضح؟',
+        'أنا هنا — اسألني اللي محتاج تعرفه.',
       ]
     : [
-        `${complaint}.`,
-        'The symptoms started gradually about 6 months ago.',
-        'I have no known drug allergies.',
-        'I am not on regular medications currently.',
-        'No similar conditions run in my family.',
+        'Could you clarify your question?',
+        'I am not sure what you mean — please ask more specifically.',
+        'I am here — please ask what you need to know.',
       ];
 
   return fallbacks[studentTurn % fallbacks.length];
@@ -775,6 +858,11 @@ export async function getPatientResponse(
   userMessage: string,
   language: Language
 ): Promise<string> {
+  const deterministic = getDeterministicPatientResponse(caseData, userMessage, language, history);
+  if (deterministic !== null) {
+    return deterministic;
+  }
+
   const settings = await getAISettings();
   const provider = process.env.AI_PROVIDER || settings.provider;
 
@@ -793,13 +881,15 @@ export async function getPatientResponse(
     { role: 'user', content: userMessage },
   ];
 
-  return callOpenAISafe(
+  const raw = await callOpenAISafe(
     messages,
     settings.patientModel,
-    settings.temperature,
+    Math.min(settings.temperature, 0.4),
     settings.maxTokens,
     () => mockPatientResponse(caseData, userMessage, language, history)
   );
+
+  return sanitizePatientResponse(caseData, userMessage, raw, language);
 }
 
 export async function getExaminerVivaResponse(

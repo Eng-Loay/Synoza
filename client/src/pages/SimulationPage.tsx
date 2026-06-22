@@ -8,9 +8,9 @@ import {
   FlaskConical,
   ClipboardList,
   Lightbulb,
-  Send,
   UserCircle,
   ChevronRight,
+  ArrowLeft,
   Stethoscope,
   Eye,
   Download,
@@ -25,7 +25,10 @@ import chestPalpationImg from "../assets/exam/chest-palpation.svg?url";
 import chestPercussionImg from "../assets/exam/chest-percussion.svg?url";
 import chestAuscultationImg from "../assets/exam/chest-auscultation.svg?url";
 // import { VoiceMicButton } from '../components/VoiceMicButton';
-// import { useSpeechInput } from '../hooks/useSpeechInput';
+import { SimulationChatInput } from '../components/SimulationChatInput';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { useSpeechInput } from '../hooks/useSpeechInput';
+import { useLivePatientCall } from '../hooks/useLivePatientCall';
 
 interface Message {
   id: string;
@@ -68,7 +71,8 @@ interface Session {
     examImages: string;
   };
   messages: Message[];
-  result?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
+  status?: string;
 }
 
 const STAGES = [
@@ -93,7 +97,7 @@ const EXAM_MANEUVERS = [
   { id: "auscultation", nameEn: "Auscultation", nameAr: "الاستماع" },
 ] as const;
 
-const STATION_SECONDS = 15 * 60;
+const STATION_SECONDS = 20 * 60;
 
 const MANEUVER_OBJECTIVES: Record<
   string,
@@ -232,14 +236,22 @@ export default function SimulationPage() {
   const [completing, setCompleting] = useState(false);
   const [completeError, setCompleteError] = useState("");
   const [vivaActive, setVivaActive] = useState(false);
-  // const [micError, setMicError] = useState('');
-  // const speechLang =
-  //   lang === 'AR' ? 'ar-EG' : lang === 'EN' ? 'en-US' : isAr ? 'ar-EG' : 'en-US';
+  const [micError, setMicError] = useState('');
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [exiting, setExiting] = useState(false);
+  const speechLang =
+    lang === 'AR'
+      ? 'ar-EG'
+      : lang === 'EN'
+        ? 'en-US'
+        : typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('ar')
+          ? 'ar-EG'
+          : 'en-US';
 
   const sendMessage = useCallback(
-    async (overrideText?: string): Promise<boolean> => {
+    async (overrideText?: string): Promise<{ success: boolean; reply?: string }> => {
       const text = (overrideText ?? input).trim();
-      if (!text || sending) return false;
+      if (!text || sending) return { success: false };
       setSending(true);
       setChatError("");
       if (!overrideText) setInput("");
@@ -281,7 +293,10 @@ export default function SimulationPage() {
           }
           return { ...prev, messages: next };
         });
-        return true;
+        return {
+          success: true,
+          reply: res.data.message.role === 'PATIENT' ? res.data.message.content : undefined,
+        };
       } catch (err) {
         setSession((prev) =>
           prev
@@ -297,7 +312,7 @@ export default function SimulationPage() {
         } else {
           setChatError(String(err.response.data?.error || t("chatError")));
         }
-        return false;
+        return { success: false };
       } finally {
         setSending(false);
       }
@@ -313,18 +328,55 @@ export default function SimulationPage() {
     ],
   );
 
-  // const { isListening, isSupported: isMicSupported, toggleListening } = useSpeechInput({
-  //   lang: speechLang,
-  //   onResult: (transcript) => {
-  //     setMicError('');
-  //     void sendMessage(transcript);
-  //   },
-  //   onError: (code) => {
-  //     if (code === 'not-supported') setMicError(t('micNotSupported'));
-  //     else if (code === 'not-allowed') setMicError(t('micPermissionDenied'));
-  //     else setMicError(t('micError'));
-  //   },
-  // });
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+
+  const { isListening, isProcessing, isSupported: isMicSupported, toggleListening, stopListening } = useSpeechInput({
+    lang: speechLang,
+    onInterim: (text) => {
+      setMicError('');
+      setInput(text);
+    },
+    onComplete: (transcript) => {
+      setMicError('');
+      setInput(transcript);
+      void sendMessageRef.current(transcript);
+    },
+    onError: (code) => {
+      if (code === 'not-supported') setMicError(t('micNotSupported'));
+      else if (code === 'not-allowed') setMicError(t('micPermissionDenied'));
+      else if (code === 'no-speech') setMicError(t('micNoSpeech'));
+      else if (code === 'network') setMicError(t('micNetworkError'));
+      else if (code === 'audio-capture') setMicError(t('micCaptureError'));
+      else if (code === 'start-failed') setMicError(t('micStartFailed'));
+      else if (code === 'transcription-failed') setMicError(t('micTranscriptionFailed'));
+      else if (code === 'transcription-unavailable') setMicError(t('micTranscriptionUnavailable'));
+      else setMicError(t('micError'));
+    },
+  });
+
+  const patientLiveCall = useLivePatientCall({
+    lang: speechLang,
+    sendMessage,
+    disabled: sending || showExaminerPanel || activeStage !== 'history',
+    onError: (code) => {
+      if (code === 'not-supported') setMicError(t('liveCallNotSupported'));
+      else if (code === 'not-allowed') setMicError(t('micPermissionDenied'));
+      else if (code === 'no-speech') setMicError('');
+      else if (code === 'network') setMicError(t('micNetworkError'));
+      else if (code === 'audio-capture') setMicError(t('micCaptureError'));
+      else if (code === 'start-failed') setMicError(t('micStartFailed'));
+      else setMicError(t('micError'));
+    },
+  });
+
+  useEffect(() => {
+    if (showExaminerPanel && patientLiveCall.isLiveCall) {
+      patientLiveCall.stopCall();
+      stopListening();
+    }
+  }, [showExaminerPanel, patientLiveCall.isLiveCall, patientLiveCall.stopCall, stopListening]);
+
   const loadSession = useCallback(async () => {
     const res = await api.get(`/sessions/${sessionId}`);
     const s = res.data.session as Session;
@@ -354,6 +406,48 @@ export default function SimulationPage() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [session?.messages, activeStage, activeManeuver, sending]);
+
+  const examInProgress = !!session && !result;
+
+  useEffect(() => {
+    if (!examInProgress) return;
+
+    window.history.pushState({ synozaExamGuard: true }, "");
+
+    const onPopState = () => {
+      window.history.pushState({ synozaExamGuard: true }, "");
+      setShowExitConfirm(true);
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [examInProgress]);
+
+  const requestExit = useCallback(() => {
+    if (!examInProgress) {
+      navigate("/student");
+      return;
+    }
+    setShowExitConfirm(true);
+  }, [examInProgress, navigate]);
+
+  const cancelExit = useCallback(() => {
+    setShowExitConfirm(false);
+  }, []);
+
+  const confirmExit = useCallback(async () => {
+    setExiting(true);
+    patientLiveCall.stopCall();
+    stopListening();
+    try {
+      await api.post(`/sessions/${sessionId}/abandon`);
+    } catch {
+      /* leave even if abandon fails */
+    }
+    setExiting(false);
+    setShowExitConfirm(false);
+    navigate("/student");
+  }, [navigate, patientLiveCall, sessionId, stopListening]);
 
   const formatTime = (s: number) => {
     const m = Math.floor(s / 60)
@@ -425,6 +519,9 @@ export default function SimulationPage() {
   const changeStage = (stage: string) => {
     setActiveStage(stage);
     api.patch(`/sessions/${sessionId}/stage`, { stage });
+    if (stage === "feedback" && session?.result) {
+      setResult(session.result);
+    }
     if (
       stage === "examination" &&
       !activeManeuver &&
@@ -444,6 +541,9 @@ export default function SimulationPage() {
         language: evaluationLanguage,
       });
       setResult(res.data.result);
+      setSession((prev) =>
+        prev ? { ...prev, result: res.data.result, status: "COMPLETED" } : prev,
+      );
       setActiveStage("feedback");
     } catch (err) {
       if (!axios.isAxiosError(err) || !err.response) {
@@ -454,11 +554,6 @@ export default function SimulationPage() {
     } finally {
       setCompleting(false);
     }
-  };
-
-  const quitSession = async () => {
-    await api.post(`/sessions/${sessionId}/abandon`);
-    navigate("/student");
   };
 
   if (!session) {
@@ -502,6 +597,8 @@ export default function SimulationPage() {
     (m) => m.id === activeManeuver,
   );
 
+  const feedbackResult = result ?? session.result ?? null;
+
   const downloadChatTranscript = () => {
     const title = isAr ? session.case.titleAr : session.case.titleEn;
     const lines = session.messages.map((m) => {
@@ -529,15 +626,36 @@ export default function SimulationPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col">
+      <ConfirmDialog
+        open={showExitConfirm}
+        title={t("exitExamTitle")}
+        message={t("exitExamMessage")}
+        confirmLabel={t("leaveExam")}
+        cancelLabel={t("stayInExam")}
+        confirming={exiting}
+        variant="danger"
+        onConfirm={() => void confirmExit()}
+        onCancel={cancelExit}
+      />
       <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-2">
         <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              type="button"
+              onClick={requestExit}
+              className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              aria-label={t("back")}
+            >
+              <ArrowLeft size={18} />
+            </button>
+            <div className="min-w-0">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
               Synoza OSCE
             </p>
             <p className="text-sm font-semibold text-slate-800 dark:text-white truncate">
               {isAr ? session.case.titleAr : session.case.titleEn}
             </p>
+            </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <ConnectionStatus />
@@ -564,7 +682,7 @@ export default function SimulationPage() {
               {formatTime(secondsLeft)}
             </div>
             <button
-              onClick={quitSession}
+              onClick={requestExit}
               className="bg-red-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-red-600"
             >
               {t("quit")}
@@ -721,17 +839,26 @@ export default function SimulationPage() {
               </div>
             </div>
           )}
-          {activeStage === "feedback" && result ? (
-            <div className="flex-1 overflow-y-auto p-4">
-              <FeedbackView
-                result={result}
+          {activeStage === "feedback" ? (
+            feedbackResult ? (
+              <div className="flex-1 overflow-y-auto p-4">
+                <FeedbackView
+                  result={feedbackResult}
+                  t={t}
+                  session={session}
+                  isAr={isAr}
+                  onRegenerate={completeSession}
+                  regenerating={completing}
+                />
+              </div>
+            ) : (
+              <FeedbackPendingView
                 t={t}
-                session={session}
-                isAr={isAr}
-                onRegenerate={completeSession}
-                regenerating={completing}
+                completing={completing}
+                onGoToDiagnosis={() => changeStage("diagnosis")}
+                onGenerate={() => void completeSession()}
               />
-            </div>
+            )
           ) : activeStage === "examination" ? (
             <ExaminationView
               session={session}
@@ -751,6 +878,15 @@ export default function SimulationPage() {
               chatEndRef={chatEndRef}
               lang={lang}
               setLang={setLang}
+              isListening={isListening}
+              isProcessing={isProcessing}
+              isMicSupported={isMicSupported}
+              onToggleMic={() => {
+                setMicError('');
+                if (patientLiveCall.isLiveCall) patientLiveCall.stopCall();
+                toggleListening();
+              }}
+              micError={micError}
             />
           ) : activeStage === "investigations" ? (
             <InvestigationsView
@@ -785,6 +921,27 @@ export default function SimulationPage() {
               setLang={setLang}
               showExaminerPanel={showExaminerPanel}
               setShowExaminerPanel={setShowExaminerPanel}
+              isListening={isListening}
+              isProcessing={isProcessing}
+              isMicSupported={isMicSupported}
+              onToggleMic={() => {
+                setMicError('');
+                if (patientLiveCall.isLiveCall) patientLiveCall.stopCall();
+                toggleListening();
+              }}
+              micError={micError}
+              isLiveCall={patientLiveCall.isLiveCall}
+              isLiveCallBusy={patientLiveCall.isBusy}
+              isLiveCallSupported={patientLiveCall.isSupported}
+              onToggleLiveCall={
+                showExaminerPanel
+                  ? undefined
+                  : () => {
+                      setMicError('');
+                      stopListening();
+                      patientLiveCall.toggleLiveCall();
+                    }
+              }
             />
           )}
         </main>
@@ -811,6 +968,11 @@ function ExaminationView({
   chatEndRef,
   lang,
   setLang,
+  isListening,
+  isProcessing,
+  isMicSupported,
+  onToggleMic,
+  micError,
 }: {
   session: Session;
   isAr: boolean;
@@ -822,13 +984,18 @@ function ExaminationView({
   messages: Message[];
   input: string;
   setInput: (v: string) => void;
-  sendMessage: (text?: string) => Promise<boolean>;
+  sendMessage: (text?: string) => Promise<{ success: boolean; reply?: string }>;
   sending: boolean;
   chatError: string;
   completeManeuver: () => void;
   chatEndRef: React.RefObject<HTMLDivElement | null>;
   lang: "AUTO" | "AR" | "EN";
   setLang: (l: "AUTO" | "AR" | "EN") => void;
+  isListening: boolean;
+  isProcessing: boolean;
+  isMicSupported: boolean;
+  onToggleMic: () => void;
+  micError: string;
 }) {
   if (!activeManeuver || !activeManeuverMeta) {
     return (
@@ -918,59 +1085,33 @@ function ExaminationView({
             <div ref={chatEndRef} />
           </div>
 
-          <div className="p-4 border-t border-slate-100 dark:border-slate-800">
-            {chatError && (
-              <p className="text-xs text-red-500 mb-2">{chatError}</p>
-            )}
-            <div className="flex items-center gap-2 mb-2 flex-wrap">
-              {/* Voice input hidden for now
-              <VoiceMicButton
-                isListening={isListening}
-                isSupported={isMicSupported}
-                disabled={sending}
-                onClick={onToggleMic}
-                listeningLabel={t('micListening')}
-                notSupportedLabel={t('micNotSupported')}
-              />
-              {(['AUTO', 'AR', 'EN'] as const).map((l) => (
-                <button
-                  key={l}
-                  type="button"
-                  onClick={() => setLang(l)}
-                  className={`text-xs px-2 py-1 rounded ${lang === l ? 'bg-primary text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
-                >
-                  {l === 'AUTO' ? t('auto') : l === 'AR' ? t('arabic') : t('english')}
-                </button>
-              ))}
-              {micError && <p className="text-xs text-red-500 mb-2">{micError}</p>}
-              {isListening && <p className="text-xs text-primary mb-2">{t('micListening')}</p>}
-              */}
+          <div className="border-t border-slate-100 dark:border-slate-800">
+            <div className="px-4 pt-3 flex justify-end">
               <button
                 type="button"
                 onClick={completeManeuver}
-                className="ml-auto text-xs btn-secondary"
+                className="text-xs btn-secondary"
               >
                 {t("completeStep")}{" "}
                 <ChevronRight size={14} className="inline" />
               </button>
             </div>
-            <div className="flex gap-2">
-              <input
-                className="input-field flex-1"
-                placeholder={t("describeFindings")}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-                disabled={sending}
-              />
-              <button
-                onClick={() => sendMessage()}
-                disabled={sending}
-                className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center hover:bg-primary-dark disabled:opacity-50"
-              >
-                <Send size={18} />
-              </button>
-            </div>
+            <SimulationChatInput
+              input={input}
+              setInput={setInput}
+              onSend={() => sendMessage()}
+              sending={sending}
+              placeholder={t("describeFindings")}
+              chatError={chatError}
+              isListening={isListening}
+              isProcessing={isProcessing}
+              isMicSupported={isMicSupported}
+              onToggleMic={onToggleMic}
+              micListeningLabel={t("micListening")}
+              micNotSupportedLabel={t("micNotSupported")}
+              micProcessingLabel={t("micProcessing")}
+              micError={micError}
+            />
           </div>
         </div>
       </div>
@@ -992,13 +1133,22 @@ function HistoryChatView({
   setLang,
   showExaminerPanel,
   setShowExaminerPanel,
+  isListening,
+  isProcessing,
+  isMicSupported,
+  onToggleMic,
+  micError,
+  isLiveCall,
+  isLiveCallBusy,
+  isLiveCallSupported,
+  onToggleLiveCall,
 }: {
   t: (k: string) => string;
   session: Session;
   messages: Message[];
   input: string;
   setInput: (v: string) => void;
-  sendMessage: (text?: string) => Promise<boolean>;
+  sendMessage: (text?: string) => Promise<{ success: boolean; reply?: string }>;
   sending: boolean;
   chatError: string;
   chatEndRef: React.RefObject<HTMLDivElement | null>;
@@ -1006,6 +1156,15 @@ function HistoryChatView({
   setLang: (l: "AUTO" | "AR" | "EN") => void;
   showExaminerPanel: boolean;
   setShowExaminerPanel: (value: boolean) => void;
+  isListening: boolean;
+  isProcessing: boolean;
+  isMicSupported: boolean;
+  onToggleMic: () => void;
+  micError: string;
+  isLiveCall?: boolean;
+  isLiveCallBusy?: boolean;
+  isLiveCallSupported?: boolean;
+  onToggleLiveCall?: () => void;
 }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden p-4">
@@ -1172,54 +1331,29 @@ function HistoryChatView({
           <div ref={chatEndRef} />
         </div>
 
-        <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
-          {chatError && (
-            <p className="text-xs text-red-500 mb-2">{chatError}</p>
-          )}
-          {/* Voice input hidden for now
-          <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <VoiceMicButton
-              isListening={isListening}
-              isSupported={isMicSupported}
-              disabled={sending}
-              onClick={onToggleMic}
-              listeningLabel={t('micListening')}
-              notSupportedLabel={t('micNotSupported')}
-            />
-            {(['AUTO', 'AR', 'EN'] as const).map((l) => (
-              <button
-                key={l}
-                type="button"
-                onClick={() => setLang(l)}
-                className={`text-xs px-2 py-1 rounded ${lang === l ? 'bg-primary text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
-              >
-                {l === 'AUTO' ? t('auto') : l === 'AR' ? t('arabic') : t('english')}
-              </button>
-            ))}
-          </div>
-          {micError && <p className="text-xs text-red-500 mb-2">{micError}</p>}
-          {isListening && <p className="text-xs text-primary mb-2">{t('micListening')}</p>}
-          */}
-          <div className="flex gap-2">
-            <input
-              className="input-field flex-1"
-              placeholder={
-                showExaminerPanel ? t("askExaminer") : t("askPatient")
-              }
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-              disabled={sending}
-            />
-            <button
-              onClick={() => sendMessage()}
-              disabled={sending}
-              className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center hover:bg-primary-dark disabled:opacity-50"
-            >
-              <Send size={18} />
-            </button>
-          </div>
-        </div>
+        <SimulationChatInput
+          input={input}
+          setInput={setInput}
+          onSend={() => sendMessage()}
+          sending={sending}
+          placeholder={showExaminerPanel ? t("askExaminer") : t("askPatient")}
+          chatError={chatError}
+          isListening={isListening}
+          isProcessing={isProcessing}
+          isMicSupported={isMicSupported}
+          onToggleMic={onToggleMic}
+          micListeningLabel={t("micListening")}
+          micNotSupportedLabel={t("micNotSupported")}
+          micProcessingLabel={t("micProcessing")}
+          micError={micError}
+          isLiveCall={isLiveCall}
+          isLiveCallBusy={isLiveCallBusy}
+          isLiveCallSupported={isLiveCallSupported}
+          onToggleLiveCall={onToggleLiveCall}
+          liveCallLabel={t("liveCall")}
+          liveCallActiveLabel={t("liveCallActive")}
+          endLiveCallLabel={t("endLiveCall")}
+        />
       </div>
     </div>
   );
@@ -1238,7 +1372,7 @@ function DiagnosisView({
 }: {
   t: (k: string) => string;
   messages: Message[];
-  sendMessage: (text?: string) => Promise<boolean>;
+  sendMessage: (text?: string) => Promise<{ success: boolean; reply?: string }>;
   sending: boolean;
   chatError: string;
   completeSession: () => void | Promise<void>;
@@ -1260,17 +1394,16 @@ function DiagnosisView({
     return parts.join("\n\n");
   };
 
-  const handleSubmit = async () => {
+  const handleCompleteAndEvaluate = async () => {
     const text = buildSubmission();
-    if (!text) return;
-    const ok = await sendMessage(text);
-    if (ok) {
+    if (text) {
+      const result = await sendMessage(text);
+      if (!result.success) return;
       setImpression("");
       setManagement("");
     }
+    await completeSession();
   };
-
-  const canSubmit = impression.trim() || management.trim();
 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-50 dark:bg-slate-950">
@@ -1327,30 +1460,20 @@ function DiagnosisView({
           {(chatError || completeError) && (
             <p className="text-sm text-red-500 text-center">{chatError || completeError}</p>
           )}
-          <div className="flex flex-col sm:flex-row items-center gap-3">
-            <button
-              onClick={() => void handleSubmit()}
-              disabled={sending || completing || !canSubmit}
-              className="btn-primary px-8 min-w-[200px] flex items-center justify-center gap-2"
-            >
-              <Send size={16} />
-              {sending ? t("examinerTyping") : t("submitToExaminer")}
-            </button>
-            <button
-              onClick={() => void completeSession()}
-              disabled={completing || sending}
-              className="btn-secondary px-8 min-w-[200px] flex items-center justify-center gap-2"
-            >
-              {completing ? (
-                <>
-                  <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                  {t("generatingFeedback")}
-                </>
-              ) : (
-                t("completeSession")
-              )}
-            </button>
-          </div>
+          <button
+            onClick={() => void handleCompleteAndEvaluate()}
+            disabled={completing || sending}
+            className="btn-primary px-8 min-w-[220px] flex items-center justify-center gap-2"
+          >
+            {completing || sending ? (
+              <>
+                <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                {completing ? t("generatingFeedback") : t("examinerTyping")}
+              </>
+            ) : (
+              t("completeSession")
+            )}
+          </button>
         </div>
 
         {messages.length > 0 && (
@@ -1533,6 +1656,54 @@ function StageContent({ title, content }: { title: string; content: string }) {
       <p className="text-slate-600 dark:text-slate-300 whitespace-pre-wrap">
         {content}
       </p>
+    </div>
+  );
+}
+
+function FeedbackPendingView({
+  t,
+  completing,
+  onGoToDiagnosis,
+  onGenerate,
+}: {
+  t: (k: string) => string;
+  completing: boolean;
+  onGoToDiagnosis: () => void;
+  onGenerate: () => void;
+}) {
+  return (
+    <div className="flex-1 flex items-center justify-center p-6">
+      <div className="card max-w-lg w-full p-8 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-amber-50 dark:bg-amber-950/40 flex items-center justify-center mx-auto mb-4">
+          <Lightbulb size={28} className="text-amber-600 dark:text-amber-400" />
+        </div>
+        <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
+          {t("feedbackNotReadyTitle")}
+        </h2>
+        <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed mb-6">
+          {t("feedbackNotReadyDesc")}
+        </p>
+        <div className="flex flex-col sm:flex-row gap-3 justify-center">
+          <button type="button" onClick={onGoToDiagnosis} className="btn-secondary text-sm">
+            {t("goToDiagnosis")}
+          </button>
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={completing}
+            className="btn-primary text-sm inline-flex items-center justify-center gap-2"
+          >
+            {completing ? (
+              <>
+                <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                {t("generatingFeedback")}
+              </>
+            ) : (
+              t("completeSession")
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

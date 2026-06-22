@@ -9,6 +9,7 @@ import {
   getManeuverExaminerResponse,
   resolveEvaluationLanguage,
 } from '../services/aiService.js';
+import { checkCanStartCase, recordCaseAttempt } from '../services/subscriptionService.js';
 import { Language, MessageRole } from '@prisma/client';
 
 const router = Router();
@@ -38,45 +39,46 @@ router.use(authenticate);
 
 router.post('/start', async (req, res) => {
   const { caseId, language = 'AUTO' } = req.body;
+  const userId = req.user!.id;
 
   const caseData = await prisma.case.findUnique({ where: { id: caseId, isPublished: true } });
   if (!caseData) return res.status(404).json({ error: 'Case not found' });
 
+  const access = await checkCanStartCase(userId, caseId);
+  if (!access.allowed) {
+    if (access.code === 'FREE_LIMIT_REACHED') {
+      return res.status(403).json({
+        error: 'FREE_LIMIT_REACHED',
+        message: 'You have used all free attempts for this case. Upgrade to continue.',
+        attempts: access.attempts,
+        limit: access.limit,
+      });
+    }
+    if (access.code === 'CASE_QUOTA_EXCEEDED') {
+      return res.status(403).json({
+        error: 'CASE_QUOTA_EXCEEDED',
+        message: 'You have reached your case quota. Upgrade your plan for more cases.',
+        casesUnlocked: access.casesUnlocked,
+        casesQuota: access.casesQuota,
+      });
+    }
+  }
+
   const session = await prisma.session.create({
     data: {
-      userId: req.user!.id,
+      userId,
       caseId,
       language: language as Language,
     },
-    include: {
-      case: { include: { specialty: true, difficulty: true } },
-    },
-  });
-
-  const isArabic = language === 'AR';
-  const openingLine = caseData.chiefComplaint.split('.')[0].trim();
-  const openingContent = isArabic
-    ? `السلام عليكم دكتور، أنا ${caseData.patientName}. ${openingLine}.`
-    : `Hello doctor, I'm ${caseData.patientName}. ${openingLine}.`;
-
-  await prisma.message.create({
-    data: {
-      sessionId: session.id,
-      role: MessageRole.PATIENT,
-      content: openingContent,
-      stage: 'history',
-    },
-  });
-
-  const fullSession = await prisma.session.findUnique({
-    where: { id: session.id },
     include: {
       case: { include: { specialty: true, difficulty: true } },
       messages: { orderBy: { createdAt: 'asc' } },
     },
   });
 
-  res.status(201).json({ session: fullSession });
+  await recordCaseAttempt(userId, caseId);
+
+  res.status(201).json({ session });
 });
 
 router.get('/my', async (req, res) => {

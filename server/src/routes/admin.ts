@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../lib/prisma.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { Role } from '@prisma/client';
+import { getPlanConfig, activatePlan } from '../services/subscriptionService.js';
 
 const router = Router();
 
@@ -154,11 +155,34 @@ router.get('/subscriptions', async (_req, res) => {
 });
 
 router.patch('/subscriptions/:id', async (req, res) => {
+  const { plan, status, endDate } = req.body;
+  const data: Record<string, unknown> = {};
+  if (status !== undefined) data.status = status;
+  if (endDate !== undefined) data.endDate = endDate;
+  if (plan !== undefined) {
+    const config = getPlanConfig(plan);
+    data.plan = plan;
+    data.casesQuota = config.casesQuota;
+    data.priceEgp = config.priceEgp;
+  }
   const subscription = await prisma.subscription.update({
     where: { id: req.params.id },
-    data: req.body,
+    data,
   });
   res.json({ subscription });
+});
+
+router.post('/users/:userId/subscription', async (req, res) => {
+  const { plan } = req.body;
+  if (!plan || plan === 'FREE') {
+    return res.status(400).json({ error: 'Invalid plan' });
+  }
+  try {
+    const subscription = await activatePlan(req.params.userId, plan);
+    res.json({ subscription });
+  } catch {
+    return res.status(400).json({ error: 'Could not activate plan' });
+  }
 });
 
 router.get('/categories', async (_req, res) => {

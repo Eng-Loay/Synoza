@@ -1,10 +1,46 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { authenticate } from '../middleware/auth.js';
+import {
+  getUserEntitlements,
+  pickRandomEligibleCase,
+  PLAN_CATALOG,
+} from '../services/subscriptionService.js';
 
 const router = Router();
 
 router.use(authenticate);
+
+router.get('/entitlements', async (req, res) => {
+  const entitlements = await getUserEntitlements(req.user!.id);
+  res.json({
+    entitlements,
+    plans: [
+      { id: 'PACKAGE_50', ...PLAN_CATALOG.PACKAGE_50 },
+      { id: 'PACKAGE_150', ...PLAN_CATALOG.PACKAGE_150 },
+      { id: 'PACKAGE_300', ...PLAN_CATALOG.PACKAGE_300 },
+    ],
+  });
+});
+
+router.get('/random-case', async (req, res) => {
+  const userId = req.user!.id;
+  const categoryId = req.query.categoryId ? String(req.query.categoryId) : undefined;
+
+  const result = await pickRandomEligibleCase(userId, categoryId);
+
+  if (!result.ok) {
+    if (result.code === 'NO_CASES') {
+      return res.status(404).json({ error: 'NO_CASES', message: 'No published cases found' });
+    }
+    return res.status(403).json({
+      error: 'NO_ELIGIBLE_CASES',
+      message: 'No cases available for you to start right now',
+    });
+  }
+
+  res.json({ case: result.case, eligibleCount: result.eligibleCount });
+});
 
 router.get('/overview', async (req, res) => {
   const userId = req.user!.id;

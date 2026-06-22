@@ -7,6 +7,7 @@ import { AnimateOnScroll } from '../components/AnimateOnScroll';
 import { PartnerUniversitiesSection } from '../components/PartnerUniversitiesSection';
 import { SiteCtaSection, SiteFooter, type SiteSettings } from '../components/SiteFooter';
 import { TypewriterText } from '../components/TypewriterText';
+import { IconBox } from '../components/IconBox';
 import api from '../lib/api';
 
 const defaultSettings: SiteSettings = {
@@ -20,17 +21,8 @@ const defaultSettings: SiteSettings = {
   ctaSubtitleAr: 'انضم إلى Synoza وابدأ تدريب OSCE اليوم.',
 };
 
-const heroPhrasesEn = [
-  'Refine Your Clinical Skills with AI',
-  'Master OSCE Clinical Stations',
-  'Practice with AI Simulated Patients',
-];
-
-const heroPhrasesAr = [
-  'طوّر مهاراتك السريرية بالذكاء الاصطناعي',
-  'أتقن محطات OSCE السريرية',
-  'تدرّب مع مرضى محاكاة بالذكاء الاصطناعي',
-];
+const heroHighlightEn = ['Maneuvers', 'Skills', 'Stations'];
+const heroHighlightAr = ['مهاراتك السريرية', 'محطاتك السريرية', 'مناوراتك السريرية'];
 
 export default function LandingPage() {
   const { t, i18n } = useTranslation();
@@ -48,96 +40,81 @@ export default function LandingPage() {
   }, []);
 
   const pillars = [
-    { icon: Brain, title: t('aiPatient'), desc: t('aiPatientDesc'), color: 'from-teal-500 to-cyan-500' },
-    { icon: Stethoscope, title: t('clinicalManeuvers'), desc: t('clinicalManeuversDesc'), color: 'from-teal-600 to-emerald-500' },
-    { icon: ClipboardCheck, title: t('examinerScoring'), desc: t('examinerScoringDesc'), color: 'from-cyan-500 to-teal-500' },
+    { icon: Brain, title: t('aiPatient'), desc: t('aiPatientDesc'), variant: 'teal' as const },
+    { icon: Stethoscope, title: t('clinicalManeuvers'), desc: t('clinicalManeuversDesc'), variant: 'violet' as const },
+    { icon: ClipboardCheck, title: t('examinerScoring'), desc: t('examinerScoringDesc'), variant: 'emerald' as const },
   ];
 
-  const uniCount = universities.length > 0 ? `${universities.length}+` : '12+';
-  const stats = [
-    { value: 'AI', label: 'Simulated Patients' },
-    { value: 'OSCE', label: 'Exam Format' },
-    { value: '24/7', label: 'Practice Access' },
-    { value: uniCount, label: 'Partner Universities' },
-  ];
-
-  const heroPhrases = isAr ? heroPhrasesAr : heroPhrasesEn;
+  const heroHighlights = isAr ? heroHighlightAr : heroHighlightEn;
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-surface dark:bg-surface-dark">
-      <Navbar />
+    <div className="min-h-screen overflow-x-hidden hero-gradient selection:bg-blue-100 dark:selection:bg-blue-900/40">
+      <div className="brand-glow w-96 h-96 bg-blue-400/20 top-0 left-1/4 -translate-x-1/2" />
+      <div className="brand-glow w-80 h-80 bg-blue-300/15 top-32 right-0" style={{ animationDelay: '2s' }} />
 
-      <section className="relative overflow-hidden hero-gradient text-white">
-        <div className="absolute inset-0 opacity-25 pointer-events-none">
-          <div className="absolute top-16 left-[5%] w-56 sm:w-72 h-56 sm:h-72 bg-teal-300/40 rounded-full blur-3xl animate-float" />
-          <div className="absolute bottom-10 right-[5%] w-64 sm:w-96 h-64 sm:h-96 bg-cyan-400/30 rounded-full blur-3xl animate-float stagger-3" />
-        </div>
+      <Navbar variant="landing" />
 
-        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 py-16 sm:py-24 lg:py-32">
-          <div className="max-w-4xl mx-auto text-center">
-            <p className="animate-fade-in inline-flex items-center gap-2 text-teal-100 text-xs sm:text-sm font-medium mb-4 sm:mb-6 tracking-wide uppercase bg-white/10 px-4 py-1.5 rounded-full border border-teal-400/20">
-              <Sparkles size={14} className="text-teal-300" /> Academic OSCE Simulation • 2026
-            </p>
+      <main className="relative max-w-7xl mx-auto px-6 sm:px-8 py-16 sm:py-24 flex flex-col items-center text-center">
+        <div className="w-full animate-fade-in">
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/50 rounded-full text-xs font-semibold text-blue-700 dark:text-blue-300 shadow-sm mb-8">
+            <Sparkles size={15} strokeWidth={2} className="text-blue-600 animate-pulse-soft" />
+            <span className="text-label !text-blue-700 dark:!text-blue-300 !tracking-widest">{t('heroBadge')}</span>
+          </div>
 
-            <h1
-              className="animate-fade-up text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold mb-4 sm:mb-6 leading-[1.2] tracking-tight min-h-[2.6em] sm:min-h-[2.4em] flex items-center justify-center"
-              dir={isAr ? 'rtl' : 'ltr'}
+          <h1
+            className="text-display mb-6 max-w-4xl mx-auto min-h-[2.8em] sm:min-h-[2.4em] flex flex-col items-center justify-center gap-1 sm:gap-2"
+            dir={isAr ? 'rtl' : 'ltr'}
+          >
+            <span className="text-slate-900 dark:text-white">{t('heroTitleLine1')}</span>
+            <span className="inline-flex flex-wrap items-center justify-center gap-x-2 sm:gap-x-3 leading-tight">
+              <TypewriterText
+                phrases={heroHighlights}
+                dir={isAr ? 'rtl' : 'ltr'}
+                className="text-blue-600 dark:text-blue-400 font-bold"
+                cursorClassName="text-blue-600 dark:text-blue-400"
+              />
+              <span className="text-slate-900 dark:text-white">{t('heroTitleLine2')}</span>
+            </span>
+          </h1>
+
+          <p className="text-body max-w-2xl mx-auto mb-10 text-lg">
+            {t('heroSubtitle')}
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center">
+            <Link
+              to="/register"
+              className="group bg-blue-600 hover:bg-blue-700 text-white px-10 py-4 rounded-2xl text-base font-bold shadow-xl shadow-blue-200/80 dark:shadow-blue-900/30 hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2.5"
             >
-              <TypewriterText phrases={heroPhrases} dir={isAr ? 'rtl' : 'ltr'} />
-            </h1>
-
-            <p className="animate-fade-up stagger-1 text-base sm:text-lg lg:text-xl text-teal-50/85 max-w-2xl mx-auto mb-8 sm:mb-10 leading-relaxed px-2">
-              {t('heroSubtitle')}
-            </p>
-
-            <div className="animate-fade-up stagger-2 flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center px-4 sm:px-0">
-              <Link
-                to="/register"
-                className="group inline-flex items-center justify-center gap-2 bg-white text-primary px-6 sm:px-8 py-3 sm:py-3.5 rounded-xl font-semibold shadow-lg shadow-black/15 hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300"
-              >
-                {t('getStarted')}
-                <ArrowRight size={18} className="group-hover:translate-x-0.5 transition-transform" />
-              </Link>
-              <a
-                href="#about"
-                className="inline-flex items-center justify-center border-2 border-teal-300/40 text-white px-6 sm:px-8 py-3 sm:py-3.5 rounded-xl font-semibold hover:bg-white/10 hover:border-teal-200/60 transition-all duration-300"
-              >
-                {t('learnMore')}
-              </a>
-            </div>
-          </div>
-
-          <div className="animate-fade-up stagger-3 mt-14 sm:mt-20 grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 max-w-4xl mx-auto">
-            {stats.map(({ value, label }) => (
-              <div key={label} className="text-center p-4 sm:p-5 rounded-2xl bg-white/10 backdrop-blur-sm border border-teal-400/15 hover:bg-white/15 hover:border-teal-300/25 transition-colors">
-                <p className="text-2xl sm:text-3xl font-bold text-white">{value}</p>
-                <p className="text-[11px] sm:text-xs text-teal-100/75 mt-1">{label}</p>
-              </div>
-            ))}
+              {t('getStarted')}
+              <ArrowRight size={20} strokeWidth={2.5} className={`group-hover:translate-x-0.5 transition-transform ${isAr ? 'rotate-180 group-hover:-translate-x-0.5' : ''}`} />
+            </Link>
+            <a href="#about" className="btn-secondary px-10 py-4 text-base flex items-center justify-center">
+              {t('learnMore')}
+            </a>
           </div>
         </div>
-      </section>
+      </main>
 
-      <section id="about" className="py-16 sm:py-24 bg-white dark:bg-slate-900">
+      <section id="about" className="section-muted py-16 sm:py-24 relative">
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <AnimateOnScroll className="text-center mb-12 sm:mb-16">
-            <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-slate-900 dark:text-white mb-4">{t('aboutTitle')}</h2>
-            <p className="text-slate-600 dark:text-slate-400 max-w-3xl mx-auto text-base sm:text-lg leading-relaxed">{t('aboutText')}</p>
+            <p className="text-label mb-3">{t('aboutTitle')}</p>
+            <h2 className="text-heading mb-4">{t('aboutTitle')}</h2>
+            <p className="text-body max-w-3xl mx-auto">{t('aboutText')}</p>
           </AnimateOnScroll>
 
           <AnimateOnScroll delay={100}>
-            <h3 className="text-xl sm:text-2xl font-bold text-center mb-8 sm:mb-10 text-slate-900 dark:text-white">{t('pillars')}</h3>
+            <h3 className="text-subheading text-center mb-8 sm:mb-10">{t('pillars')}</h3>
           </AnimateOnScroll>
 
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-8">
-            {pillars.map(({ icon: Icon, title, desc, color }, i) => (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+            {pillars.map(({ icon, title, desc, variant }, i) => (
               <AnimateOnScroll key={title} delay={i * 100} animation="scale-in">
                 <div className="card card-interactive p-6 sm:p-8 text-center h-full">
-                  <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${color} flex items-center justify-center mx-auto mb-5 shadow-lg shadow-teal-500/20`}>
-                    <Icon className="text-white" size={28} />
-                  </div>
-                  <h4 className="font-semibold text-lg mb-2 text-slate-900 dark:text-white">{title}</h4>
-                  <p className="text-slate-600 dark:text-slate-400 text-sm leading-relaxed">{desc}</p>
+                  <IconBox icon={icon} variant={variant} size="xl" className="mx-auto mb-5" />
+                  <h4 className="text-subheading text-base mb-2">{title}</h4>
+                  <p className="text-body text-sm">{desc}</p>
                 </div>
               </AnimateOnScroll>
             ))}

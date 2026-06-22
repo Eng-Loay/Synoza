@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Globe, Wifi, WifiOff, ServerCrash } from 'lucide-react';
+import { Wifi, WifiOff, ServerCrash } from 'lucide-react';
 import { pingServer } from '../lib/api';
+import { LanguageToggle } from './LanguageToggle';
 
 type Status = 'online' | 'unstable' | 'server-offline' | 'internet-offline';
 
 export function ConnectionStatus() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [status, setStatus] = useState<Status>('online');
   const [latency, setLatency] = useState(0);
 
@@ -45,13 +46,6 @@ export function ConnectionStatus() {
     };
   }, [check, status]);
 
-  const toggleLang = () => {
-    const next = i18n.language === 'ar' ? 'en' : 'ar';
-    i18n.changeLanguage(next);
-    document.documentElement.dir = next === 'ar' ? 'rtl' : 'ltr';
-    document.documentElement.lang = next;
-  };
-
   const statusConfig = {
     online: {
       color: 'bg-green-500',
@@ -83,13 +77,7 @@ export function ConnectionStatus() {
 
   return (
     <div className="flex items-center gap-2">
-      <button
-        onClick={toggleLang}
-        className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 hover:text-primary transition-colors"
-      >
-        <Globe size={14} />
-        {i18n.language === 'ar' ? 'EN' : 'AR'}
-      </button>
+      <LanguageToggle />
 
       <div
         title={title}
