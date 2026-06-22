@@ -8,6 +8,7 @@
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
     "build": "npm run build --prefix client && npm run build --prefix server",
+    "deploy:package": "powershell -ExecutionPolicy Bypass -File deploy/build-package.ps1",
     "start": "npm run start --prefix server",
     "db:generate": "npm run db:generate --prefix server",
     "db:setup-mysql": "powershell -ExecutionPolicy Bypass -File server/scripts/setup-mysql.ps1",

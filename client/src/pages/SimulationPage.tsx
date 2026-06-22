@@ -822,7 +822,7 @@ function ExaminationView({
   messages: Message[];
   input: string;
   setInput: (v: string) => void;
-  sendMessage: (text?: string) => void | Promise<void>;
+  sendMessage: (text?: string) => Promise<boolean>;
   sending: boolean;
   chatError: string;
   completeManeuver: () => void;
@@ -998,7 +998,7 @@ function HistoryChatView({
   messages: Message[];
   input: string;
   setInput: (v: string) => void;
-  sendMessage: (text?: string) => void | Promise<void>;
+  sendMessage: (text?: string) => Promise<boolean>;
   sending: boolean;
   chatError: string;
   chatEndRef: React.RefObject<HTMLDivElement | null>;

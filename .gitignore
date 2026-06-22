@@ -9,3 +9,5 @@ Thumbs.db
 *.log
 .vite/
 coverage/
+deploy/server.env.production
+deploy/synoza-deploy.tar.gz
