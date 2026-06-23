@@ -81,7 +81,7 @@ export function useLivePatientCall({ lang, sendMessage, disabled, onError }: Use
       if (!liveRef.current) return;
 
       const recognition = new Ctor();
-      recognition.lang = lang;
+      recognition.lang = lang.startsWith('ar') ? 'ar-EG' : lang;
       recognition.continuous = false;
       recognition.interimResults = true;
 

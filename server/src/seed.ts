@@ -6,25 +6,32 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('Seeding Synoza database...');
 
+  // Existing accounts (before email verification) stay login-ready after migration.
+  await prisma.user.updateMany({
+    where: { emailVerified: false, otpCode: null, otpExpires: null },
+    data: { emailVerified: true },
+  });
+
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@synoza.com';
   const adminPassword = process.env.ADMIN_PASSWORD || 'Admin@123456';
   const passwordHash = await bcrypt.hash(adminPassword, 12);
 
   await prisma.user.upsert({
     where: { email: adminEmail },
-    update: {},
+    update: { emailVerified: true },
     create: {
       email: adminEmail,
       passwordHash,
       firstName: 'Synoza',
       lastName: 'Admin',
       role: 'ADMIN',
+      emailVerified: true,
     },
   });
 
   await prisma.user.upsert({
     where: { email: 'student@synoza.com' },
-    update: {},
+    update: { emailVerified: true },
     create: {
       email: 'student@synoza.com',
       passwordHash: await bcrypt.hash('Student@123456', 12),
@@ -33,31 +40,9 @@ async function main() {
       role: 'STUDENT',
       university: 'Cairo University',
       phone: '01024828652',
+      emailVerified: true,
     },
   });
-
-  const testStudent = await prisma.user.upsert({
-    where: { email: 'test@synoza.com' },
-    update: {},
-    create: {
-      email: 'test@synoza.com',
-      passwordHash: await bcrypt.hash('Test@123456', 12),
-      firstName: 'Test',
-      lastName: 'Student',
-      role: 'STUDENT',
-      university: 'Synoza Demo',
-    },
-  });
-
-  await prisma.subscription.updateMany({
-    where: { userId: testStudent.id, status: 'ACTIVE' },
-    data: { status: 'CANCELLED', endDate: new Date() },
-  });
-  await prisma.subscription.create({
-    data: { userId: testStudent.id, plan: 'FREE', status: 'ACTIVE' },
-  });
-  await prisma.caseAccess.deleteMany({ where: { userId: testStudent.id } });
-  await prisma.session.deleteMany({ where: { userId: testStudent.id } });
 
   const specialties = [
     { nameEn: 'Cardiology', nameAr: 'أمراض القلب', description: 'Cardiovascular clinical cases' },
@@ -428,7 +413,6 @@ async function main() {
   console.log('Seed completed!');
   console.log(`Admin: ${adminEmail} / ${adminPassword}`);
   console.log('Student: student@synoza.com / Student@123456');
-  console.log('Test student (fresh attempts): test@synoza.com / Test@123456');
 }
 
 main()

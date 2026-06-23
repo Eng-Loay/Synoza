@@ -1,4 +1,4 @@
-import { Send, Phone, PhoneOff } from 'lucide-react';
+import { Send } from 'lucide-react';
 import { VoiceMicButton } from './VoiceMicButton';
 
 interface SimulationChatInputProps {
@@ -16,13 +16,7 @@ interface SimulationChatInputProps {
   micNotSupportedLabel: string;
   micProcessingLabel?: string;
   micError?: string;
-  isLiveCall?: boolean;
-  isLiveCallBusy?: boolean;
-  isLiveCallSupported?: boolean;
-  onToggleLiveCall?: () => void;
-  liveCallLabel?: string;
-  liveCallActiveLabel?: string;
-  endLiveCallLabel?: string;
+  disabled?: boolean;
 }
 
 export function SimulationChatInput({
@@ -40,14 +34,10 @@ export function SimulationChatInput({
   micNotSupportedLabel,
   micProcessingLabel,
   micError,
-  isLiveCall,
-  isLiveCallBusy,
-  isLiveCallSupported,
-  onToggleLiveCall,
-  liveCallLabel,
-  liveCallActiveLabel,
-  endLiveCallLabel,
+  disabled,
 }: SimulationChatInputProps) {
+  const locked = disabled || sending || isProcessing;
+
   return (
     <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
       {chatError && <p className="text-xs text-red-500 mb-2">{chatError}</p>}
@@ -58,12 +48,6 @@ export function SimulationChatInput({
       {isListening && !isProcessing && (
         <p className="text-xs text-primary mb-2">{micListeningLabel}</p>
       )}
-      {isLiveCall && (
-        <p className="text-xs text-emerald-600 dark:text-emerald-400 mb-2 flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          {isLiveCallBusy ? '...' : liveCallActiveLabel}
-        </p>
-      )}
 
       <div className="flex gap-2 items-center">
         <input
@@ -72,37 +56,20 @@ export function SimulationChatInput({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && onSend()}
-          disabled={sending || isLiveCall || isProcessing}
+          disabled={locked}
         />
         <VoiceMicButton
           isListening={isListening || !!isProcessing}
           isSupported={isMicSupported}
-          disabled={sending || isLiveCall || isProcessing}
+          disabled={locked}
           onClick={onToggleMic}
           listeningLabel={micListeningLabel}
           notSupportedLabel={micNotSupportedLabel}
         />
-        {onToggleLiveCall && (
-          <button
-            type="button"
-            onClick={onToggleLiveCall}
-            disabled={sending || !isLiveCallSupported}
-            title={isLiveCall ? endLiveCallLabel : liveCallLabel}
-            className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-all ${
-              isLiveCall
-                ? 'bg-emerald-500 text-white ring-2 ring-emerald-300 animate-pulse'
-                : isLiveCallSupported
-                  ? 'bg-slate-800 dark:bg-slate-700 text-white hover:bg-slate-700'
-                  : 'bg-slate-300 dark:bg-slate-700 text-slate-500 cursor-not-allowed opacity-60'
-            }`}
-          >
-            {isLiveCall ? <PhoneOff size={16} /> : <Phone size={16} />}
-          </button>
-        )}
         <button
           type="button"
           onClick={onSend}
-          disabled={sending || isLiveCall || !input.trim()}
+          disabled={locked || !input.trim()}
           className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center hover:bg-primary-dark disabled:opacity-50 shrink-0"
         >
           <Send size={18} />

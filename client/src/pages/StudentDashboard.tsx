@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Search, BarChart3, ClipboardList, Clock, Play, Lock, Package, TrendingUp, Shuffle } from 'lucide-react';
+import { Search, BarChart3, ClipboardList, Clock, Play, Lock, TrendingUp, Shuffle } from 'lucide-react';
 import api from '../lib/api';
 import { Navbar } from '../components/Navbar';
 import { BoardIcon, getBoardIconBg } from '../components/BoardIcon';
 import { IconBox } from '../components/IconBox';
 import { SectionPicker, type SectionOption } from '../components/SectionPicker';
+import { SubscriptionPlansSection } from '../components/SubscriptionPlansSection';
+import { StudentWelcomeCard } from '../components/StudentWelcomeCard';
 import { useAuth } from '../context/AuthContext';
 
 interface Case {
@@ -43,6 +45,9 @@ interface Entitlements {
   casesQuota: number;
   casesUnlocked: number;
   casesRemaining: number;
+  planEndDate?: string | null;
+  planStartDate?: string | null;
+  planDurationMonths?: number;
   attemptsByCase: Record<string, number>;
 }
 
@@ -50,10 +55,12 @@ interface PlanOption {
   id: string;
   priceEgp: number;
   casesQuota: number;
+  durationMonths: number;
   labelEn: string;
   labelAr: string;
 }
 
+// PlanOption shape matches SubscriptionPlansSection
 
 const DEFAULT_COVER = '/exam/chest-inspection.svg';
 function getCaseCover(examImages?: string): string {
@@ -240,7 +247,7 @@ export default function StudentDashboard() {
   };
 
   const launchSession = async (caseId: string) => {
-    const res = await api.post('/sessions/start', { caseId, language: isAr ? 'AR' : 'EN' });
+    const res = await api.post('/sessions/start', { caseId, language: 'AR' });
     navigate(`/simulation/${res.data.session.id}`);
   };
 
@@ -309,16 +316,17 @@ export default function StudentDashboard() {
       <Navbar />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8">
-        <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+        {entitlements && user && (
+          <StudentWelcomeCard user={user} entitlements={entitlements} isAr={isAr} />
+        )}
+
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <p className="text-label mb-1">{t('dashboard')}</p>
-            <h1 className="text-heading text-2xl sm:text-3xl">
-              {t('welcomeBack')}, <span className="text-gradient-brand">{user?.firstName}</span>!
-            </h1>
-            <p className="text-body text-sm mt-1">{t('chooseExamArea')}</p>
+            <h2 className="text-heading text-xl sm:text-2xl">{t('chooseExamArea')}</h2>
           </div>
 
-          <div className="relative w-full md:max-w-md">
+          <div className="relative w-full sm:max-w-md">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} strokeWidth={2} />
             <input
               className="input-field !pl-11 w-full"
@@ -344,6 +352,16 @@ export default function StudentDashboard() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {entitlements && (
+          <div id="subscription-plans">
+            <SubscriptionPlansSection
+              entitlements={entitlements}
+              plans={plans}
+              isAr={isAr}
+            />
           </div>
         )}
 
@@ -431,67 +449,6 @@ export default function StudentDashboard() {
             </div>
           </div>
         </section>
-
-        {entitlements && (
-          <section className="card p-6 space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <IconBox icon={Package} variant="soft" size="md" />
-                <div>
-                  <h3 className="text-subheading text-base">{t('subscriptionPlans')}</h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-                    {t('currentPlan')}:{' '}
-                    <span className="font-semibold text-teal-700 dark:text-teal-300">
-                      {entitlements.isFree ? t('planFree') : entitlements.plan.replace('PACKAGE_', '')}
-                    </span>
-                    {entitlements.isFree ? (
-                      <span className="ms-2">— {t('planFreeDesc')}</span>
-                    ) : (
-                      <span className="ms-2">
-                        — {t('casesUnlocked', { used: entitlements.casesUnlocked, total: entitlements.casesQuota })}
-                      </span>
-                    )}
-                  </p>
-                </div>
-              </div>
-              {!entitlements.isFree && entitlements.casesRemaining > 0 && (
-                <span className="badge bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
-                  {t('casesRemaining', { count: entitlements.casesRemaining })}
-                </span>
-              )}
-            </div>
-
-            {entitlements.isFree && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {plans.map((plan, idx) => (
-                  <div
-                    key={plan.id}
-                    className={`rounded-xl p-4 flex flex-col gap-1.5 border ${
-                      idx === 1
-                        ? 'border-teal-300 dark:border-teal-700 bg-gradient-to-br from-teal-50 to-indigo-50/50 dark:from-teal-950/30 dark:to-indigo-950/20 shadow-md shadow-teal-500/10'
-                        : 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/30'
-                    }`}
-                  >
-                    <p className="text-xl font-bold text-slate-900 dark:text-white">
-                      {plan.priceEgp} <span className="text-sm font-semibold text-slate-500">{t('egp')}</span>
-                    </p>
-                    <p className="text-sm font-semibold text-teal-700 dark:text-teal-300">
-                      {t('packageCases', { count: plan.casesQuota })}
-                    </p>
-                    <p className="text-xs text-slate-500">{isAr ? plan.labelAr : plan.labelEn}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {entitlements.isFree && (
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                {t('contactToUpgrade')}: <span className="font-semibold text-teal-600 dark:text-teal-400">{t('contactPhone')}</span>
-              </p>
-            )}
-          </section>
-        )}
-
 
         <section className="space-y-6">
           <div className="text-center md:text-start space-y-1">

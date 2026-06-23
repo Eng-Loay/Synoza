@@ -32,6 +32,10 @@ try {
   Copy-Item "$Root/server/src/seed.ts" "$Stage/server/src/"
   Copy-Item "$Root/server/prisma/schema.mysql.prisma" "$Stage/server/prisma/schema.prisma"
   Copy-Item "$Root/deploy/install-on-server.sh" "$Stage/deploy/"
+  # Ensure Unix line endings for bash on Linux
+  $installSh = Join-Path $Stage "deploy/install-on-server.sh"
+  $content = (Get-Content $installSh -Raw) -replace "`r`n", "`n"
+  [System.IO.File]::WriteAllText($installSh, $content)
   Copy-Item "$Root/deploy/env.production.template" "$Stage/deploy/"
   Copy-Item "$Root/deploy/server.env.production" "$Stage/server/.env"
   Copy-Item "$Root/deploy/ecosystem.config.cjs" "$Stage/"

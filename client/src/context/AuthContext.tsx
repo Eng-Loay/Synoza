@@ -17,7 +17,8 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (data: Record<string, string>) => Promise<void>;
+  register: (data: Record<string, string>) => Promise<{ email: string }>;
+  verifyOtp: (email: string, code: string) => Promise<void>;
   logout: () => void;
   updateUser: (user: User) => void;
 }
@@ -58,16 +59,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     api
       .get('/auth/me')
-      .then((res) => {
+      .then(async (res) => {
         if (res.data.user) {
           setUser(res.data.user);
           localStorage.setItem('synoza_user', JSON.stringify(res.data.user));
+          try {
+            const refreshed = await api.post('/auth/refresh');
+            if (refreshed.data.token) {
+              localStorage.setItem('synoza_token', refreshed.data.token);
+              setToken(refreshed.data.token);
+            }
+          } catch {
+            /* keep existing token if refresh fails */
+          }
         } else {
           logout();
         }
       })
       .catch((err: unknown) => {
-        // Keep the session when the server is temporarily unreachable.
         if (axios.isAxiosError(err) && err.response?.status === 401) {
           logout();
         }
@@ -92,6 +101,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = async (data: Record<string, string>) => {
     const res = await api.post('/auth/register', data);
+    return { email: res.data.email as string };
+  };
+
+  const verifyOtp = async (email: string, code: string) => {
+    const res = await api.post('/auth/verify-otp', { email, code });
     localStorage.setItem('synoza_token', res.data.token);
     localStorage.setItem('synoza_user', JSON.stringify(res.data.user));
     setToken(res.data.token);
@@ -104,7 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout, updateUser }}>
+    <AuthContext.Provider value={{ user, token, loading, login, register, verifyOtp, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,13 +1,16 @@
 import api from './api';
+import { fixArabicSpeechTranscript, shouldForceArabicTranscription } from './arabicSttFix';
 
-export async function transcribeAudioBlob(blob: Blob, language: string): Promise<string> {
+export async function transcribeAudioBlob(blob: Blob, language: string, sessionLang = 'AR'): Promise<string> {
+  const expectArabic = shouldForceArabicTranscription(sessionLang);
   const audioBase64 = await blobToBase64(blob);
   const res = await api.post<{ text: string }>('/transcribe', {
     audioBase64,
     mimeType: blob.type || 'audio/webm',
-    language,
+    language: expectArabic ? 'ar-EG' : language,
+    forceArabic: expectArabic,
   });
-  return res.data.text.trim();
+  return fixArabicSpeechTranscript(res.data.text.trim(), expectArabic);
 }
 
 function blobToBase64(blob: Blob): Promise<string> {

@@ -7,9 +7,10 @@ import { useAuth } from '../context/AuthContext';
 import { Navbar } from '../components/Navbar';
 import { PasswordInput } from '../components/PasswordInput';
 import { IconBox } from '../components/IconBox';
+import { getAppLang, verifyEmailPath } from '../lib/appLang';
 
 export default function LoginPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { login } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
@@ -30,6 +31,9 @@ export default function LoginPage() {
         setError(t('serverOffline'));
       } else if (axios.isAxiosError(err) && err.response?.status === 401) {
         setError(t('invalidCredentials'));
+      } else if (axios.isAxiosError(err) && err.response?.status === 403) {
+        const unverifiedEmail = (err.response.data?.email as string) || email;
+        navigate(verifyEmailPath(unverifiedEmail, i18n.language || getAppLang()));
       } else {
         setError(t('error'));
       }

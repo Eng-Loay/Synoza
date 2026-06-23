@@ -4,6 +4,9 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
+import VerifyEmailPage from './pages/VerifyEmailPage';
+import PaymentCheckoutPage from './pages/PaymentCheckoutPage';
+import PaymentResultPage from './pages/PaymentResultPage';
 import StudentDashboard from './pages/StudentDashboard';
 import SimulationPage from './pages/SimulationPage';
 import ProfilePage from './pages/ProfilePage';
@@ -27,6 +30,7 @@ export default function App() {
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
           <Route path="/dashboard" element={<RoleRedirect />} />
 
           <Route element={<ProtectedRoute roles={['STUDENT', 'ADMIN']} />}>
@@ -37,6 +41,9 @@ export default function App() {
             <Route path="/student" element={<StudentDashboard />} />
             <Route path="/student/profile" element={<ProfilePage />} />
             <Route path="/student/results" element={<ResultsPage />} />
+            <Route path="/student/payment/checkout" element={<PaymentCheckoutPage />} />
+            <Route path="/student/payment/success" element={<PaymentResultPage mode="success" />} />
+            <Route path="/student/payment/failed" element={<PaymentResultPage mode="failed" />} />
           </Route>
 
           <Route element={<ProtectedRoute roles={['ADMIN']} />}>

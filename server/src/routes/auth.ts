@@ -5,14 +5,36 @@ import crypto from 'crypto';
 import { body, validationResult } from 'express-validator';
 import { prisma } from '../lib/prisma.js';
 import { authenticate } from '../middleware/auth.js';
+import { issueAndSendOtp, verifyUserOtp } from '../services/otpService.js';
+import { isSmtpConfigured } from '../services/emailService.js';
+import { normalizeEmailLang } from '../services/emailTemplates.js';
 
 const router = Router();
 
 function signToken(user: { id: string; email: string; role: string }) {
   const secret = process.env.JWT_SECRET!;
+  const expiresIn = (process.env.JWT_EXPIRES_IN || '365d') as jwt.SignOptions['expiresIn'];
   return jwt.sign({ id: user.id, email: user.email, role: user.role }, secret, {
-    expiresIn: '7d',
+    expiresIn,
   });
+}
+
+function publicUser(user: {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: string;
+  university: string | null;
+}) {
+  return {
+    id: user.id,
+    email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    role: user.role,
+    university: user.university,
+  };
 }
 
 router.post(
@@ -27,30 +49,121 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const { email, password, firstName, lastName, phone, university } = req.body;
+    if (!isSmtpConfigured()) {
+      return res.status(503).json({ error: 'Email verification is not available' });
+    }
+
+    const { email, password, firstName, lastName, phone, university, lang } = req.body;
+    const preferredLang = normalizeEmailLang(lang);
 
     const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) return res.status(409).json({ error: 'Email already registered' });
+    if (existing) {
+      if (existing.emailVerified) {
+        return res.status(409).json({ error: 'Email already registered' });
+      }
+      await prisma.user.update({
+        where: { id: existing.id },
+        data: { preferredLang },
+      });
+      try {
+        await issueAndSendOtp(existing.id, existing.email, existing.firstName, preferredLang);
+      } catch (err) {
+        console.error('[auth/register] resend OTP failed:', err);
+        return res.status(503).json({
+          error: 'Failed to send verification email',
+          email: existing.email,
+        });
+      }
+      return res.status(201).json({
+        message: 'Verification code sent',
+        email: existing.email,
+        requiresVerification: true,
+      });
+    }
 
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await prisma.user.create({
-      data: { email, passwordHash, firstName, lastName, phone, university },
+      data: {
+        email,
+        passwordHash,
+        firstName,
+        lastName,
+        phone,
+        university,
+        emailVerified: false,
+        preferredLang,
+      },
     });
 
     await prisma.subscription.create({ data: { userId: user.id } });
 
-    const token = signToken(user);
-    res.status(201).json({
-      token,
-      user: {
-        id: user.id,
+    try {
+      await issueAndSendOtp(user.id, user.email, user.firstName, preferredLang);
+    } catch (err) {
+      console.error('[auth/register] OTP email failed:', err);
+      return res.status(503).json({
+        error: 'Failed to send verification email',
         email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        university: user.university,
-      },
+      });
+    }
+
+    res.status(201).json({
+      message: 'Verification code sent',
+      email: user.email,
+      requiresVerification: true,
     });
+  }
+);
+
+router.post(
+  '/verify-otp',
+  [body('email').isEmail().normalizeEmail(), body('code').trim().isLength({ min: 6, max: 6 })],
+  async (req: Request, res: Response) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const { email, code } = req.body;
+    const result = await verifyUserOtp(email, code);
+
+    if (!result.ok) {
+      const error =
+        result.reason === 'EXPIRED' ? 'Verification code expired' : 'Invalid verification code';
+      return res.status(400).json({ error, code: result.reason });
+    }
+
+    const token = signToken(result.user);
+    res.json({ token, user: publicUser(result.user) });
+  }
+);
+
+router.post(
+  '/resend-otp',
+  [body('email').isEmail().normalizeEmail()],
+  async (req: Request, res: Response) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    if (!isSmtpConfigured()) {
+      return res.status(503).json({ error: 'Email verification is not available' });
+    }
+
+    const { email, lang } = req.body;
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    if (!user || user.emailVerified) {
+      return res.json({ message: 'If the account exists and is unverified, a new code was sent' });
+    }
+
+    const preferredLang = lang ? normalizeEmailLang(lang) : undefined;
+
+    try {
+      await issueAndSendOtp(user.id, user.email, user.firstName, preferredLang);
+    } catch (err) {
+      console.error('[auth/resend-otp] failed:', err);
+      return res.status(503).json({ error: 'Failed to send verification email' });
+    }
+
+    res.json({ message: 'Verification code sent', email: user.email });
   }
 );
 
@@ -71,18 +184,16 @@ router.post(
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const token = signToken(user);
-    res.json({
-      token,
-      user: {
-        id: user.id,
+    if (!user.emailVerified) {
+      return res.status(403).json({
+        error: 'Email not verified',
+        code: 'EMAIL_NOT_VERIFIED',
         email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        university: user.university,
-      },
-    });
+      });
+    }
+
+    const token = signToken(user);
+    res.json({ token, user: publicUser(user) });
   }
 );
 
@@ -97,7 +208,6 @@ router.post('/forgot-password', [body('email').isEmail().normalizeEmail()], asyn
       where: { id: user.id },
       data: { resetToken, resetExpires },
     });
-    // In production: send email with reset link
     if (process.env.NODE_ENV === 'development') {
       return res.json({ message: 'Reset token generated', resetToken });
     }
@@ -140,14 +250,26 @@ router.get('/me', authenticate, async (req: Request, res: Response) => {
       avatarUrl: true,
       role: true,
       isActive: true,
+      emailVerified: true,
       createdAt: true,
     },
   });
-  if (!user || !user.isActive) {
+  if (!user || !user.isActive || !user.emailVerified) {
     return res.status(401).json({ error: 'Session expired' });
   }
-  const { isActive: _isActive, ...publicUser } = user;
-  res.json({ user: publicUser });
+  const { isActive: _isActive, emailVerified: _emailVerified, ...publicUserData } = user;
+  res.json({ user: publicUserData });
+});
+
+router.post('/refresh', authenticate, async (req: Request, res: Response) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    select: { id: true, email: true, role: true, isActive: true, emailVerified: true },
+  });
+  if (!user || !user.isActive || !user.emailVerified) {
+    return res.status(401).json({ error: 'Session expired' });
+  }
+  res.json({ token: signToken(user) });
 });
 
 router.put('/profile', authenticate, async (req: Request, res: Response) => {

@@ -9,8 +9,8 @@ import './index.css';
 
 i18n.use(initReactI18next).init({
   resources,
-  lng: localStorage.getItem('synoza_lang') || 'en',
-  fallbackLng: 'en',
+  lng: localStorage.getItem('synoza_lang') || 'ar',
+  fallbackLng: 'ar',
   interpolation: { escapeValue: false },
 });
 

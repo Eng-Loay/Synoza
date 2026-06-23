@@ -193,7 +193,7 @@ router.post('/:id/chat', async (req, res) => {
       session.case,
       stageHistory,
       message,
-      session.language
+      session.language === 'EN' ? 'EN' : 'AR',
     );
 
     const patientMessage = await prisma.message.create({

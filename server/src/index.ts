@@ -14,6 +14,9 @@ import studentRoutes from './routes/student.js';
 import categoriesRoutes from './routes/categories.js';
 import siteRoutes from './routes/site.js';
 import transcribeRoutes from './routes/transcribe.js';
+import paymentsRoutes from './routes/payments.js';
+import { isSmtpConfigured, verifySmtpConnection } from './services/emailService.js';
+import { getPaymentProvider, isPaymentEnabled } from './services/payment/paymentService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,6 +70,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/site', siteRoutes);
 app.use('/api/transcribe', transcribeRoutes);
+app.use('/api/payments', paymentsRoutes);
 
 const clientPublicExam = path.join(__dirname, '../../client/public/exam');
 app.use('/exam', express.static(clientPublicExam));
@@ -89,8 +93,19 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Synoza server running on http://localhost:${PORT}`);
+  if (isSmtpConfigured()) {
+    const ok = await verifySmtpConnection();
+    console.log(ok ? '[email] SMTP ready' : '[email] SMTP misconfigured — OTP emails will fail');
+  } else {
+    console.warn('[email] SMTP not configured — signup OTP disabled');
+  }
+  if (isPaymentEnabled()) {
+    console.log(`[payments] Gateway ready (${getPaymentProvider()})`);
+  } else {
+    console.warn('[payments] Not configured — set PAYMENT_PROVIDER=paymob and Paymob keys');
+  }
 }).on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`Port ${PORT} is already in use. Close the other Synoza server or run:`);

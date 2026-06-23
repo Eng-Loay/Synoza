@@ -16,9 +16,15 @@ import {
   Download,
   Shield,
   ClipboardCheck,
+  Loader2,
+  CheckCircle2,
+  Phone,
+  PhoneOff,
 } from "lucide-react";
 import api from "../lib/api";
+import { resolveSpeechLanguage } from "../lib/appLang";
 import { downloadTextFile } from "../lib/download";
+import { downloadOsceReportPdf } from "../lib/osceReportPdf";
 import { ConnectionStatus } from "../components/ConnectionStatus";
 import chestInspectionImg from "../assets/exam/chest-inspection.svg?url";
 import chestPalpationImg from "../assets/exam/chest-palpation.svg?url";
@@ -185,6 +191,11 @@ function resolveExamImageUrl(maneuverId: string, url: string): string {
 const maneuverStage = (id: string) => `examination:${id}`;
 const HISTORY_EXAMINER_STAGE = "history:examiner";
 
+function getNextManeuver(completed: string[]): string | null {
+  const next = EXAM_MANEUVERS.find((m) => !completed.includes(m.id));
+  return next?.id ?? null;
+}
+
 function parseJsonArray<T>(raw: string, fallback: T[]): T[] {
   try {
     const parsed = JSON.parse(raw);
@@ -228,7 +239,7 @@ export default function SimulationPage() {
   const [completedManeuvers, setCompletedManeuvers] = useState<string[]>([]);
   const [showExaminerPanel, setShowExaminerPanel] = useState(false);
   const [input, setInput] = useState("");
-  const [lang, setLang] = useState<"AUTO" | "AR" | "EN">("AUTO");
+  const [lang, setLang] = useState<"AUTO" | "AR" | "EN">("AR");
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState("");
   const [secondsLeft, setSecondsLeft] = useState(STATION_SECONDS);
@@ -239,14 +250,7 @@ export default function SimulationPage() {
   const [micError, setMicError] = useState('');
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [exiting, setExiting] = useState(false);
-  const speechLang =
-    lang === 'AR'
-      ? 'ar-EG'
-      : lang === 'EN'
-        ? 'en-US'
-        : typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('ar')
-          ? 'ar-EG'
-          : 'en-US';
+  const speechLang = resolveSpeechLanguage(lang, i18n.language);
 
   const sendMessage = useCallback(
     async (overrideText?: string): Promise<{ success: boolean; reply?: string }> => {
@@ -254,7 +258,7 @@ export default function SimulationPage() {
       if (!text || sending) return { success: false };
       setSending(true);
       setChatError("");
-      if (!overrideText) setInput("");
+      setInput("");
 
       const isExamViva = activeStage === "examination" && activeManeuver;
       const endpoint =
@@ -333,9 +337,9 @@ export default function SimulationPage() {
 
   const { isListening, isProcessing, isSupported: isMicSupported, toggleListening, stopListening } = useSpeechInput({
     lang: speechLang,
-    onInterim: (text) => {
+    sessionLang: lang,
+    onInterim: () => {
       setMicError('');
-      setInput(text);
     },
     onComplete: (transcript) => {
       setMicError('');
@@ -343,9 +347,11 @@ export default function SimulationPage() {
       void sendMessageRef.current(transcript);
     },
     onError: (code) => {
+      setInput('');
       if (code === 'not-supported') setMicError(t('micNotSupported'));
       else if (code === 'not-allowed') setMicError(t('micPermissionDenied'));
       else if (code === 'no-speech') setMicError(t('micNoSpeech'));
+      else if (code === 'micArabicFailed') setMicError(t('micArabicFailed'));
       else if (code === 'network') setMicError(t('micNetworkError'));
       else if (code === 'audio-capture') setMicError(t('micCaptureError'));
       else if (code === 'start-failed') setMicError(t('micStartFailed'));
@@ -499,21 +505,35 @@ export default function SimulationPage() {
 
   const completeManeuver = async () => {
     if (!activeManeuver) return;
-    const res = await api.post(`/sessions/${sessionId}/maneuver/complete`, {
-      maneuverId: activeManeuver,
-    });
-    setCompletedManeuvers(res.data.completedManeuvers);
-    setActiveManeuver(null);
-    setVivaActive(false);
-    setSession((prev) =>
-      prev
-        ? {
-            ...prev,
-            activeManeuver: null,
-            completedManeuvers: JSON.stringify(res.data.completedManeuvers),
-          }
-        : prev,
-    );
+    const currentIndex = EXAM_MANEUVERS.findIndex((m) => m.id === activeManeuver);
+    setSending(true);
+    try {
+      const res = await api.post(`/sessions/${sessionId}/maneuver/complete`, {
+        maneuverId: activeManeuver,
+      });
+      const updatedCompleted = res.data.completedManeuvers as string[];
+      setCompletedManeuvers(updatedCompleted);
+      setVivaActive(false);
+
+      const next = EXAM_MANEUVERS[currentIndex + 1];
+      if (next) {
+        await startManeuver(next.id);
+      } else {
+        setActiveManeuver(null);
+        setSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                activeManeuver: null,
+                completedManeuvers: JSON.stringify(updatedCompleted),
+              }
+            : prev,
+        );
+        changeStage("investigations");
+      }
+    } finally {
+      setSending(false);
+    }
   };
 
   const changeStage = (stage: string) => {
@@ -522,14 +542,18 @@ export default function SimulationPage() {
     if (stage === "feedback" && session?.result) {
       setResult(session.result);
     }
-    if (
-      stage === "examination" &&
-      !activeManeuver &&
-      completedManeuvers.length === 0
-    ) {
-      startManeuver("inspection");
+    if (stage === "examination" && !activeManeuver) {
+      const next = getNextManeuver(completedManeuvers);
+      if (next) startManeuver(next);
     }
   };
+
+  useEffect(() => {
+    if (!session || result || activeStage !== "examination" || activeManeuver || sending) return;
+    if (completedManeuvers.length >= EXAM_MANEUVERS.length) return;
+    const next = getNextManeuver(completedManeuvers);
+    if (next) void startManeuver(next);
+  }, [session, result, activeStage, activeManeuver, completedManeuvers, sending]);
 
   const completeSession = async () => {
     setCompleting(true);
@@ -860,34 +884,47 @@ export default function SimulationPage() {
               />
             )
           ) : activeStage === "examination" ? (
-            <ExaminationView
-              session={session}
-              isAr={isAr}
-              t={t}
-              activeManeuver={activeManeuver}
-              activeManeuverMeta={activeManeuverMeta}
-              vivaActive={vivaActive}
-              examImages={examImages}
-              messages={maneuverMessages}
-              input={input}
-              setInput={setInput}
-              sendMessage={sendMessage}
-              sending={sending}
-              chatError={chatError}
-              completeManeuver={completeManeuver}
-              chatEndRef={chatEndRef}
-              lang={lang}
-              setLang={setLang}
-              isListening={isListening}
-              isProcessing={isProcessing}
-              isMicSupported={isMicSupported}
-              onToggleMic={() => {
-                setMicError('');
-                if (patientLiveCall.isLiveCall) patientLiveCall.stopCall();
-                toggleListening();
-              }}
-              micError={micError}
-            />
+            <>
+              <ExaminationStepsBar
+                isAr={isAr}
+                t={t}
+                activeManeuver={activeManeuver}
+                completedManeuvers={completedManeuvers}
+                onStartManeuver={startManeuver}
+                sending={sending}
+                isManeuverUnlocked={isManeuverUnlocked}
+              />
+              <ExaminationView
+                session={session}
+                isAr={isAr}
+                t={t}
+                activeManeuver={activeManeuver}
+                activeManeuverMeta={activeManeuverMeta}
+                vivaActive={vivaActive}
+                examImages={examImages}
+                messages={maneuverMessages}
+                input={input}
+                setInput={setInput}
+                sendMessage={sendMessage}
+                sending={sending}
+                chatError={chatError}
+                completeManeuver={completeManeuver}
+                chatEndRef={chatEndRef}
+                lang={lang}
+                setLang={setLang}
+                isListening={isListening}
+                isProcessing={isProcessing}
+                isMicSupported={isMicSupported}
+                onToggleMic={() => {
+                  setMicError('');
+                  if (patientLiveCall.isLiveCall) patientLiveCall.stopCall();
+                  toggleListening();
+                }}
+                micError={micError}
+                completedManeuvers={completedManeuvers}
+                onStartManeuver={startManeuver}
+              />
+            </>
           ) : activeStage === "investigations" ? (
             <InvestigationsView
               t={t}
@@ -939,6 +976,7 @@ export default function SimulationPage() {
                   : () => {
                       setMicError('');
                       stopListening();
+                      if (!patientLiveCall.isLiveCall) setInput('');
                       patientLiveCall.toggleLiveCall();
                     }
               }
@@ -946,6 +984,56 @@ export default function SimulationPage() {
           )}
         </main>
       </div>
+    </div>
+  );
+}
+
+function ExaminationStepsBar({
+  isAr,
+  t,
+  activeManeuver,
+  completedManeuvers,
+  onStartManeuver,
+  sending,
+  isManeuverUnlocked,
+}: {
+  isAr: boolean;
+  t: (k: string, opts?: Record<string, unknown>) => string;
+  activeManeuver: string | null;
+  completedManeuvers: string[];
+  onStartManeuver: (id: string) => void;
+  sending: boolean;
+  isManeuverUnlocked: (id: string, index: number) => boolean;
+}) {
+  return (
+    <div className="md:hidden bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 py-3 shrink-0">
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {EXAM_MANEUVERS.map((m, i) => {
+          const unlocked = isManeuverUnlocked(m.id, i);
+          const active = activeManeuver === m.id;
+          const done = completedManeuvers.includes(m.id);
+          return (
+            <button
+              key={m.id}
+              type="button"
+              disabled={!unlocked || sending || done}
+              onClick={() => unlocked && !done && onStartManeuver(m.id)}
+              className={`shrink-0 px-3 py-2 rounded-lg border text-xs font-semibold transition-all ${
+                active
+                  ? "border-primary bg-primary text-white"
+                  : done
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200"
+                    : unlocked
+                      ? "border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200"
+                      : "border-slate-100 dark:border-slate-800 text-slate-400"
+              }`}
+            >
+              {isAr ? m.nameAr : m.nameEn}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[10px] text-slate-500 mt-2">{t("physicalExamDesc")}</p>
     </div>
   );
 }
@@ -973,10 +1061,12 @@ function ExaminationView({
   isMicSupported,
   onToggleMic,
   micError,
+  completedManeuvers,
+  onStartManeuver,
 }: {
   session: Session;
   isAr: boolean;
-  t: (k: string) => string;
+  t: (k: string, opts?: Record<string, unknown>) => string;
   activeManeuver: string | null;
   activeManeuverMeta?: (typeof EXAM_MANEUVERS)[number];
   vivaActive: boolean;
@@ -996,14 +1086,39 @@ function ExaminationView({
   isMicSupported: boolean;
   onToggleMic: () => void;
   micError: string;
+  completedManeuvers: string[];
+  onStartManeuver: (id: string) => void;
 }) {
   if (!activeManeuver || !activeManeuverMeta) {
+    const nextId = getNextManeuver(completedManeuvers);
+    const nextMeta = EXAM_MANEUVERS.find((m) => m.id === nextId);
     return (
       <div className="flex-1 flex items-center justify-center p-8 text-center text-slate-500">
-        <div>
-          <Eye size={48} className="mx-auto mb-3 text-slate-300" />
-          <p className="font-medium">{t("selectManeuver")}</p>
-          <p className="text-sm mt-1">{t("selectManeuverDesc")}</p>
+        <div className="max-w-sm">
+          {sending ? (
+            <>
+              <Loader2 size={40} className="mx-auto mb-3 animate-spin text-primary" />
+              <p className="font-medium">{t("paymentProcessing")}</p>
+            </>
+          ) : nextMeta ? (
+            <>
+              <Eye size={48} className="mx-auto mb-3 text-slate-300" />
+              <p className="font-medium">{t("continueToStep", { step: isAr ? nextMeta.nameAr : nextMeta.nameEn })}</p>
+              <button
+                type="button"
+                onClick={() => onStartManeuver(nextMeta.id)}
+                className="btn-primary mt-4 px-6 py-2.5 inline-flex items-center gap-2"
+              >
+                {isAr ? nextMeta.nameAr : nextMeta.nameEn}
+                <ChevronRight size={16} />
+              </button>
+            </>
+          ) : (
+            <>
+              <CheckCircle2 size={48} className="mx-auto mb-3 text-emerald-500" />
+              <p className="font-medium">{t("examinationComplete")}</p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -1251,17 +1366,46 @@ function HistoryChatView({
       </div>
 
       <div className="card flex flex-col flex-1 min-h-0 overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900">
-          <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">
+        <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 bg-white dark:bg-slate-900">
+          <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase min-w-0 truncate">
             {showExaminerPanel
               ? t("examinerBox")
               : `${t("interviewLog")}: ${session.case.patientName}`}
           </h3>
-          <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />{" "}
-            {t("active")}
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            {!showExaminerPanel && onToggleLiveCall && (
+              <button
+                type="button"
+                onClick={onToggleLiveCall}
+                disabled={sending || !isLiveCallSupported}
+                title={isLiveCall ? t("endLiveCall") : t("liveCall")}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                  isLiveCall
+                    ? "bg-emerald-500 text-white ring-2 ring-emerald-300 animate-pulse"
+                    : isLiveCallSupported
+                      ? "bg-slate-800 dark:bg-slate-700 text-white hover:bg-slate-700"
+                      : "bg-slate-200 dark:bg-slate-700 text-slate-500 cursor-not-allowed opacity-60"
+                }`}
+              >
+                {isLiveCall ? <PhoneOff size={14} /> : <Phone size={14} />}
+                {isLiveCall ? t("endLiveCall") : t("liveCall")}
+              </button>
+            )}
+            <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />{" "}
+              {t("active")}
+            </span>
+          </div>
         </div>
+
+        {!showExaminerPanel && isLiveCall && (
+          <div className="px-4 py-2 border-b border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
+            <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              {isLiveCallBusy ? t("paymentProcessing") : t("liveCallActive")}
+            </p>
+          </div>
+        )}
 
         <div
           className="flex-1 p-4 overflow-y-auto space-y-3 bg-white dark:bg-slate-900"
@@ -1346,13 +1490,7 @@ function HistoryChatView({
           micNotSupportedLabel={t("micNotSupported")}
           micProcessingLabel={t("micProcessing")}
           micError={micError}
-          isLiveCall={isLiveCall}
-          isLiveCallBusy={isLiveCallBusy}
-          isLiveCallSupported={isLiveCallSupported}
-          onToggleLiveCall={onToggleLiveCall}
-          liveCallLabel={t("liveCall")}
-          liveCallActiveLabel={t("liveCallActive")}
-          endLiveCallLabel={t("endLiveCall")}
+          disabled={isLiveCall}
         />
       </div>
     </div>
@@ -1732,23 +1870,45 @@ function FeedbackView({
     { key: "idealApproach", label: t("idealApproach") },
   ];
 
-  const downloadReport = () => {
-    const title = isAr ? session.case.titleAr : session.case.titleEn;
-    const fullReport =
-      (result.fullReport as string) ||
-      sections
-        .map(({ key, label }) => `## ${label}\n${result[key] as string}`)
-        .join("\n\n");
-    const body = [
-      `# Synoza OSCE Evaluation Report`,
-      `Station: ${title}`,
-      `Patient: ${session.case.patientName}`,
-      `Total Score: ${result.totalScore}%`,
-      `Date: ${new Date().toLocaleString()}`,
-      "",
-      fullReport,
-    ].join("\n");
-    downloadTextFile(`synoza-report-${session.id.slice(0, 8)}.txt`, body);
+  const [downloadingReport, setDownloadingReport] = useState(false);
+
+  const downloadReport = async () => {
+    setDownloadingReport(true);
+    try {
+      const stationTitle = isAr ? session.case.titleAr : session.case.titleEn;
+      await downloadOsceReportPdf({
+        sessionId: session.id,
+        stationTitle,
+        patientName: session.case.patientName,
+        result,
+        isAr,
+        labels: {
+          certificateTitle: t("reportCertificateTitle"),
+          officialReport: t("reportOfficialDocument"),
+          totalScore: t("totalScore"),
+          station: t("reportStation"),
+          patient: t("reportPatient"),
+          date: t("reportDate"),
+          sessionId: t("reportSessionId"),
+          scoreCommunication: t("scoreCommunication"),
+          scoreHistory: t("scoreHistory"),
+          scoreClinicalReason: t("scoreClinicalReason"),
+          scoreOrganization: t("scoreOrganization"),
+          scoreClosing: t("scoreClosing"),
+          strengths: t("strengths"),
+          weaknesses: t("weaknesses"),
+          missedQuestions: t("missedQuestions"),
+          clinicalErrors: t("clinicalErrors"),
+          recommendations: t("recommendations"),
+          idealApproach: t("idealApproach"),
+          fullReport: t("fullReport"),
+          certifiedSeal: t("reportCertifiedSeal"),
+          platformName: t("appName"),
+        },
+      });
+    } finally {
+      setDownloadingReport(false);
+    }
   };
 
   return (
@@ -1762,10 +1922,16 @@ function FeedbackView({
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mt-4">
           <button
             type="button"
-            onClick={downloadReport}
+            onClick={() => void downloadReport()}
+            disabled={downloadingReport}
             className="btn-secondary inline-flex items-center gap-2 min-w-[200px] justify-center"
           >
-            <Download size={16} /> {t("downloadReport")}
+            {downloadingReport ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Download size={16} />
+            )}{" "}
+            {t("downloadReport")}
           </button>
           {onRegenerate && (
             <button
@@ -1808,8 +1974,9 @@ function FeedbackView({
             {label}
           </h4>
           <p
-            className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap"
-            dir="auto"
+            className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed"
+            dir={isAr ? "rtl" : "ltr"}
+            lang={isAr ? "ar" : "en"}
           >
             {result[key] as string}
           </p>
@@ -1821,8 +1988,9 @@ function FeedbackView({
             {t("fullReport")}
           </h4>
           <div
-            className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap prose prose-sm dark:prose-invert max-w-none"
-            dir="auto"
+            className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap prose prose-sm dark:prose-invert max-w-none leading-relaxed"
+            dir={isAr ? "rtl" : "ltr"}
+            lang={isAr ? "ar" : "en"}
           >
             {(result.fullReport as string).replace(/^## /gm, "### ")}
           </div>

@@ -26,6 +26,13 @@ enum SubscriptionStatus {
   CANCELLED
 }
 
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+}
+
 enum SessionStatus {
   IN_PROGRESS
   COMPLETED
@@ -92,6 +99,10 @@ model User {
   avatarUrl     String?
   role          Role           @default(STUDENT)
   isActive      Boolean        @default(true)
+  emailVerified Boolean        @default(false)
+  preferredLang String         @default("en")
+  otpCode       String?
+  otpExpires    DateTime?
   resetToken    String?
   resetExpires  DateTime?
   createdAt     DateTime       @default(now())
@@ -100,6 +111,7 @@ model User {
   subscriptions Subscription[]
   caseAccess    CaseAccess[]
   auditLogs     AuditLog[]
+  paymentOrders PaymentOrder[]
 }
 
 model Specialty {
@@ -233,6 +245,25 @@ model CaseAccess {
   case      Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
   @@unique([userId, caseId])
+}
+
+model PaymentOrder {
+  id              String           @id @default(cuid())
+  userId          String
+  plan            SubscriptionPlan
+  amountEgp       Int
+  status          PaymentStatus    @default(PENDING)
+  provider        String           @default("paymob")
+  merchantOrderId String           @unique
+  providerOrderId String?
+  transactionId   String?
+  paidAt          DateTime?
+  failureReason   String?          @db.Text
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
 }
 
 model AISettings {

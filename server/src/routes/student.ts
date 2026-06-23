@@ -6,6 +6,7 @@ import {
   pickRandomEligibleCase,
   PLAN_CATALOG,
 } from '../services/subscriptionService.js';
+import { getPaymentPublicConfig } from '../services/payment/paymentService.js';
 
 const router = Router();
 
@@ -15,6 +16,7 @@ router.get('/entitlements', async (req, res) => {
   const entitlements = await getUserEntitlements(req.user!.id);
   res.json({
     entitlements,
+    payment: getPaymentPublicConfig(),
     plans: [
       { id: 'PACKAGE_50', ...PLAN_CATALOG.PACKAGE_50 },
       { id: 'PACKAGE_150', ...PLAN_CATALOG.PACKAGE_150 },

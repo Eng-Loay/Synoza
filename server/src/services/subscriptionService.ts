@@ -4,11 +4,11 @@ import { prisma } from '../lib/prisma.js';
 export const FREE_ATTEMPTS_PER_CASE = 3;
 
 export const PLAN_CATALOG = {
-  FREE: { priceEgp: 0, casesQuota: 0, labelEn: 'Free', labelAr: 'مجاني' },
-  PACKAGE_50: { priceEgp: 150, casesQuota: 50, labelEn: '50 Cases', labelAr: '50 حالة' },
-  PACKAGE_150: { priceEgp: 300, casesQuota: 150, labelEn: '150 Cases', labelAr: '150 حالة' },
-  PACKAGE_300: { priceEgp: 500, casesQuota: 300, labelEn: '300 Cases', labelAr: '300 حالة' },
-  INSTITUTION: { priceEgp: 0, casesQuota: 999_999, labelEn: 'Institution', labelAr: 'مؤسسة' },
+  FREE: { priceEgp: 0, casesQuota: 0, durationMonths: 0, labelEn: 'Free', labelAr: 'مجاني' },
+  PACKAGE_50: { priceEgp: 150, casesQuota: 75, durationMonths: 2, labelEn: '75 Cases', labelAr: '75 حالة' },
+  PACKAGE_150: { priceEgp: 300, casesQuota: 200, durationMonths: 4, labelEn: '200 Cases', labelAr: '200 حالة' },
+  PACKAGE_300: { priceEgp: 500, casesQuota: 400, durationMonths: 6, labelEn: '400 Cases', labelAr: '400 حالة' },
+  INSTITUTION: { priceEgp: 0, casesQuota: 999_999, durationMonths: 0, labelEn: 'Institution', labelAr: 'مؤسسة' },
 } as const;
 
 export type PlanCatalogKey = keyof typeof PLAN_CATALOG;
@@ -20,6 +20,28 @@ export function isPaidPlan(plan: SubscriptionPlan): boolean {
 export function getPlanConfig(plan: SubscriptionPlan) {
   const key = plan in PLAN_CATALOG ? (plan as PlanCatalogKey) : 'FREE';
   return PLAN_CATALOG[key];
+}
+
+function addMonths(from: Date, months: number): Date {
+  const end = new Date(from);
+  end.setMonth(end.getMonth() + months);
+  return end;
+}
+
+async function resolvePlanEndDate(
+  subscription: Awaited<ReturnType<typeof getActiveSubscription>>,
+): Promise<Date | null> {
+  if (!subscription || !isPaidPlan(subscription.plan)) return null;
+  if (subscription.endDate) return subscription.endDate;
+
+  const config = getPlanConfig(subscription.plan);
+  const months = config.durationMonths || 12;
+  const computed = addMonths(subscription.startDate, months);
+  await prisma.subscription.update({
+    where: { id: subscription.id },
+    data: { endDate: computed },
+  });
+  return computed;
 }
 
 export async function getActiveSubscription(userId: string) {
@@ -77,6 +99,8 @@ export async function getUserEntitlements(userId: string) {
     attemptsByCase[row.caseId] = Math.max(attemptsByCase[row.caseId] ?? 0, row._count._all);
   }
 
+  const planEndDate = await resolvePlanEndDate(subscription);
+
   return {
     plan,
     isFree,
@@ -85,6 +109,9 @@ export async function getUserEntitlements(userId: string) {
     casesUnlocked,
     casesRemaining: isFree ? 0 : Math.max(0, casesQuota - casesUnlocked),
     priceEgp: subscription?.priceEgp ?? config.priceEgp,
+    planEndDate: planEndDate?.toISOString() ?? null,
+    planStartDate: subscription?.startDate?.toISOString() ?? null,
+    planDurationMonths: isFree ? 0 : getPlanConfig(plan).durationMonths,
     attemptsByCase,
   };
 }
@@ -187,6 +214,8 @@ export async function activatePlan(userId: string, plan: SubscriptionPlan) {
     data: { status: 'CANCELLED', endDate: new Date() },
   });
 
+  const endDate = addMonths(new Date(), config.durationMonths);
+
   return prisma.subscription.create({
     data: {
       userId,
@@ -194,6 +223,7 @@ export async function activatePlan(userId: string, plan: SubscriptionPlan) {
       status: 'ACTIVE',
       casesQuota: config.casesQuota,
       priceEgp: config.priceEgp,
+      endDate,
     },
   });
 }

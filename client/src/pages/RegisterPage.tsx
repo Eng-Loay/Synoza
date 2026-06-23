@@ -2,11 +2,13 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Stethoscope } from 'lucide-react';
+import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Navbar } from '../components/Navbar';
 import { PasswordInput } from '../components/PasswordInput';
 import { IconBox } from '../components/IconBox';
 import api from '../lib/api';
+import { getAppLang, verifyEmailPath } from '../lib/appLang';
 
 interface UniversityOption {
   id: string;
@@ -42,10 +44,22 @@ export default function RegisterPage() {
     setError('');
     setLoading(true);
     try {
-      await register(form);
-      navigate('/student');
-    } catch {
-      setError(t('error'));
+      const lang = i18n.language || getAppLang();
+      const { email } = await register({ ...form, lang });
+      navigate(verifyEmailPath(email, lang));
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.status === 409) {
+        setError(t('emailAlreadyRegistered'));
+      } else if (axios.isAxiosError(err) && err.response?.status === 503) {
+        const failedEmail = err.response.data?.email as string | undefined;
+        if (failedEmail) {
+          navigate(verifyEmailPath(failedEmail, i18n.language || getAppLang()));
+          return;
+        }
+        setError(t('otpSendFailed'));
+      } else {
+        setError(t('error'));
+      }
     } finally {
       setLoading(false);
     }
