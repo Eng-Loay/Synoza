@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import {
   completeMockCheckout,
   createCheckout,
+  createModuleCheckout,
   getOrderForUser,
   getPaymentPublicConfig,
   getPaymobReturnUrl,
@@ -55,6 +56,41 @@ router.post(
         return res.status(503).json({ error: 'PAYMOB_NOT_CONFIGURED' });
       }
       console.error('[payments/checkout]', err);
+      return res.status(500).json({ error: 'Could not start checkout' });
+    }
+  },
+);
+
+router.post(
+  '/checkout-module',
+  authenticate,
+  [body('termId').isString().notEmpty(), body('moduleId').isString().notEmpty()],
+  async (req: Request, res: Response) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    if (!isPaymentEnabled()) {
+      return res.status(503).json({ error: 'Payment gateway is not configured yet' });
+    }
+
+    const termId = String(req.body.termId);
+    const moduleId = String(req.body.moduleId);
+
+    try {
+      const checkout = await createModuleCheckout(req.user!.id, termId, moduleId);
+      res.json(checkout);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'CHECKOUT_FAILED';
+      if (message === 'ALREADY_OWNED') {
+        return res.status(409).json({ error: 'You already own this module' });
+      }
+      if (message === 'INVALID_MODULE') {
+        return res.status(400).json({ error: 'Invalid module' });
+      }
+      if (message === 'PAYMOB_NOT_CONFIGURED') {
+        return res.status(503).json({ error: 'PAYMOB_NOT_CONFIGURED' });
+      }
+      console.error('[payments/checkout-module]', err);
       return res.status(500).json({ error: 'Could not start checkout' });
     }
   },

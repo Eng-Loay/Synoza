@@ -2,8 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Wifi, WifiOff, ServerCrash } from 'lucide-react';
 import { pingServer } from '../lib/api';
-import { LanguageToggle } from './LanguageToggle';
-
 type Status = 'online' | 'unstable' | 'server-offline' | 'internet-offline';
 
 export function ConnectionStatus() {
@@ -77,8 +75,6 @@ export function ConnectionStatus() {
 
   return (
     <div className="flex items-center gap-2">
-      <LanguageToggle />
-
       <div
         title={title}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs cursor-default"

@@ -27,11 +27,12 @@ router.get('/difficulties', async (_req, res) => {
 });
 
 router.get('/', async (req, res) => {
-  const { search, specialtyId, difficultyId, categoryId } = req.query;
+  const { search, specialtyId, difficultyId, categoryId, freeTier } = req.query;
 
   const cases = await prisma.case.findMany({
     where: {
       isPublished: true,
+      ...(freeTier === 'true' ? { isFreeTier: true } : {}),
       ...(specialtyId ? { specialtyId: String(specialtyId) } : {}),
       ...(difficultyId ? { difficultyId: String(difficultyId) } : {}),
       ...(categoryId ? { categoryId: String(categoryId) } : {}),

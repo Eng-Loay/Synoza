@@ -7,15 +7,22 @@ import {
   PLAN_CATALOG,
 } from '../services/subscriptionService.js';
 import { getPaymentPublicConfig } from '../services/payment/paymentService.js';
+import { getRankProgress } from '../services/xpService.js';
+import { getModulesForUser, userHasModuleAccess } from '../services/qbankService.js';
 
 const router = Router();
 
 router.use(authenticate);
 
 router.get('/entitlements', async (req, res) => {
-  const entitlements = await getUserEntitlements(req.user!.id);
+  const userId = req.user!.id;
+  const [entitlements, user] = await Promise.all([
+    getUserEntitlements(userId),
+    prisma.user.findUnique({ where: { id: userId }, select: { totalXp: true } }),
+  ]);
+  const rankProgress = getRankProgress(user?.totalXp ?? 0);
   res.json({
-    entitlements,
+    entitlements: { ...entitlements, totalXp: user?.totalXp ?? 0, rankProgress },
     payment: getPaymentPublicConfig(),
     plans: [
       { id: 'PACKAGE_50', ...PLAN_CATALOG.PACKAGE_50 },
@@ -125,6 +132,22 @@ router.get('/results/:sessionId', async (req, res) => {
 
   if (!result) return res.status(404).json({ error: 'Result not found' });
   res.json({ result });
+});
+
+router.get('/qbank/:termId/modules', async (req, res) => {
+  const termId = String(req.params.termId);
+  const data = await getModulesForUser(req.user!.id, termId);
+  if (!data.term) {
+    return res.status(404).json({ error: 'TERM_NOT_FOUND' });
+  }
+  res.json(data);
+});
+
+router.get('/qbank/:termId/modules/:moduleId/access', async (req, res) => {
+  const termId = String(req.params.termId);
+  const moduleId = String(req.params.moduleId);
+  const hasAccess = await userHasModuleAccess(req.user!.id, termId, moduleId);
+  res.json({ hasAccess });
 });
 
 export default router;

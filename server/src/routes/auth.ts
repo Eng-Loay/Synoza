@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { body, validationResult } from 'express-validator';
 import { prisma } from '../lib/prisma.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, verifyTokenForRefresh } from '../middleware/auth.js';
 import { issueAndSendOtp, verifyUserOtp } from '../services/otpService.js';
 import { isSmtpConfigured } from '../services/emailService.js';
 import { normalizeEmailLang } from '../services/emailTemplates.js';
@@ -26,6 +26,9 @@ function publicUser(user: {
   lastName: string;
   role: string;
   university: string | null;
+  phone?: string | null;
+  avatarUrl?: string | null;
+  studentId?: string | null;
 }) {
   return {
     id: user.id,
@@ -34,7 +37,18 @@ function publicUser(user: {
     lastName: user.lastName,
     role: user.role,
     university: user.university,
+    phone: user.phone ?? undefined,
+    avatarUrl: user.avatarUrl ?? undefined,
+    studentId: user.studentId ?? undefined,
   };
+}
+
+function isValidAvatarUrl(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^data:image\/(jpeg|jpg|png|webp|gif);base64,/.test(value) &&
+    value.length <= 400_000
+  );
 }
 
 router.post(
@@ -44,6 +58,7 @@ router.post(
     body('password').isLength({ min: 6 }),
     body('firstName').trim().notEmpty(),
     body('lastName').trim().notEmpty(),
+    body('studentId').trim().notEmpty().isLength({ min: 3, max: 32 }),
   ],
   async (req: Request, res: Response) => {
     const errors = validationResult(req);
@@ -53,8 +68,14 @@ router.post(
       return res.status(503).json({ error: 'Email verification is not available' });
     }
 
-    const { email, password, firstName, lastName, phone, university, lang } = req.body;
+    const { email, password, firstName, lastName, phone, university, studentId, lang } = req.body;
     const preferredLang = normalizeEmailLang(lang);
+    const normalizedStudentId = String(studentId).trim();
+
+    const studentIdTaken = await prisma.user.findUnique({ where: { studentId: normalizedStudentId } });
+    if (studentIdTaken && studentIdTaken.email !== email) {
+      return res.status(409).json({ error: 'Student ID already registered' });
+    }
 
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
@@ -63,7 +84,15 @@ router.post(
       }
       await prisma.user.update({
         where: { id: existing.id },
-        data: { preferredLang },
+        data: {
+          preferredLang,
+          firstName,
+          lastName,
+          phone,
+          university,
+          studentId: normalizedStudentId,
+          passwordHash: await bcrypt.hash(password, 12),
+        },
       });
       try {
         await issueAndSendOtp(existing.id, existing.email, existing.firstName, preferredLang);
@@ -90,6 +119,7 @@ router.post(
         lastName,
         phone,
         university,
+        studentId: normalizedStudentId,
         emailVerified: false,
         preferredLang,
       },
@@ -247,6 +277,7 @@ router.get('/me', authenticate, async (req: Request, res: Response) => {
       lastName: true,
       phone: true,
       university: true,
+      studentId: true,
       avatarUrl: true,
       role: true,
       isActive: true,
@@ -261,9 +292,19 @@ router.get('/me', authenticate, async (req: Request, res: Response) => {
   res.json({ user: publicUserData });
 });
 
-router.post('/refresh', authenticate, async (req: Request, res: Response) => {
+router.post('/refresh', async (req: Request, res: Response) => {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  const payload = verifyTokenForRefresh(header.slice(7));
+  if (!payload) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+
   const user = await prisma.user.findUnique({
-    where: { id: req.user!.id },
+    where: { id: payload.id },
     select: { id: true, email: true, role: true, isActive: true, emailVerified: true },
   });
   if (!user || !user.isActive || !user.emailVerified) {
@@ -274,9 +315,20 @@ router.post('/refresh', authenticate, async (req: Request, res: Response) => {
 
 router.put('/profile', authenticate, async (req: Request, res: Response) => {
   const { firstName, lastName, phone, university, avatarUrl } = req.body;
+
+  if (avatarUrl != null && avatarUrl !== '' && !isValidAvatarUrl(avatarUrl)) {
+    return res.status(400).json({ error: 'Invalid profile photo' });
+  }
+
   const user = await prisma.user.update({
     where: { id: req.user!.id },
-    data: { firstName, lastName, phone, university, avatarUrl },
+    data: {
+      firstName,
+      lastName,
+      phone,
+      university,
+      avatarUrl: avatarUrl === '' ? null : avatarUrl,
+    },
     select: {
       id: true,
       email: true,
@@ -284,6 +336,7 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
       lastName: true,
       phone: true,
       university: true,
+      studentId: true,
       avatarUrl: true,
       role: true,
     },

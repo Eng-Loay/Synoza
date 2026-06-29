@@ -1,35 +1,85 @@
 import axios from 'axios';
+import {
+  clearAuthSession,
+  getStoredToken,
+  setAuthSession,
+} from './authStorage';
 
 const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
 });
 
+let refreshInFlight: Promise<string | null> | null = null;
+
+export async function refreshAuthToken(): Promise<string | null> {
+  const token = getStoredToken();
+  if (!token) return null;
+
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = axios
+    .post<{ token: string }>(
+      '/api/auth/refresh',
+      {},
+      { headers: { Authorization: `Bearer ${token}` } },
+    )
+    .then((res) => {
+      const next = res.data.token;
+      if (next) localStorage.setItem('synoza_token', next);
+      return next ?? null;
+    })
+    .catch(() => null)
+    .finally(() => {
+      refreshInFlight = null;
+    });
+
+  return refreshInFlight;
+}
+
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('synoza_token');
+  const token = getStoredToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
 api.interceptors.response.use(
   (res) => res,
-  (err) => {
-    if (err.response?.status === 401) {
-      const url = String(err.config?.url || '');
-      const isLoginRequest = url.includes('/auth/login') || url.includes('/auth/register');
+  async (err) => {
+    const status = err.response?.status;
+    const original = err.config as (typeof err.config & { _authRetry?: boolean }) | undefined;
+    const url = String(original?.url || '');
 
-      if (!isLoginRequest) {
-        localStorage.removeItem('synoza_token');
-        localStorage.removeItem('synoza_user');
-
-        // Let AuthContext handle invalid sessions during bootstrap.
-        if (!url.includes('/auth/me') && !window.location.pathname.includes('/login')) {
-          window.location.href = '/login';
-        }
-      }
+    if (status !== 401 || !original || original._authRetry) {
+      return Promise.reject(err);
     }
+
+    const isAuthRoute =
+      url.includes('/auth/login') ||
+      url.includes('/auth/register') ||
+      url.includes('/auth/verify-otp') ||
+      url.includes('/auth/refresh');
+
+    if (isAuthRoute) {
+      return Promise.reject(err);
+    }
+
+    original._authRetry = true;
+    const newToken = await refreshAuthToken();
+    if (newToken) {
+      original.headers = original.headers ?? {};
+      original.headers.Authorization = `Bearer ${newToken}`;
+      return api(original);
+    }
+
+    clearAuthSession();
+
+    if (!url.includes('/auth/me') && !window.location.pathname.includes('/login')) {
+      window.location.href = '/login';
+    }
+
     return Promise.reject(err);
-  }
+  },
 );
 
 export default api;

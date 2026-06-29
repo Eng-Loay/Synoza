@@ -9,6 +9,7 @@ import { PasswordInput } from '../components/PasswordInput';
 import { IconBox } from '../components/IconBox';
 import api from '../lib/api';
 import { getAppLang, verifyEmailPath } from '../lib/appLang';
+import { FALLBACK_UNIVERSITIES } from '../lib/universitiesFallback';
 
 interface UniversityOption {
   id: string;
@@ -29,14 +30,19 @@ export default function RegisterPage() {
     lastName: '',
     phone: '',
     university: '',
+    studentId: '',
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    api.get('/site/public')
-      .then((r) => setUniversities(r.data.universities || []))
-      .catch(() => {});
+    api
+      .get('/site/public')
+      .then((r) => {
+        const list = r.data.universities ?? [];
+        setUniversities(list.length > 0 ? list : [...FALLBACK_UNIVERSITIES]);
+      })
+      .catch(() => setUniversities([...FALLBACK_UNIVERSITIES]));
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -49,7 +55,8 @@ export default function RegisterPage() {
       navigate(verifyEmailPath(email, lang));
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response?.status === 409) {
-        setError(t('emailAlreadyRegistered'));
+        const msg = err.response.data?.error as string | undefined;
+        setError(msg === 'Student ID already registered' ? t('studentIdAlreadyRegistered') : t('emailAlreadyRegistered'));
       } else if (axios.isAxiosError(err) && err.response?.status === 503) {
         const failedEmail = err.response.data?.email as string | undefined;
         if (failedEmail) {
@@ -93,6 +100,18 @@ export default function RegisterPage() {
                 </div>
               </div>
               <div>
+                <label className="block text-sm font-medium mb-1.5">{t('studentId')}</label>
+                <input
+                  className="input-field"
+                  value={form.studentId}
+                  onChange={(e) => setForm({ ...form, studentId: e.target.value.trim() })}
+                  placeholder={t('studentIdPlaceholder')}
+                  required
+                  minLength={3}
+                  maxLength={32}
+                />
+              </div>
+              <div>
                 <label className="block text-sm font-medium mb-1.5">{t('email')}</label>
                 <input type="email" className="input-field" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
               </div>
@@ -110,8 +129,8 @@ export default function RegisterPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1.5">{t('university')}</label>
-                <select className="input-field" value={form.university} onChange={(e) => setForm({ ...form, university: e.target.value })}>
-                  <option value="">--</option>
+                <select className="input-field" value={form.university} onChange={(e) => setForm({ ...form, university: e.target.value })} required>
+                  <option value="">{t('selectUniversity')}</option>
                   {universities.map((u) => (
                     <option key={u.id} value={isAr ? u.nameAr : u.nameEn}>
                       {isAr ? u.nameAr : u.nameEn}

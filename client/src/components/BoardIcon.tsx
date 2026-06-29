@@ -1,22 +1,23 @@
 import {
   Stethoscope,
   Heart,
-  Scissors,
   Baby,
-  HeartPulse,
   Brain,
   Bone,
   LayoutGrid,
   type LucideIcon,
 } from 'lucide-react';
 
+const BOARD_EMOJI_MAP: Record<string, string> = {
+  Surgery: '🥼',
+  'Obstetrics & Gynecology': '🤰',
+};
+
 const BOARD_ICON_MAP: Record<string, LucideIcon> = {
   'Internal Medicine': Stethoscope,
   'Chest / Cardiology': Heart,
   Cardiology: Heart,
-  Surgery: Scissors,
   Pediatrics: Baby,
-  'Obstetrics & Gynecology': HeartPulse,
   Neurology: Brain,
   Orthopedics: Bone,
 };
@@ -39,6 +40,19 @@ interface BoardIconProps {
 }
 
 export function BoardIcon({ nameEn, size = 18, className = '' }: BoardIconProps) {
+  const emoji = BOARD_EMOJI_MAP[nameEn];
+  if (emoji) {
+    return (
+      <span
+        className={`inline-flex items-center justify-center leading-none select-none ${className}`}
+        style={{ fontSize: Math.round(size * 1.05), width: size, height: size }}
+        aria-hidden
+      >
+        {emoji}
+      </span>
+    );
+  }
+
   const Icon = BOARD_ICON_MAP[nameEn] ?? LayoutGrid;
   const color = BOARD_COLORS[nameEn] ?? 'text-teal-600 dark:text-teal-400';
   return <Icon size={size} strokeWidth={2} className={`${color} ${className}`} />;

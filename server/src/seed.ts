@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
+import { ensurePartnerUniversities } from './data/defaultUniversities.js';
 
 const prisma = new PrismaClient();
 
@@ -31,7 +32,7 @@ async function main() {
 
   await prisma.user.upsert({
     where: { email: 'student@synoza.com' },
-    update: { emailVerified: true },
+    update: { emailVerified: true, studentId: '202400001' },
     create: {
       email: 'student@synoza.com',
       passwordHash: await bcrypt.hash('Student@123456', 12),
@@ -40,9 +41,64 @@ async function main() {
       role: 'STUDENT',
       university: 'Cairo University',
       phone: '01024828652',
+      studentId: '202400001',
       emailVerified: true,
     },
   });
+
+  const testStudentPassword = 'Student@123456';
+  const testStudents: Array<{
+    email: string;
+    firstName: string;
+    lastName: string;
+    university: string;
+    studentId: string;
+    plan?: 'PACKAGE_50' | 'PACKAGE_150' | 'PACKAGE_300';
+  }> = [
+    { email: 'student2@synoza.com', firstName: 'Sara', lastName: 'Hassan', university: 'Ain Shams University', studentId: '202400002' },
+    { email: 'student.basic@synoza.com', firstName: 'Omar', lastName: 'Khaled', university: 'MUST', studentId: '202400003', plan: 'PACKAGE_50' },
+    { email: 'student.pro@synoza.com', firstName: 'Nour', lastName: 'Adel', university: 'Alexandria University', studentId: '202400004', plan: 'PACKAGE_150' },
+    { email: 'student.premium@synoza.com', firstName: 'Youssef', lastName: 'Mahmoud', university: 'Cairo University', studentId: '202400005', plan: 'PACKAGE_300' },
+  ];
+
+  for (const s of testStudents) {
+    const user = await prisma.user.upsert({
+      where: { email: s.email },
+      update: { emailVerified: true, studentId: s.studentId },
+      create: {
+        email: s.email,
+        passwordHash: await bcrypt.hash(testStudentPassword, 12),
+        firstName: s.firstName,
+        lastName: s.lastName,
+        role: 'STUDENT',
+        university: s.university,
+        studentId: s.studentId,
+        emailVerified: true,
+      },
+    });
+
+    if (s.plan) {
+      await prisma.subscription.updateMany({
+        where: { userId: user.id, status: 'ACTIVE' },
+        data: { status: 'CANCELLED', endDate: new Date() },
+      });
+      const months = s.plan === 'PACKAGE_50' ? 2 : s.plan === 'PACKAGE_150' ? 4 : 6;
+      const casesQuota = s.plan === 'PACKAGE_50' ? 50 : s.plan === 'PACKAGE_150' ? 150 : 300;
+      const priceEgp = s.plan === 'PACKAGE_50' ? 150 : s.plan === 'PACKAGE_150' ? 300 : 500;
+      const endDate = new Date();
+      endDate.setMonth(endDate.getMonth() + months);
+      await prisma.subscription.create({
+        data: {
+          userId: user.id,
+          plan: s.plan,
+          status: 'ACTIVE',
+          casesQuota,
+          priceEgp,
+          endDate,
+        },
+      });
+    }
+  }
 
   const specialties = [
     { nameEn: 'Cardiology', nameAr: 'أمراض القلب', description: 'Cardiovascular clinical cases' },
@@ -139,105 +195,152 @@ async function main() {
   }
 
   const cardiology = await prisma.specialty.findFirst({ where: { nameEn: 'Cardiology' } });
-  const intermediate = await prisma.difficultyLevel.findFirst({ where: { level: 2 } });
+  const advanced = await prisma.difficultyLevel.findFirst({ where: { level: 3 } });
   const beginner = await prisma.difficultyLevel.findFirst({ where: { level: 1 } });
 
-  if (cardiology && intermediate) {
-    const existingCase = await prisma.case.findFirst({
-      where: { titleEn: 'AS + MR (Aortic Stenosis & Mitral Regurgitation)' },
-    });
+  if (cardiology && advanced) {
+    const asmrTitle = 'AS + MR (Aortic Stenosis & Mitral Regurgitation)';
+    const existingCase = await prisma.case.findFirst({ where: { titleEn: asmrTitle } });
 
     const caseData = {
-      titleEn: 'AS + MR (Aortic Stenosis & Mitral Regurgitation)',
+      titleEn: asmrTitle,
       titleAr: 'تضيق أورطي + قصور mitral',
       specialtyId: cardiology.id,
-      difficultyId: intermediate.id,
+      difficultyId: advanced.id,
       categoryId: chest.id,
       patientName: 'Tarek Moustafa El-Haddad',
       patientAge: 17,
       patientGender: 'Male',
       patientNationality: 'Egyptian',
-      chiefComplaint:
-        'Progressive exertional dyspnea and occasional chest tightness for 6 months.',
+      chiefComplaint: 'Shortness of breath of 2-week duration.',
       medicalHistory:
-        'History of rheumatic fever at age 8. No diabetes or hypertension. No known allergies.',
-      medicationHistory: 'Penicillin prophylaxis occasionally, not consistent.',
-      surgicalHistory: 'No previous surgeries.',
-      familyHistory: 'Mother has hypertension. No family history of congenital heart disease.',
-      socialHistory: 'High school student. Non-smoker. No alcohol or drug use.',
-      physicalExam:
-        'Systolic murmur at right upper sternal border radiating to carotids. Displaced apex beat. Signs of left ventricular hypertrophy. Visible thoracotomy scar on left chest.',
+        'Progressive exertional dyspnea for 5 years (gradual onset, worse on exertion, relieved by rest). Paroxysmal nocturnal dyspnea — wakes gasping after ~2 hours of sleep, sleeps on 2 pillows. Lightheadedness and blurred vision on exertion. Productive cough with dark yellow sputum (~1/4 cup). High-grade fever 2 weeks ago with painful tonsillitis. Child-onset bronchial asthma with repeated tonsillitis (4–5/year). Rheumatic fever diagnosed 5 years ago (Jones criteria; steroids and aspirin with temporary improvement). Denies hemoptysis, weight loss, syncope, chest pain, cyanosis, edema, ascites, or pressure symptoms.',
+      medicationHistory:
+        'Depot penicillin IM every 15 days (prophylaxis). Inhaled Ventolin (salbutamol) for asthma. Occasional home oxygen for asthma attacks.',
+      surgicalHistory:
+        'Denies prior surgery — but has a chest tube scar on inspection (critical discrepancy for students to identify).',
+      familyHistory:
+        'No consanguinity. No first-degree relatives with congenital or valvular heart disease.',
+      socialHistory:
+        'Single 17-year-old male from Shobra Al-Kheima, Cairo. Apprentice house painter (chemical fume exposure). Non-smoker.',
+      physicalExam: JSON.stringify({
+        inspection:
+          'Mildly tachypneic cooperative adolescent sitting upright. Evident linear hyperpigmented scar from previous chest tube insertion (past pleural effusion) in left mid-axillary line. No precordial bulge, no dilated superficial veins, no chest skin lesions.',
+        palpation:
+          'Apex in left 5th ICS, displaced laterally from midclavicular line — sustained heaving apex (LV concentric hypertrophy). No epigastric, suprasternal, or parasternal pulsations. Distinct rough systolic thrill at 1st aortic area (R 2nd ICS) radiating to carotids.',
+        percussion:
+          'Normal cardiac dullness. Lungs resonant bilaterally; possible mild dullness at left lung base near old chest tube scar.',
+        auscultation:
+          'Aortic area: muffled/soft S2; loud ejection systolic murmur at 1st aortic area radiating to carotids and apex (louder sitting forward, breath held in expiration). Mitral area: soft muffled S1; loud blowing pansystolic murmur at apex radiating to left axilla (louder in left lateral decubitus). Mild expiratory wheeze bilaterally (asthma).',
+      }),
       examImages: JSON.stringify([
         {
-          url: '/exam/chest-inspection.svg',
-          caption: 'Chest inspection — surgical scar and precordium',
-          captionAr: 'الفحص البصري — scar جراحي ومنطقة القلب',
+          url: '/exam/cases/as-mr/inspection.png',
+          caption: 'Chest inspection — hyperpigmented chest tube scar, left mid-axillary line',
+          captionAr: 'الفحص البصري — scar أنبوب صدر hyperpigmented في الخط الإبطي الأيسر',
           maneuver: 'inspection',
+          mediaType: 'image',
         },
         {
-          url: '/exam/chest-palpation.svg',
-          caption: 'Palpation — apex beat and thrills',
-          captionAr: 'الجس — نبض الذروة والـ thrills',
+          url: '/exam/cases/as-mr/palpation.mp4',
+          caption: 'Cardiac palpation — apex beat, heaves, and thrills',
+          captionAr: 'جس القلب — نبض الذروة والـ heaves والـ thrills',
           maneuver: 'palpation',
+          mediaType: 'video',
         },
         {
-          url: '/exam/chest-percussion.svg',
-          caption: 'Percussion — heart borders',
-          captionAr: 'النقر — حدود القلب',
-          maneuver: 'percussion',
-        },
-        {
-          url: '/exam/chest-auscultation.svg',
-          caption: 'Auscultation — valve areas',
-          captionAr: 'الاستماع — مناطق الصمامات',
+          url: '/exam/cases/as-mr/auscultation-as.mpeg',
+          caption: 'Aortic Stenosis — ejection systolic murmur (1st aortic area)',
+          captionAr: 'تضيق أورطي — نفخة systolic ejection',
           maneuver: 'auscultation',
+          mediaType: 'audio',
+        },
+        {
+          url: '/exam/cases/as-mr/auscultation-mr.mpeg',
+          caption: 'Mitral Regurgitation — pansystolic murmur at apex',
+          captionAr: 'قصور mitral — نفخة pansystolic عند الذروة',
+          maneuver: 'auscultation',
+          mediaType: 'audio',
         },
       ]),
       labResults: JSON.stringify({
         sections: [
           {
+            title: 'CBC / Inflammatory markers',
+            titleAr: 'صورة دم / علامات التهاب',
+            content:
+              'Hb 12.8 g/dL. WBC 9.6×10⁹/L (mildly elevated — recent tonsillitis). Platelets 280,000. ESR 45 mm/hr (elevated). CRP positive.',
+            contentAr:
+              'Hb 12.8. WBC 9.6 (مرتفع قليلاً). صفائح 280,000. ESR 45 (مرتفع). CRP إيجابي.',
+          },
+          {
             title: 'ECG',
-            titleAr: 'رسم القلب ECG',
-            content: 'Sinus rhythm. Left ventricular hypertrophy. No acute ischemic changes.',
-            contentAr: 'إيقاع sinus. تضخم ventricle أيسر. لا تغيرات ischemic حادة.',
+            titleAr: 'رسم القلب',
+            content:
+              'Sinus rhythm 90 bpm. LVH with strain (deep S in V1–V2, tall R in V5–V6, ST depression/T inversion lateral). P-mitrale in lead II (LAE).',
+            contentAr: 'إيقاع sinus 90. LVH مع strain. P-mitrale (تضخم أذين أيسر).',
           },
           {
             title: 'Echocardiography',
             titleAr: 'إيكو القلب',
             content:
-              'Severe aortic stenosis (valve area ~0.8 cm²). Moderate mitral regurgitation. LV hypertrophy. Normal RV function.',
+              'Severe AS: calcified rheumatic aortic valve, PG 64 mmHg, AVA 0.8 cm². Double mitral disease: moderate MR + moderate MS (MVA 1.6 cm²). Concentric LVH, LVEF 60%. No pleural effusion.',
             contentAr:
-              'تضيق aortic شديد. regurgitation mitral متوسط. hypertrophy ventricle أيسر. وظيفة ventricle أيمن طبيعية.',
+              'تضيق aortic شديد PG 64، AVA 0.8. مرض mitral مزدوج: MR + MS متوسط. LVH متحد المركز EF 60%.',
           },
           {
-            title: 'Chest X-ray',
+            title: 'Chest X-Ray',
             titleAr: 'أشعة الصدر',
-            content: 'Cardiomegaly. Left ventricular prominence. No pulmonary edema.',
-            contentAr: 'تضخم القلب. بروز ventricle أيسر. لا edema رئوي.',
-          },
-          {
-            title: 'Blood tests',
-            titleAr: 'تحاليل الدم',
-            content: 'FBC, renal profile, and CRP within normal limits.',
-            contentAr: 'صورة دم ووظائف كلى و CRP ضمن الحدود الطبيعية.',
+            content:
+              'Boot-shaped heart, enlarged LV, prominent LAA. Mild hyperinflation (asthma). Pleural thickening at right mid-axillary margin (prior chest tube).',
+            contentAr: 'قلب boot-shaped. تضخم LV. hyperinflation خفيف. تثخن pleural عند موقع أنبوب الصدر.',
           },
         ],
       }),
-      finalDiagnosis: 'Combined Aortic Stenosis and Mitral Regurgitation (Rheumatic)',
+      finalDiagnosis:
+        'Rheumatic combined valvular heart disease — severe aortic stenosis and mitral regurgitation, complicated by bronchial asthma',
       teachingPoints:
-        'Recognize rheumatic heart disease presentation. Understand murmur characteristics. Know indications for intervention.',
-      evaluationRubric:
-        'Introduction (10%), Presenting complaint (15%), Systematic history (30%), Red flags (15%), Summary (10%), Professionalism (20%)',
+        'Identify rheumatic fever history and penicillin prophylaxis gaps. Recognize AS (ESM, thrill, narrow pulse pressure, soft S2) and MR (pansystolic apical murmur). Note chest tube scar vs denied surgical history. Urgent surgical referral for double valve replacement. Avoid aggressive vasodilation in severe fixed AS.',
+      evaluationRubric: JSON.stringify({
+        checklist: [
+          { item: 'Elicited occupation and Shobra Al-Kheima residence', category: 'History' },
+          { item: 'Explored exertional dyspnea, PND, and low cardiac output symptoms', category: 'History' },
+          { item: 'Asked about asthma, salbutamol, and childhood rheumatic fever', category: 'History' },
+          { item: 'Identified chest tube scar discrepancy vs denied surgical history', category: 'Examination' },
+          { item: 'Palpated sustained displaced heaving apex', category: 'Examination' },
+          { item: 'Noted systolic thrill at 1st aortic area', category: 'Examination' },
+          { item: 'Auscultated AS murmur (soft S2, ESM to carotids)', category: 'Examination' },
+          { item: 'Auscultated MR murmur (pansystolic at apex to axilla)', category: 'Examination' },
+          { item: 'Interpreted echo: severe AS (PG 64, AVA 0.8) + double mitral disease', category: 'Reasoning' },
+          { item: 'Outlined valve surgery and cautioned against aggressive vasodilators in severe AS', category: 'Reasoning' },
+        ],
+      }),
       vitalSigns: JSON.stringify({
         bp: { value: '105/80 mmHg', note: 'Narrow pulse pressure' },
-        hr: { value: '90 bpm', note: 'Regular, small volume/pulsus parvus' },
+        hr: { value: '90 bpm', note: 'Regular, small volume / pulsus parvus' },
+        rr: { value: '22 bpm', note: 'Tachypneic' },
         temp: { value: '37.2 °C', note: '' },
         spo2: { value: '95%', note: 'Room air' },
       }),
-      patientPersonality: 'Anxious teenager, cooperative but worried about sports participation.',
-      scenarioPrompt:
-        'Background: 17-year-old Egyptian male student. Worried about breathlessness during football. Do not mention this unless the doctor asks.',
+      patientPersonality:
+        'Anxious 17-year-old painter, cooperative but minimizes surgical history. Speaks Egyptian Arabic.',
+      scenarioPrompt: `You are Tarek Moustafa El-Haddad, 17-year-old Egyptian male house painter from Shobra Al-Kheima.
+
+Chief complaint: shortness of breath for 2 weeks (worsening on top of 5-year progressive exertional dyspnea).
+
+History to reveal when asked:
+- PND: wakes gasping after ~2 hours, uses 2 pillows
+- Exertional dizziness and blurred vision; denies syncope
+- Productive cough, dark yellow sputum ~1/4 cup
+- Recent tonsillitis with fever 2 weeks ago
+- Childhood rheumatic fever, asthma, repeated tonsillitis
+- Depot penicillin every 15 days; Ventolin inhaler
+- Denies surgery (IMPORTANT: you have a chest tube scar but will deny surgery unless pressed gently — then admit chest tube for past pleural effusion)
+- Works as painter; non-smoker; lives with parents
+
+Do NOT volunteer the diagnosis. Answer in Egyptian Arabic when student uses Arabic.`,
       isPublished: true,
+      isFreeTier: true,
     };
 
     if (!existingCase) {
@@ -245,15 +348,7 @@ async function main() {
     } else {
       await prisma.case.update({
         where: { id: existingCase.id },
-        data: {
-          categoryId: existingCase.categoryId || chest.id,
-          physicalExam: caseData.physicalExam,
-          examImages: caseData.examImages,
-          labResults: caseData.labResults,
-          vitalSigns: caseData.vitalSigns,
-          teachingPoints: caseData.teachingPoints,
-          evaluationRubric: caseData.evaluationRubric,
-        },
+        data: caseData,
       });
     }
   }
@@ -377,32 +472,7 @@ async function main() {
     });
   }
 
-  const universities = [
-    'Misr University for Science and Technology',
-    '6th October University',
-    'Ain Shams University',
-    'Al-Azhar University',
-    'Benha University',
-    'Cairo University',
-    'Fayoum University',
-    'Galala University',
-    'Mansoura University',
-    'MTI University',
-    'Nahda University',
-    'Alexandria University',
-  ];
-
-  const existingUniCount = await prisma.partnerUniversity.count();
-  if (existingUniCount === 0) {
-    await prisma.partnerUniversity.createMany({
-      data: universities.map((name, i) => ({
-        nameEn: name,
-        nameAr: name,
-        sortOrder: i,
-        isActive: true,
-      })),
-    });
-  }
+  await ensurePartnerUniversities(prisma);
 
   await prisma.siteSettings.upsert({
     where: { id: 'default' },
@@ -412,7 +482,12 @@ async function main() {
 
   console.log('Seed completed!');
   console.log(`Admin: ${adminEmail} / ${adminPassword}`);
-  console.log('Student: student@synoza.com / Student@123456');
+  console.log('Students (password for all: Student@123456):');
+  console.log('  student@synoza.com          — Free (3 tries/case)');
+  console.log('  student2@synoza.com         — Free');
+  console.log('  student.basic@synoza.com    — Basic 150 EGP / 50 cases');
+  console.log('  student.pro@synoza.com      — Pro 300 EGP / 150 cases');
+  console.log('  student.premium@synoza.com  — Premium 500 EGP / 300 cases');
 }
 
 main()

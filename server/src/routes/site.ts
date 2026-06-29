@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
+import { ensurePartnerUniversities } from '../data/defaultUniversities.js';
 
 const router = Router();
 
@@ -12,6 +13,8 @@ async function getOrCreateSettings() {
 }
 
 router.get('/public', async (_req, res) => {
+  await ensurePartnerUniversities(prisma);
+
   const [universities, settings] = await Promise.all([
     prisma.partnerUniversity.findMany({
       where: { isActive: true },

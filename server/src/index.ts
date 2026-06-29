@@ -102,7 +102,13 @@ app.listen(PORT, async () => {
     console.warn('[email] SMTP not configured — signup OTP disabled');
   }
   if (isPaymentEnabled()) {
-    console.log(`[payments] Gateway ready (${getPaymentProvider()})`);
+    const provider = getPaymentProvider();
+    const requested = (process.env.PAYMENT_PROVIDER || 'paymob').toLowerCase();
+    if (requested === 'paymob' && provider === 'mock') {
+      console.log('[payments] Paymob not configured — using instant mock activation until gateway is connected');
+    } else {
+      console.log(`[payments] Gateway ready (${provider})`);
+    }
   } else {
     console.warn('[payments] Not configured — set PAYMENT_PROVIDER=paymob and Paymob keys');
   }

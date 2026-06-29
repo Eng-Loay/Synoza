@@ -261,6 +261,16 @@ async function getAISettings() {
   };
 }
 
+function usesMaxCompletionTokens(model: string): boolean {
+  const m = model.toLowerCase();
+  return /^(gpt-5|o1|o3|o4)/.test(m);
+}
+
+function supportsCustomTemperature(model: string): boolean {
+  const m = model.toLowerCase();
+  return !/^(gpt-5|o1|o3|o4)/.test(m);
+}
+
 async function callOpenAI(messages: ChatMessage[], model: string, temperature: number, maxTokens: number) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
@@ -269,8 +279,10 @@ async function callOpenAI(messages: ChatMessage[], model: string, temperature: n
   const response = await openai.chat.completions.create({
     model,
     messages,
-    temperature,
-    max_tokens: maxTokens,
+    ...(supportsCustomTemperature(model) ? { temperature } : {}),
+    ...(usesMaxCompletionTokens(model)
+      ? { max_completion_tokens: maxTokens }
+      : { max_tokens: maxTokens }),
   });
 
   return response.choices[0]?.message?.content || '';
@@ -305,6 +317,18 @@ function resolvePatientLanguage(language: Language, userMessage: string): boolea
 function effectivePatientLanguage(language: Language, _userMessage: string): Language {
   if (language === 'EN') return 'EN';
   return 'AR';
+}
+
+function resolveExaminerLanguage(sessionLang: Language, studentMessage: string): 'AR' | 'EN' {
+  if (sessionLang === 'EN') return 'EN';
+  if (sessionLang === 'AR') return 'AR';
+  return /[\u0600-\u06FF]/.test(studentMessage) ? 'AR' : 'AR';
+}
+
+function examinerLangRule(lang: 'AR' | 'EN'): string {
+  return lang === 'AR'
+    ? 'ردّ بس بالعامية المصرية الطبية (جمل قصيرة 2–4). ممنوع الإنجليزي إلا لمصطلحات طبية لاتينية ضرورية بين قوسين.'
+    : 'Respond ONLY in English (2–4 sentences).';
 }
 
 function isMostlyEnglish(text: string): boolean {
@@ -415,7 +439,7 @@ function asksAboutSymptoms(text: string): boolean {
   ) {
     return false;
   }
-  return /why|what brought|what brings|present|complain|symptom|problem|chief|feel|wrong|happening|issue|breath|dyspnea|swell|pain|chest|tell me about|describe|history of|ليه|سبب|شكو|عرض|وجع|ألم|الم|ضيق|تنفس|تورم|حاس|حاسس|إيه اللي|إيه المشكلة|إيه مشكل|ما الذي|what.*wrong|what.*problem|what.*matter/i.test(
+  return /why|what brought|what brings|present|complain|symptom|problem|chief|feel|wrong|happening|issue|breath|dyspnea|swell|pain|chest|tell me about|describe|history of|ليه|سبب|شكو|شكوى|شكواك|عرض|وجع|ألم|الم|ضيق|تنفس|تورم|حاس|حاسس|بتعاني|تعاني من|مشكل|إيه اللي|إيه المشكلة|إيه مشكل|إيه جابك|جابك هنا|جيت ليه|ليه جيت|عندك إيه|عندك ايه|إيه اللي عندك|ما الذي|what.*wrong|what.*problem|what.*matter/i.test(
     text,
   );
 }
@@ -616,6 +640,10 @@ function mockPatientResponse(
   if (deterministic !== null) return deterministic;
 
   const isArabic = resolvePatientLanguage(language, userMessage);
+  if (asksAboutSymptoms(userMessage)) {
+    return patientComplaintPhrase(caseData, isArabic);
+  }
+
   const studentTurn = history.filter((m) => m.role === 'STUDENT').length;
   const fallbacks = isArabic
     ? [
@@ -1094,20 +1122,25 @@ export async function getPatientResponse(
 export async function getExaminerVivaResponse(
   caseData: Case,
   question: string,
-  history: { role: string; content: string }[]
+  history: { role: string; content: string }[],
+  language: Language = 'AR',
 ): Promise<string> {
+  const lang = resolveExaminerLanguage(language, question);
   const settings = await getAISettings();
   const provider = process.env.AI_PROVIDER || settings.provider;
+  const caseTitle = lang === 'AR' ? caseData.titleAr || caseData.titleEn : caseData.titleEn;
 
   if (provider === 'mock' || provider === 'demo') {
-    return `Good attempt. For this case (${caseData.titleEn}), consider also discussing differential diagnoses and next investigation steps.`;
+    return lang === 'AR'
+      ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
+      : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`;
   }
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content: `You are an OSCE examiner conducting a viva for case: ${caseData.titleEn}. Diagnosis: ${caseData.finalDiagnosis}. Ask follow-up questions and provide brief constructive feedback. Do not reveal full answers immediately.${knowledgeContext}`,
+      content: `You are an Egyptian OSCE examiner conducting a viva for case: ${caseTitle}. Diagnosis: ${caseData.finalDiagnosis}. Ask follow-up questions and provide brief constructive feedback. Do not reveal full answers immediately. ${examinerLangRule(lang)}${knowledgeContext}`,
     },
     ...history.map((m) => ({
       role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',
@@ -1120,8 +1153,11 @@ export async function getExaminerVivaResponse(
     messages,
     settings.examinerModel,
     settings.temperature,
-    settings.maxTokens,
-    () => `Good attempt. For this case (${caseData.titleEn}), consider also discussing differential diagnoses and next investigation steps.`
+    Math.min(settings.maxTokens, 150),
+    () =>
+      lang === 'AR'
+        ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
+        : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`,
   );
 }
 
@@ -1141,15 +1177,13 @@ function maneuverLabel(maneuverId: string, isArabic: boolean) {
 export function getManeuverOpeningMessage(
   caseData: Case,
   maneuverId: string,
-  language: Language
+  language: Language,
 ): string {
-  const isArabic = language === 'AR';
-  const name = maneuverLabel(maneuverId, isArabic);
-
-  if (isArabic) {
-    return `أنا بقيّم ${name} السريري. راجع الصور/العرض السريري بعناية. اذكر ملاحظاتك بشكل منظم واشرح ماذا تبحث عنه أثناء ${name}، واذكر أي scar أو deformity أو finding واضح.`;
+  const lang = resolveExaminerLanguage(language, '');
+  const name = maneuverLabel(maneuverId, lang === 'AR');
+  if (lang === 'AR') {
+    return `أنا بقيّم خطوة ${name} في الفحص السريري. بصّ كويس على الصورة أو الفيديو ووصّف ملاحظاتك بشكل منظم — أي scars أو تشوهات أو علامات ظاهرة.`;
   }
-
   return `I am evaluating your clinical ${name}. Take a close look at the clinical presentation and images provided. Describe your findings systematically and explain what you would look for during ${name}, including any scars, deformities, or visible abnormalities.`;
 }
 
@@ -1158,30 +1192,42 @@ export async function getManeuverExaminerResponse(
   maneuverId: string,
   question: string,
   history: { role: string; content: string }[],
-  language: Language
+  language: Language,
 ): Promise<string> {
+  const lang = resolveExaminerLanguage(language, question);
   const settings = await getAISettings();
   const provider = process.env.AI_PROVIDER || settings.provider;
-  const isArabic = language === 'AR' || /[\u0600-\u06FF]/.test(question);
-  const name = maneuverLabel(maneuverId, isArabic);
+  const name = maneuverLabel(maneuverId, lang === 'AR');
+  const caseTitle = lang === 'AR' ? caseData.titleAr || caseData.titleEn : caseData.titleEn;
 
   if (provider === 'mock' || provider === 'demo') {
-    return isArabic
-      ? `محاولة جيدة في ${name}. فكّر في differential diagnosis والخطوة التالية في الفحص.`
+    return lang === 'AR'
+      ? `محاولة حلوة في ${name}. فكّر في التشخيصات التفريقية والخطوة الجاية في الفحص.`
       : `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`;
   }
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
-  const langNote = isArabic
-    ? 'Respond in Arabic (Egyptian medical Arabic).'
-    : 'Respond in English unless the student writes in Arabic.';
 
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content: `You are a MUST senior OSCE clinical examiner conducting an oral viva for the "${name}" step of the physical examination.
+      content:
+        lang === 'AR'
+          ? `أنت ممتحن OSCE مصري كبير بيقيّم خطوة "${name}" في الفحص السريري.
 
-CASE: ${caseData.titleEn}
+الحالة: ${caseTitle}
+التشخيص (مخفي عن الطالب): ${caseData.finalDiagnosis}
+بيانات الفحص: ${caseData.physicalExam}
+
+القواعد:
+1. قيّم إجابة الطالب في ${name} بس.
+2. اسأل سؤال متابعة واحد مركّز أو ادّي ملاحظة بنّاءة مختصرة.
+3. ما تكشفش التشخيص الكامل فوراً.
+4. اسأل عن التقنية والنتائج المتوقعة والتفكير السريري.
+5. ${examinerLangRule(lang)}${knowledgeContext}`
+          : `You are a senior OSCE clinical examiner conducting an oral viva for the "${name}" step of the physical examination.
+
+CASE: ${caseTitle}
 DIAGNOSIS (hidden from student): ${caseData.finalDiagnosis}
 PHYSICAL EXAM DATA: ${caseData.physicalExam}
 
@@ -1190,7 +1236,7 @@ RULES:
 2. Ask one focused follow-up question OR give brief constructive feedback (2-4 sentences).
 3. Do NOT reveal the full diagnosis immediately.
 4. Probe technique, expected findings, and clinical reasoning.
-5. ${langNote}${knowledgeContext}`,
+5. ${examinerLangRule(lang)}${knowledgeContext}`,
     },
     ...history.map((m) => ({
       role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',
@@ -1203,10 +1249,10 @@ RULES:
     messages,
     settings.examinerModel,
     settings.temperature,
-    settings.maxTokens,
+    Math.min(settings.maxTokens, 150),
     () =>
-      isArabic
-        ? `محاولة جيدة في ${name}. فكّر في differential diagnosis والخطوة التالية في الفحص.`
-        : `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`
+      lang === 'AR'
+        ? `محاولة حلوة في ${name}. فكّر في التشخيصات التفريقية والخطوة الجاية في الفحص.`
+        : `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`,
   );
 }

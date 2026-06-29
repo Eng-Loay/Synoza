@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
-import { Stethoscope } from 'lucide-react';
+import { Mail, ArrowRight, ChevronLeft } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { Navbar } from '../components/Navbar';
 import { PasswordInput } from '../components/PasswordInput';
-import { IconBox } from '../components/IconBox';
+import { SynozaLogo } from '../components/SynozaLogo';
+import { ThemeToggle } from '../components/ThemeToggle';
+import { LanguageToggle } from '../components/LanguageToggle';
 import { getAppLang, verifyEmailPath } from '../lib/appLang';
+import { homePathForUser, getStoredUser } from '../lib/authStorage';
 
 export default function LoginPage() {
   const { t, i18n } = useTranslation();
@@ -15,6 +17,7 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(true);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -24,8 +27,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await login(email, password);
-      const saved = JSON.parse(localStorage.getItem('synoza_user') || '{}');
-      navigate(saved.role === 'ADMIN' ? '/admin' : '/student');
+      navigate(homePathForUser(getStoredUser()));
     } catch (err: unknown) {
       if (err instanceof Error && err.message === 'SERVER_OFFLINE') {
         setError(t('serverOffline'));
@@ -43,50 +45,102 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen auth-bg flex flex-col">
-      <Navbar />
-      <div className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
-        <div className="w-full max-w-md animate-scale-in">
-          <div className="text-center mb-6 sm:mb-8">
-            <IconBox icon={Stethoscope} variant="brand" size="xl" className="mx-auto mb-4" />
-            <h1 className="text-heading text-2xl sm:text-3xl">{t('login')}</h1>
-            <p className="text-body text-sm mt-2">{t('tagline')}</p>
-          </div>
+    <div className="min-h-screen bg-[#f0f2f5] dark:bg-[#060b14] flex flex-col">
+      <header className="px-5 sm:px-8 py-5 flex items-center justify-between gap-3">
+        <Link
+          to="/"
+          className="inline-flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
+        >
+          <ChevronLeft size={18} />
+          {t('portalBackHome')}
+        </Link>
+        <div className="flex items-center gap-2 shrink-0">
+          <ThemeToggle />
+          <LanguageToggle variant="icon" />
+          <SynozaLogo height={48} to="/" />
+        </div>
+      </header>
 
-          <div className="card p-6 sm:p-8 shadow-xl shadow-slate-200/50 dark:shadow-black/20">
+      <div className="flex-1 flex items-center justify-center px-4 pb-12">
+        <div className="w-full max-w-md">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-[0_8px_40px_-12px_rgba(15,23,42,0.12)] dark:shadow-black/30 border border-transparent dark:border-slate-800 p-8 sm:p-10">
+            <div className="text-center mb-8">
+              <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">{t('portalLoginTitle')}</h1>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">{t('portalLoginSubtitle')}</p>
+            </div>
+
+            <div className="flex justify-end mb-6">
+              <Link to="/register" className="text-sm font-medium text-teal-700 hover:underline">
+                {t('portalCreateAccount')}
+              </Link>
+            </div>
+
             {error && (
-              <div className="bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 p-3 rounded-xl mb-4 text-sm border border-red-100 dark:border-red-900/50 animate-slide-down">
+              <div className="bg-red-50 text-red-600 p-3 rounded-xl mb-4 text-sm border border-red-100">
                 {error}
               </div>
             )}
-            <form onSubmit={handleSubmit} className="space-y-4">
+
+            <form onSubmit={handleSubmit} className="space-y-6">
               <div>
-                <label className="block text-sm font-medium mb-1.5 text-slate-700 dark:text-slate-300">{t('email')}</label>
-                <input type="email" className="input-field" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+                <label className="block text-[10px] font-bold tracking-[0.14em] text-slate-400 uppercase mb-2">
+                  {t('email')}
+                </label>
+                <div className="relative border-b-2 border-slate-200 focus-within:border-teal-600 transition-colors">
+                  <Mail size={18} className="absolute start-0 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="email"
+                    className="w-full ps-8 py-2.5 bg-transparent outline-none text-slate-900"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    autoComplete="email"
+                  />
+                </div>
               </div>
-              <PasswordInput
-                label={t('password')}
-                value={password}
-                onChange={setPassword}
-                required
-                autoComplete="current-password"
-              />
-              <button type="submit" className="btn-primary w-full py-3 mt-2" disabled={loading}>
-                {loading ? (
-                  <span className="inline-flex items-center gap-2">
-                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    {t('loading')}
-                  </span>
-                ) : (
-                  t('login')
-                )}
+
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="text-[10px] font-bold tracking-[0.14em] text-slate-400 uppercase">
+                    {t('password')}
+                  </label>
+                  <span className="text-xs text-teal-600">{t('forgotPassword')}</span>
+                </div>
+                <PasswordInput
+                  label=""
+                  value={password}
+                  onChange={setPassword}
+                  required
+                  autoComplete="current-password"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                  className="rounded border-slate-300 text-teal-600"
+                />
+                {t('portalRememberSession')}
+              </label>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-slate-900 via-slate-800 to-teal-800 text-white font-semibold flex items-center justify-center gap-2 hover:opacity-95 disabled:opacity-60 shadow-lg"
+              >
+                {loading ? t('loading') : t('portalSignInTerminal')}
+                {!loading && <ArrowRight size={18} />}
               </button>
             </form>
-            <p className="text-center text-sm text-slate-500 mt-6">
-              {t('noAccount')}{' '}
-              <Link to="/register" className="text-teal-600 dark:text-teal-400 font-semibold hover:underline">{t('register')}</Link>
-            </p>
           </div>
+
+          <p className="text-center text-[10px] text-slate-400 uppercase tracking-[0.12em] mt-8 leading-relaxed">
+            {t('portalLoginFooter1')}
+            <br />
+            {t('portalLoginFooter2')}
+          </p>
         </div>
       </div>
     </div>

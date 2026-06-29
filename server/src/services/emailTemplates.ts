@@ -65,6 +65,7 @@ export function buildOtpEmailHtml(
   const safeName = escapeHtml(firstName);
   const otpDisplay = formatOtpCode(escapeHtml(code));
   const safeUrl = escapeHtml(siteUrl);
+  const logoUrl = escapeHtml(getEmailLogoUrl());
   const fontFamily = isAr
     ? "'Tajawal','Segoe UI',Tahoma,Arial,sans-serif"
     : "'Segoe UI',Roboto,Arial,sans-serif";
@@ -88,13 +89,13 @@ export function buildOtpEmailHtml(
           </tr>
           <tr>
             <td style="padding:32px 32px 24px;text-align:center;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);">
-              <table role="presentation" cellspacing="0" cellpadding="0" align="center" style="margin:0 auto 16px;">
-                <tr>
-                  <td style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,#14b8a6 0%,#0d9488 55%,#6366f1 100%);text-align:center;vertical-align:middle;box-shadow:0 8px 24px rgba(13,148,136,0.35);">
-                    <span style="font-size:26px;line-height:52px;color:#ffffff;">&#9879;</span>
-                  </td>
-                </tr>
-              </table>
+              <img
+                src="${logoUrl}"
+                alt="Synoza"
+                width="56"
+                height="56"
+                style="display:block;margin:0 auto 16px;border:0;border-radius:14px;outline:none;text-decoration:none;"
+              />
               <h1 style="margin:0;font-size:28px;font-weight:700;letter-spacing:-0.02em;color:#0f172a;">Synoza</h1>
               <p style="margin:8px 0 0;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#64748b;">${t.subtitle}</p>
             </td>
@@ -168,5 +169,12 @@ export function getEmailSiteUrl(): string {
   if (/localhost|127\.0\.0\.1/i.test(clientUrl)) {
     return process.env.EMAIL_SITE_URL || 'https://synoza.anmka.com';
   }
-  return clientUrl;
+  return clientUrl.replace(/\/$/, '');
+}
+
+/** Public logo URL for HTML emails (must be absolute). */
+export function getEmailLogoUrl(): string {
+  const custom = process.env.EMAIL_LOGO_URL?.trim();
+  if (custom) return custom;
+  return `${getEmailSiteUrl()}/synoza-icon.png`;
 }

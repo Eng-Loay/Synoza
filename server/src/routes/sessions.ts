@@ -10,6 +10,7 @@ import {
   resolveEvaluationLanguage,
 } from '../services/aiService.js';
 import { checkCanStartCase, recordCaseAttempt } from '../services/subscriptionService.js';
+import { applySessionXp, getRankProgress } from '../services/xpService.js';
 import { Language, MessageRole } from '@prisma/client';
 
 const router = Router();
@@ -29,10 +30,8 @@ function maneuverStage(maneuverId: string) {
   return `examination:${maneuverId}`;
 }
 
-function canStartManeuver(maneuverId: string, completed: string[]) {
-  const index = EXAM_MANEUVER_ORDER.indexOf(maneuverId as (typeof EXAM_MANEUVER_ORDER)[number]);
-  if (index <= 0) return true;
-  return completed.includes(EXAM_MANEUVER_ORDER[index - 1]);
+function canStartManeuver(_maneuverId: string, _completed: string[]) {
+  return true;
 }
 
 router.use(authenticate);
@@ -60,6 +59,12 @@ router.post('/start', async (req, res) => {
         message: 'You have reached your case quota. Upgrade your plan for more cases.',
         casesUnlocked: access.casesUnlocked,
         casesQuota: access.casesQuota,
+      });
+    }
+    if (access.code === 'SUBSCRIPTION_REQUIRED') {
+      return res.status(403).json({
+        error: 'SUBSCRIPTION_REQUIRED',
+        message: 'This case requires a subscription. Upgrade to unlock.',
       });
     }
   }
@@ -248,7 +253,8 @@ router.post('/:id/examiner', async (req, res) => {
     : await getExaminerVivaResponse(
         session.case,
         message,
-        examinerHistory.map((m) => ({ role: m.role, content: m.content }))
+        examinerHistory.map((m) => ({ role: m.role, content: m.content })),
+        session.language,
       );
 
   const examinerMessage = await prisma.message.create({
@@ -352,7 +358,45 @@ router.post('/:id/complete', async (req, res) => {
     },
   });
 
-  res.json({ result });
+  let xpPayload: Awaited<ReturnType<typeof applySessionXp>> | null = null;
+  if (!result.xpApplied) {
+    xpPayload = await applySessionXp(session.userId, session.id, session.caseId, {
+      totalScore: evaluation.totalScore,
+      communicationScore: evaluation.communicationScore,
+      historyTakingScore: evaluation.historyTakingScore,
+      clinicalReasonScore: evaluation.clinicalReasonScore,
+      organizationScore: evaluation.organizationScore,
+      closingScore: evaluation.closingScore,
+    });
+
+    await prisma.result.update({
+      where: { sessionId: session.id },
+      data: {
+        xpBreakdown: JSON.stringify(xpPayload.breakdown),
+        xpCalculated: xpPayload.calculatedXp,
+        xpAwarded: xpPayload.awardedXp,
+        xpIsRepeat: xpPayload.isRepeat,
+        xpApplied: true,
+        xpRankSnapshot: JSON.stringify(xpPayload.rankProgress),
+      },
+    });
+  }
+
+  const finalResult = await prisma.result.findUnique({ where: { sessionId: session.id } });
+  const rankProgress =
+    xpPayload?.rankProgress ??
+    (finalResult?.xpRankSnapshot
+      ? (JSON.parse(finalResult.xpRankSnapshot) as Awaited<ReturnType<typeof applySessionXp>>['rankProgress'])
+      : getRankProgress(
+          (
+            await prisma.user.findUnique({
+              where: { id: session.userId },
+              select: { totalXp: true },
+            })
+          )?.totalXp ?? 0,
+        ));
+
+  res.json({ result: finalResult, rankProgress });
   } catch (error) {
     console.error('[complete]', error);
     res.status(500).json({ error: 'Failed to generate session evaluation' });

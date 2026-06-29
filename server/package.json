@@ -10,7 +10,8 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx src/seed.ts",
     "db:prune-users": "tsx scripts/prune-users.ts",
-    "db:delete-user": "tsx scripts/delete-user.ts"
+    "db:delete-user": "tsx scripts/delete-user.ts",
+    "grant-plan": "tsx scripts/grant-plan.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

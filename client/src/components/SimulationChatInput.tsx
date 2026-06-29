@@ -17,6 +17,7 @@ interface SimulationChatInputProps {
   micProcessingLabel?: string;
   micError?: string;
   disabled?: boolean;
+  isLiveCall?: boolean;
 }
 
 export function SimulationChatInput({
@@ -35,6 +36,7 @@ export function SimulationChatInput({
   micProcessingLabel,
   micError,
   disabled,
+  isLiveCall,
 }: SimulationChatInputProps) {
   const locked = disabled || sending || isProcessing;
 
@@ -56,12 +58,12 @@ export function SimulationChatInput({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && onSend()}
-          disabled={locked}
+          disabled={locked || isLiveCall}
         />
         <VoiceMicButton
           isListening={isListening || !!isProcessing}
           isSupported={isMicSupported}
-          disabled={locked}
+          disabled={locked || isLiveCall}
           onClick={onToggleMic}
           listeningLabel={micListeningLabel}
           notSupportedLabel={micNotSupportedLabel}
@@ -69,7 +71,7 @@ export function SimulationChatInput({
         <button
           type="button"
           onClick={onSend}
-          disabled={locked || !input.trim()}
+          disabled={locked || isLiveCall || !input.trim()}
           className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center hover:bg-primary-dark disabled:opacity-50 shrink-0"
         >
           <Send size={18} />

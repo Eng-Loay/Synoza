@@ -33,6 +33,11 @@ enum PaymentStatus {
   CANCELLED
 }
 
+enum PaymentProductType {
+  SUBSCRIPTION_PLAN
+  QBANK_MODULE
+}
+
 enum SessionStatus {
   IN_PROGRESS
   COMPLETED
@@ -96,11 +101,13 @@ model User {
   lastName      String
   phone         String?
   university    String?
+  studentId     String?        @unique
   avatarUrl     String?
   role          Role           @default(STUDENT)
   isActive      Boolean        @default(true)
   emailVerified Boolean        @default(false)
   preferredLang String         @default("en")
+  totalXp       Float          @default(0)
   otpCode       String?
   otpExpires    DateTime?
   resetToken    String?
@@ -111,7 +118,8 @@ model User {
   subscriptions Subscription[]
   caseAccess    CaseAccess[]
   auditLogs     AuditLog[]
-  paymentOrders PaymentOrder[]
+  paymentOrders      PaymentOrder[]
+  qbankModuleAccess  QbankModuleEntitlement[]
 }
 
 model Specialty {
@@ -163,6 +171,7 @@ model Case {
   patientPersonality  String?
   scenarioPrompt      String
   isPublished         Boolean         @default(true)
+  isFreeTier          Boolean         @default(false)
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
   specialty           Specialty       @relation(fields: [specialtyId], references: [id])
@@ -216,6 +225,12 @@ model Result {
   recommendations     String
   idealApproach       String
   fullReport          String
+  xpBreakdown         String   @default("[]")
+  xpCalculated        Float    @default(0)
+  xpAwarded           Float    @default(0)
+  xpIsRepeat          Boolean  @default(false)
+  xpApplied           Boolean  @default(false)
+  xpRankSnapshot      String   @default("{}")
   createdAt           DateTime @default(now())
   session             Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 }
@@ -248,22 +263,37 @@ model CaseAccess {
 }
 
 model PaymentOrder {
-  id              String           @id @default(cuid())
+  id              String              @id @default(cuid())
   userId          String
-  plan            SubscriptionPlan
+  productType     PaymentProductType  @default(SUBSCRIPTION_PLAN)
+  plan            SubscriptionPlan?
+  qbankTermId     String?
+  qbankModuleId   String?
   amountEgp       Int
-  status          PaymentStatus    @default(PENDING)
-  provider        String           @default("paymob")
-  merchantOrderId String           @unique
+  status          PaymentStatus       @default(PENDING)
+  provider        String              @default("paymob")
+  merchantOrderId String              @unique
   providerOrderId String?
   transactionId   String?
   paidAt          DateTime?
   failureReason   String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, status])
+}
+
+model QbankModuleEntitlement {
+  id        String   @id @default(cuid())
+  userId    String
+  termId    String
+  moduleId  String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, termId, moduleId])
+  @@index([userId, termId])
 }
 
 model AISettings {

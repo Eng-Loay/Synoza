@@ -1,6 +1,6 @@
 export function getAppLang(): string {
-  if (typeof window === 'undefined') return 'ar';
-  return localStorage.getItem('synoza_lang') || 'ar';
+  if (typeof window === 'undefined') return 'en';
+  return localStorage.getItem('synoza_lang') || 'en';
 }
 
 /** BCP-47 tag for speech APIs — Synoza defaults to Egyptian Arabic. */

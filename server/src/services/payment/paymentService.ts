@@ -1,6 +1,8 @@
-import type { SubscriptionPlan } from '@prisma/client';
+import type { PaymentProductType, SubscriptionPlan } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { activatePlan, getActiveSubscription, getPlanConfig, isPaidPlan, PLAN_CATALOG } from '../subscriptionService.js';
+import { getQbankModule, isPurchasableModule } from '../../data/qbankCatalog.js';
+import { grantModuleAccess, userHasModuleAccess } from '../qbankService.js';
 import {
   createPaymobCheckout,
   isPaymobConfigured,
@@ -14,10 +16,14 @@ const PAID_PLAN_IDS = ['PACKAGE_50', 'PACKAGE_150', 'PACKAGE_300'] as const;
 export type CheckoutPlanId = (typeof PAID_PLAN_IDS)[number];
 
 export function getPaymentProvider(): PaymentProviderName {
-  const provider = (process.env.PAYMENT_PROVIDER || 'paymob').toLowerCase();
-  if (provider === 'none') return 'none';
-  if (provider === 'mock' && process.env.NODE_ENV !== 'production') return 'mock';
-  if (provider === 'paymob') return 'paymob';
+  const requested = (process.env.PAYMENT_PROVIDER || 'paymob').toLowerCase();
+  if (requested === 'none') return 'none';
+  if (requested === 'mock') return 'mock';
+  if (requested === 'paymob') {
+    if (isPaymobConfigured()) return 'paymob';
+    // Until Paymob keys are configured, allow instant plan activation.
+    return process.env.PAYMENT_MOCK_FALLBACK === 'false' ? 'none' : 'mock';
+  }
   return 'none';
 }
 
@@ -76,6 +82,7 @@ export async function createCheckout(userId: string, planId: CheckoutPlanId) {
   const order = await prisma.paymentOrder.create({
     data: {
       userId,
+      productType: 'SUBSCRIPTION_PLAN',
       plan: planId,
       amountEgp: config.priceEgp,
       provider,
@@ -84,7 +91,13 @@ export async function createCheckout(userId: string, planId: CheckoutPlanId) {
   });
 
   if (provider === 'mock') {
-    return { orderId: order.id, merchantOrderId: order.merchantOrderId, provider: 'mock' };
+    await finalizePaidOrder(order.id, 'mock-instant');
+    return {
+      orderId: order.id,
+      merchantOrderId: order.merchantOrderId,
+      provider: 'mock',
+      status: 'PAID',
+    };
   }
 
   if (provider === 'paymob') {
@@ -119,6 +132,81 @@ export async function createCheckout(userId: string, planId: CheckoutPlanId) {
   throw new Error('PAYMENT_NOT_CONFIGURED');
 }
 
+export async function createModuleCheckout(userId: string, termId: string, moduleId: string) {
+  if (!isPurchasableModule(termId, moduleId)) {
+    throw new Error('INVALID_MODULE');
+  }
+
+  const mod = getQbankModule(termId, moduleId);
+  if (!mod) throw new Error('INVALID_MODULE');
+
+  const alreadyOwned = await userHasModuleAccess(userId, termId, moduleId);
+  if (alreadyOwned) throw new Error('ALREADY_OWNED');
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new Error('USER_NOT_FOUND');
+
+  const merchantOrderId = `SZ-QB-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const provider = getPaymentProvider();
+
+  const order = await prisma.paymentOrder.create({
+    data: {
+      userId,
+      productType: 'QBANK_MODULE',
+      qbankTermId: termId,
+      qbankModuleId: moduleId,
+      amountEgp: mod.priceEgp,
+      provider,
+      merchantOrderId,
+    },
+  });
+
+  if (provider === 'mock') {
+    await finalizePaidOrder(order.id, 'mock-instant');
+    return {
+      orderId: order.id,
+      merchantOrderId: order.merchantOrderId,
+      provider: 'mock',
+      status: 'PAID',
+      termId,
+      moduleId,
+    };
+  }
+
+  if (provider === 'paymob') {
+    if (!isPaymobConfigured()) {
+      throw new Error('PAYMOB_NOT_CONFIGURED');
+    }
+
+    const paymob = await createPaymobCheckout({
+      amountEgp: mod.priceEgp,
+      merchantOrderId: order.merchantOrderId,
+      billing: {
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+      },
+    });
+
+    await prisma.paymentOrder.update({
+      where: { id: order.id },
+      data: { providerOrderId: paymob.providerOrderId },
+    });
+
+    return {
+      orderId: order.id,
+      merchantOrderId: order.merchantOrderId,
+      provider: 'paymob',
+      iframeUrl: paymob.checkoutUrl,
+      termId,
+      moduleId,
+    };
+  }
+
+  throw new Error('PAYMENT_NOT_CONFIGURED');
+}
+
 export async function completeMockCheckout(merchantOrderId: string, userId: string) {
   if (getPaymentProvider() !== 'mock') throw new Error('MOCK_NOT_ENABLED');
   const order = await prisma.paymentOrder.findUnique({ where: { merchantOrderId } });
@@ -129,10 +217,32 @@ export async function completeMockCheckout(merchantOrderId: string, userId: stri
 export async function getOrderForUser(merchantOrderId: string, userId: string) {
   const order = await prisma.paymentOrder.findUnique({ where: { merchantOrderId } });
   if (!order || order.userId !== userId) return null;
-  const planConfig = PLAN_CATALOG[order.plan as keyof typeof PLAN_CATALOG];
+
+  const productType = order.productType as PaymentProductType;
+
+  if (productType === 'QBANK_MODULE' && order.qbankTermId && order.qbankModuleId) {
+    const mod = getQbankModule(order.qbankTermId, order.qbankModuleId);
+    const labelEn = mod ? `QBank · ${mod.nameEn} (${order.qbankTermId})` : 'QBank Module';
+    const labelAr = mod ? `بنك الأسئلة · ${mod.nameAr} (${order.qbankTermId})` : 'موديول بنك الأسئلة';
+    return {
+      merchantOrderId: order.merchantOrderId,
+      status: order.status,
+      productType,
+      qbankTermId: order.qbankTermId,
+      qbankModuleId: order.qbankModuleId,
+      amountEgp: order.amountEgp,
+      paidAt: order.paidAt,
+      provider: order.provider,
+      planLabelEn: labelEn,
+      planLabelAr: labelAr,
+    };
+  }
+
+  const planConfig = order.plan ? PLAN_CATALOG[order.plan as keyof typeof PLAN_CATALOG] : undefined;
   return {
     merchantOrderId: order.merchantOrderId,
     status: order.status,
+    productType: productType || 'SUBSCRIPTION_PLAN',
     plan: order.plan,
     amountEgp: order.amountEgp,
     paidAt: order.paidAt,
@@ -142,11 +252,35 @@ export async function getOrderForUser(merchantOrderId: string, userId: string) {
   };
 }
 
+async function fulfillPaidOrder(order: {
+  id: string;
+  userId: string;
+  productType: string;
+  plan: string | null;
+  qbankTermId: string | null;
+  qbankModuleId: string | null;
+}) {
+  if (order.productType === 'QBANK_MODULE') {
+    if (order.qbankTermId && order.qbankModuleId) {
+      await grantModuleAccess(order.userId, order.qbankTermId, order.qbankModuleId);
+    }
+    return;
+  }
+
+  if (!order.plan) return;
+
+  const active = await getActiveSubscription(order.userId);
+  if (active && isPaidPlan(active.plan)) return;
+
+  await activatePlan(order.userId, order.plan as import('@prisma/client').SubscriptionPlan);
+}
+
 async function finalizePaidOrder(orderId: string, transactionId?: string) {
   const order = await prisma.paymentOrder.findUnique({ where: { id: orderId } });
   if (!order) throw new Error('ORDER_NOT_FOUND');
 
   if (order.status === 'PAID') {
+    await fulfillPaidOrder(order);
     return order;
   }
 
@@ -160,7 +294,8 @@ async function finalizePaidOrder(orderId: string, transactionId?: string) {
     },
   });
 
-  await activatePlan(order.userId, order.plan);
+  await fulfillPaidOrder(order);
+
   return prisma.paymentOrder.findUnique({ where: { id: order.id } });
 }
 

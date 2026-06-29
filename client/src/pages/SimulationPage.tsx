@@ -18,11 +18,8 @@ import {
   ClipboardCheck,
   Loader2,
   CheckCircle2,
-  Phone,
-  PhoneOff,
 } from "lucide-react";
 import api from "../lib/api";
-import { resolveSpeechLanguage } from "../lib/appLang";
 import { downloadTextFile } from "../lib/download";
 import { downloadOsceReportPdf } from "../lib/osceReportPdf";
 import { ConnectionStatus } from "../components/ConnectionStatus";
@@ -32,9 +29,17 @@ import chestPercussionImg from "../assets/exam/chest-percussion.svg?url";
 import chestAuscultationImg from "../assets/exam/chest-auscultation.svg?url";
 // import { VoiceMicButton } from '../components/VoiceMicButton';
 import { SimulationChatInput } from '../components/SimulationChatInput';
+import { LiveCallButton } from '../components/LiveCallButton';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useSpeechInput } from '../hooks/useSpeechInput';
-import { useLivePatientCall } from '../hooks/useLivePatientCall';
+import { useLiveVoiceCall } from '../hooks/useLivePatientCall';
+import { speakText, stopSpeaking } from '../lib/speech';
+import {
+  XpBreakdownSection,
+  parseRankSnapshot,
+  type RankSnapshot,
+} from '../components/student/XpBreakdownSection';
+import { RankPromotionModal } from '../components/student/RankPromotionModal';
 
 interface Message {
   id: string;
@@ -49,6 +54,7 @@ interface ExamImage {
   caption?: string;
   captionAr?: string;
   maneuver?: string;
+  mediaType?: 'image' | 'video' | 'audio';
 }
 
 interface VitalSigns {
@@ -180,12 +186,18 @@ const DEFAULT_MANEUVER_IMAGES: Record<string, string> = {
 };
 
 function resolveExamImageUrl(maneuverId: string, url: string): string {
-  const bundled = DEFAULT_MANEUVER_IMAGES[maneuverId];
-  if (bundled) return bundled;
-  if (url.startsWith("/exam/") || url.includes("chest-")) {
-    return `/exam/chest-${maneuverId}.svg`;
-  }
-  return url;
+  if (url.startsWith('/exam/cases/')) return url;
+  if (/\.(png|jpe?g|webp|gif|mp4|webm|mpeg|mp3|ogg|wav)(\?|#|$)/i.test(url)) return url;
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  return DEFAULT_MANEUVER_IMAGES[maneuverId] || url;
+}
+
+function inferMediaType(item: ExamImage): 'image' | 'video' | 'audio' {
+  if (item.mediaType) return item.mediaType;
+  const lower = item.url.toLowerCase();
+  if (/\.(mp4|webm)(\?|#|$)/.test(lower)) return 'video';
+  if (/\.(mpeg|mp3|ogg|wav)(\?|#|$)/.test(lower)) return 'audio';
+  return 'image';
 }
 
 const maneuverStage = (id: string) => `examination:${id}`;
@@ -244,13 +256,27 @@ export default function SimulationPage() {
   const [chatError, setChatError] = useState("");
   const [secondsLeft, setSecondsLeft] = useState(STATION_SECONDS);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [rankProgress, setRankProgress] = useState<RankSnapshot | null>(null);
+  const [promotionModal, setPromotionModal] = useState<RankSnapshot | null>(null);
   const [completing, setCompleting] = useState(false);
   const [completeError, setCompleteError] = useState("");
   const [vivaActive, setVivaActive] = useState(false);
   const [micError, setMicError] = useState('');
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [exiting, setExiting] = useState(false);
-  const speechLang = resolveSpeechLanguage(lang, i18n.language);
+
+  const voiceCallContext =
+    activeStage === 'history' && !showExaminerPanel
+      ? 'patient'
+      : activeStage === 'history' && showExaminerPanel
+        ? 'examiner'
+        : activeStage === 'examination' || activeStage === 'diagnosis'
+          ? 'examiner'
+          : null;
+
+  const examinerSpeechLang = lang === 'EN' ? 'en-US' : 'ar-EG';
+  const listenLang = voiceCallContext === 'patient' ? 'ar-EG' : examinerSpeechLang;
+  const speakLang = voiceCallContext === 'patient' ? 'ar-EG' : examinerSpeechLang;
 
   const sendMessage = useCallback(
     async (overrideText?: string): Promise<{ success: boolean; reply?: string }> => {
@@ -299,7 +325,10 @@ export default function SimulationPage() {
         });
         return {
           success: true,
-          reply: res.data.message.role === 'PATIENT' ? res.data.message.content : undefined,
+          reply:
+            res.data.message.role === 'PATIENT' || res.data.message.role === 'EXAMINER'
+              ? res.data.message.content
+              : undefined,
         };
       } catch (err) {
         setSession((prev) =>
@@ -334,17 +363,30 @@ export default function SimulationPage() {
 
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
+  const voiceCallContextRef = useRef(voiceCallContext);
+  voiceCallContextRef.current = voiceCallContext;
+
+  const micSpeechLang = voiceCallContext === 'patient' ? 'ar-EG' : lang === 'EN' ? 'en-US' : 'ar-EG';
+  const micSessionLang = voiceCallContext === 'patient' ? 'AR' : lang === 'AUTO' ? 'AR' : lang;
 
   const { isListening, isProcessing, isSupported: isMicSupported, toggleListening, stopListening } = useSpeechInput({
-    lang: speechLang,
-    sessionLang: lang,
+    lang: micSpeechLang,
+    sessionLang: micSessionLang,
     onInterim: () => {
       setMicError('');
     },
-    onComplete: (transcript) => {
+    onComplete: async (transcript) => {
       setMicError('');
       setInput(transcript);
-      void sendMessageRef.current(transcript);
+      const result = await sendMessageRef.current(transcript);
+      if (!result.success || !result.reply) return;
+
+      const ctx = voiceCallContextRef.current;
+      if (ctx === 'patient') {
+        await speakText(result.reply, 'ar-EG');
+      } else if (ctx === 'examiner') {
+        await speakText(result.reply, lang === 'EN' ? 'en-US' : 'ar-EG');
+      }
     },
     onError: (code) => {
       setInput('');
@@ -361,10 +403,12 @@ export default function SimulationPage() {
     },
   });
 
-  const patientLiveCall = useLivePatientCall({
-    lang: speechLang,
+  const liveVoiceCall = useLiveVoiceCall({
+    listenLang,
+    speakLang,
+    sessionLang: micSessionLang,
     sendMessage,
-    disabled: sending || showExaminerPanel || activeStage !== 'history',
+    disabled: !voiceCallContext || sending,
     onError: (code) => {
       if (code === 'not-supported') setMicError(t('liveCallNotSupported'));
       else if (code === 'not-allowed') setMicError(t('micPermissionDenied'));
@@ -372,16 +416,49 @@ export default function SimulationPage() {
       else if (code === 'network') setMicError(t('micNetworkError'));
       else if (code === 'audio-capture') setMicError(t('micCaptureError'));
       else if (code === 'start-failed') setMicError(t('micStartFailed'));
+      else if (code === 'transcription-failed') setMicError(t('micTranscriptionFailed'));
+      else if (code === 'transcription-unavailable') setMicError(t('micTranscriptionUnavailable'));
       else setMicError(t('micError'));
     },
   });
 
   useEffect(() => {
-    if (showExaminerPanel && patientLiveCall.isLiveCall) {
-      patientLiveCall.stopCall();
+    if (!voiceCallContext && liveVoiceCall.isLiveCall) {
+      liveVoiceCall.stopCall();
       stopListening();
     }
-  }, [showExaminerPanel, patientLiveCall.isLiveCall, patientLiveCall.stopCall, stopListening]);
+  }, [voiceCallContext, liveVoiceCall.isLiveCall, liveVoiceCall.stopCall, stopListening]);
+
+  useEffect(() => {
+    if (liveVoiceCall.isLiveCall) {
+      liveVoiceCall.stopCall();
+      stopListening();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listenLang]);
+
+  const toggleMic = () => {
+    setMicError('');
+    if (liveVoiceCall.isLiveCall) liveVoiceCall.stopCall();
+    stopSpeaking();
+    toggleListening();
+  };
+
+  const toggleLiveCall = () => {
+    setMicError('');
+    stopListening();
+    if (!liveVoiceCall.isLiveCall) setInput('');
+    liveVoiceCall.toggleLiveCall();
+  };
+
+  const liveCallInputProps = {
+    isLiveCall: liveVoiceCall.isLiveCall,
+    isLiveCallBusy: liveVoiceCall.isBusy,
+    isLiveCallSupported: liveVoiceCall.isSupported,
+    onToggleLiveCall: voiceCallContext ? toggleLiveCall : undefined,
+    liveCallLabel: t('liveCall'),
+    endLiveCallLabel: t('endLiveCall'),
+  };
 
   const loadSession = useCallback(async () => {
     const res = await api.get(`/sessions/${sessionId}`);
@@ -391,6 +468,7 @@ export default function SimulationPage() {
     setCompletedManeuvers(parseJsonArray(s.completedManeuvers, []));
     if (s.result) {
       setResult(s.result);
+      setRankProgress(parseRankSnapshot(s.result.xpRankSnapshot));
       setActiveStage("feedback");
     } else {
       setActiveStage(s.currentStage || "history");
@@ -443,7 +521,7 @@ export default function SimulationPage() {
 
   const confirmExit = useCallback(async () => {
     setExiting(true);
-    patientLiveCall.stopCall();
+    liveVoiceCall.stopCall();
     stopListening();
     try {
       await api.post(`/sessions/${sessionId}/abandon`);
@@ -453,7 +531,7 @@ export default function SimulationPage() {
     setExiting(false);
     setShowExitConfirm(false);
     navigate("/student");
-  }, [navigate, patientLiveCall, sessionId, stopListening]);
+  }, [navigate, liveVoiceCall, sessionId, stopListening]);
 
   const formatTime = (s: number) => {
     const m = Math.floor(s / 60)
@@ -474,10 +552,8 @@ export default function SimulationPage() {
     /* empty */
   }
 
-  const isManeuverUnlocked = (id: string, index: number) =>
-    index === 0 || completedManeuvers.includes(EXAM_MANEUVERS[index - 1].id);
-
   const startManeuver = async (maneuverId: string) => {
+    if (maneuverId === activeManeuver) return;
     setSending(true);
     try {
       const res = await api.post(`/sessions/${sessionId}/maneuver/start`, {
@@ -558,13 +634,16 @@ export default function SimulationPage() {
   const completeSession = async () => {
     setCompleting(true);
     setCompleteError("");
-    const evaluationLanguage =
-      lang === "AR" ? "AR" : lang === "EN" ? "EN" : i18n.language.startsWith("ar") ? "AR" : "EN";
+    const evaluationLanguage = 'EN';
     try {
       const res = await api.post(`/sessions/${sessionId}/complete`, {
         language: evaluationLanguage,
       });
       setResult(res.data.result);
+      const progress = parseRankSnapshot(res.data.rankProgress ?? res.data.result?.xpRankSnapshot);
+      setRankProgress(progress);
+      if (progress?.promoted) setPromotionModal(progress);
+      window.dispatchEvent(new Event('synoza:entitlements-changed'));
       setSession((prev) =>
         prev ? { ...prev, result: res.data.result, status: "COMPLETED" } : prev,
       );
@@ -661,6 +740,11 @@ export default function SimulationPage() {
         onConfirm={() => void confirmExit()}
         onCancel={cancelExit}
       />
+      <RankPromotionModal
+        rankProgress={promotionModal}
+        isAr={isAr}
+        onClose={() => setPromotionModal(null)}
+      />
       <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-2">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2 min-w-0">
@@ -750,23 +834,20 @@ export default function SimulationPage() {
                 {t("physicalExamDesc")}
               </p>
               <div className="space-y-2 mb-4">
-                {EXAM_MANEUVERS.map((m, i) => {
-                  const unlocked = isManeuverUnlocked(m.id, i);
+                {EXAM_MANEUVERS.map((m) => {
                   const active = activeManeuver === m.id;
                   const done = completedManeuvers.includes(m.id);
                   return (
                     <button
                       key={m.id}
-                      disabled={!unlocked || sending}
-                      onClick={() => unlocked && startManeuver(m.id)}
+                      disabled={sending || active}
+                      onClick={() => !sending && !active && startManeuver(m.id)}
                       className={`w-full text-left px-3 py-3 rounded-lg border text-sm transition-all ${
                         active
                           ? "border-primary bg-primary text-white shadow-md"
                           : done
                             ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200"
-                            : unlocked
-                              ? "border-slate-200 dark:border-slate-700 hover:border-primary/50 text-slate-700 dark:text-slate-200"
-                              : "border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-400 cursor-not-allowed"
+                            : "border-slate-200 dark:border-slate-700 hover:border-primary/50 text-slate-700 dark:text-slate-200"
                       }`}
                     >
                       <p className="font-semibold">
@@ -779,9 +860,7 @@ export default function SimulationPage() {
                           ? t("activeViva")
                           : done
                             ? t("completed")
-                            : unlocked
-                              ? t("clickToStart")
-                              : t("locked")}
+                            : t("clickToStart")}
                       </p>
                     </button>
                   );
@@ -868,6 +947,7 @@ export default function SimulationPage() {
               <div className="flex-1 overflow-y-auto p-4">
                 <FeedbackView
                   result={feedbackResult}
+                  rankProgress={rankProgress}
                   t={t}
                   session={session}
                   isAr={isAr}
@@ -892,7 +972,6 @@ export default function SimulationPage() {
                 completedManeuvers={completedManeuvers}
                 onStartManeuver={startManeuver}
                 sending={sending}
-                isManeuverUnlocked={isManeuverUnlocked}
               />
               <ExaminationView
                 session={session}
@@ -915,14 +994,11 @@ export default function SimulationPage() {
                 isListening={isListening}
                 isProcessing={isProcessing}
                 isMicSupported={isMicSupported}
-                onToggleMic={() => {
-                  setMicError('');
-                  if (patientLiveCall.isLiveCall) patientLiveCall.stopCall();
-                  toggleListening();
-                }}
+                onToggleMic={toggleMic}
                 micError={micError}
                 completedManeuvers={completedManeuvers}
                 onStartManeuver={startManeuver}
+                {...liveCallInputProps}
               />
             </>
           ) : activeStage === "investigations" ? (
@@ -935,6 +1011,8 @@ export default function SimulationPage() {
             <DiagnosisView
               t={t}
               messages={diagnosisMessages}
+              input={input}
+              setInput={setInput}
               sendMessage={sendMessage}
               sending={sending}
               chatError={chatError}
@@ -942,6 +1020,12 @@ export default function SimulationPage() {
               completing={completing}
               completeError={completeError}
               chatEndRef={chatEndRef}
+              isListening={isListening}
+              isProcessing={isProcessing}
+              isMicSupported={isMicSupported}
+              onToggleMic={toggleMic}
+              micError={micError}
+              {...liveCallInputProps}
             />
           ) : (
             <HistoryChatView
@@ -961,25 +1045,9 @@ export default function SimulationPage() {
               isListening={isListening}
               isProcessing={isProcessing}
               isMicSupported={isMicSupported}
-              onToggleMic={() => {
-                setMicError('');
-                if (patientLiveCall.isLiveCall) patientLiveCall.stopCall();
-                toggleListening();
-              }}
+              onToggleMic={toggleMic}
               micError={micError}
-              isLiveCall={patientLiveCall.isLiveCall}
-              isLiveCallBusy={patientLiveCall.isBusy}
-              isLiveCallSupported={patientLiveCall.isSupported}
-              onToggleLiveCall={
-                showExaminerPanel
-                  ? undefined
-                  : () => {
-                      setMicError('');
-                      stopListening();
-                      if (!patientLiveCall.isLiveCall) setInput('');
-                      patientLiveCall.toggleLiveCall();
-                    }
-              }
+              {...liveCallInputProps}
             />
           )}
         </main>
@@ -995,7 +1063,6 @@ function ExaminationStepsBar({
   completedManeuvers,
   onStartManeuver,
   sending,
-  isManeuverUnlocked,
 }: {
   isAr: boolean;
   t: (k: string, opts?: Record<string, unknown>) => string;
@@ -1003,29 +1070,25 @@ function ExaminationStepsBar({
   completedManeuvers: string[];
   onStartManeuver: (id: string) => void;
   sending: boolean;
-  isManeuverUnlocked: (id: string, index: number) => boolean;
 }) {
   return (
     <div className="md:hidden bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 py-3 shrink-0">
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {EXAM_MANEUVERS.map((m, i) => {
-          const unlocked = isManeuverUnlocked(m.id, i);
+        {EXAM_MANEUVERS.map((m) => {
           const active = activeManeuver === m.id;
           const done = completedManeuvers.includes(m.id);
           return (
             <button
               key={m.id}
               type="button"
-              disabled={!unlocked || sending || done}
-              onClick={() => unlocked && !done && onStartManeuver(m.id)}
+              disabled={sending || active}
+              onClick={() => !sending && !active && onStartManeuver(m.id)}
               className={`shrink-0 px-3 py-2 rounded-lg border text-xs font-semibold transition-all ${
                 active
                   ? "border-primary bg-primary text-white"
                   : done
                     ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200"
-                    : unlocked
-                      ? "border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200"
-                      : "border-slate-100 dark:border-slate-800 text-slate-400"
+                    : "border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-primary/50"
               }`}
             >
               {isAr ? m.nameAr : m.nameEn}
@@ -1063,6 +1126,12 @@ function ExaminationView({
   micError,
   completedManeuvers,
   onStartManeuver,
+  isLiveCall,
+  isLiveCallBusy,
+  isLiveCallSupported,
+  onToggleLiveCall,
+  liveCallLabel,
+  endLiveCallLabel,
 }: {
   session: Session;
   isAr: boolean;
@@ -1088,6 +1157,12 @@ function ExaminationView({
   micError: string;
   completedManeuvers: string[];
   onStartManeuver: (id: string) => void;
+  isLiveCall?: boolean;
+  isLiveCallBusy?: boolean;
+  isLiveCallSupported?: boolean;
+  onToggleLiveCall?: () => void;
+  liveCallLabel?: string;
+  endLiveCallLabel?: string;
 }) {
   if (!activeManeuver || !activeManeuverMeta) {
     const nextId = getNextManeuver(completedManeuvers);
@@ -1156,19 +1231,39 @@ function ExaminationView({
 
         {/* Clinical examiner chat */}
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col min-h-[280px]">
-          <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center">
-              <Stethoscope size={16} className="text-amber-700" />
+          <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                <Stethoscope size={16} className="text-amber-700" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold text-slate-400 uppercase">
+                  {t("clinicalExaminer")}
+                </p>
+                <p className="text-xs text-slate-600 truncate">
+                  {isAr ? activeManeuverMeta.nameAr : activeManeuverMeta.nameEn}
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="text-[10px] font-bold text-slate-400 uppercase">
-                {t("clinicalExaminer")}
-              </p>
-              <p className="text-xs text-slate-600">
-                {isAr ? activeManeuverMeta.nameAr : activeManeuverMeta.nameEn}
-              </p>
-            </div>
+            <LiveCallButton
+              isLiveCall={isLiveCall}
+              isLiveCallBusy={isLiveCallBusy}
+              isLiveCallSupported={isLiveCallSupported}
+              onToggleLiveCall={onToggleLiveCall}
+              liveCallLabel={liveCallLabel}
+              endLiveCallLabel={endLiveCallLabel}
+              disabled={sending}
+            />
           </div>
+
+          {isLiveCall && (
+            <div className="px-4 py-2 border-b border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
+              <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                {isLiveCallBusy ? t("paymentProcessing") : t("liveCallActive")}
+              </p>
+            </div>
+          )}
 
           <div
             className="flex-1 p-4 overflow-y-auto space-y-3 max-h-64"
@@ -1226,6 +1321,7 @@ function ExaminationView({
               micNotSupportedLabel={t("micNotSupported")}
               micProcessingLabel={t("micProcessing")}
               micError={micError}
+              isLiveCall={isLiveCall}
             />
           </div>
         </div>
@@ -1373,24 +1469,15 @@ function HistoryChatView({
               : `${t("interviewLog")}: ${session.case.patientName}`}
           </h3>
           <div className="flex items-center gap-2 shrink-0">
-            {!showExaminerPanel && onToggleLiveCall && (
-              <button
-                type="button"
-                onClick={onToggleLiveCall}
-                disabled={sending || !isLiveCallSupported}
-                title={isLiveCall ? t("endLiveCall") : t("liveCall")}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                  isLiveCall
-                    ? "bg-emerald-500 text-white ring-2 ring-emerald-300 animate-pulse"
-                    : isLiveCallSupported
-                      ? "bg-slate-800 dark:bg-slate-700 text-white hover:bg-slate-700"
-                      : "bg-slate-200 dark:bg-slate-700 text-slate-500 cursor-not-allowed opacity-60"
-                }`}
-              >
-                {isLiveCall ? <PhoneOff size={14} /> : <Phone size={14} />}
-                {isLiveCall ? t("endLiveCall") : t("liveCall")}
-              </button>
-            )}
+            <LiveCallButton
+              isLiveCall={isLiveCall}
+              isLiveCallBusy={isLiveCallBusy}
+              isLiveCallSupported={isLiveCallSupported}
+              onToggleLiveCall={onToggleLiveCall}
+              liveCallLabel={t("liveCall")}
+              endLiveCallLabel={t("endLiveCall")}
+              disabled={sending}
+            />
             <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
               <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />{" "}
               {t("active")}
@@ -1398,7 +1485,7 @@ function HistoryChatView({
           </div>
         </div>
 
-        {!showExaminerPanel && isLiveCall && (
+        {isLiveCall && (
           <div className="px-4 py-2 border-b border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
             <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
@@ -1491,6 +1578,7 @@ function HistoryChatView({
           micProcessingLabel={t("micProcessing")}
           micError={micError}
           disabled={isLiveCall}
+          isLiveCall={isLiveCall}
         />
       </div>
     </div>
@@ -1500,6 +1588,8 @@ function HistoryChatView({
 function DiagnosisView({
   t,
   messages,
+  input,
+  setInput,
   sendMessage,
   sending,
   chatError,
@@ -1507,9 +1597,22 @@ function DiagnosisView({
   completing,
   completeError,
   chatEndRef,
+  isListening,
+  isProcessing,
+  isMicSupported,
+  onToggleMic,
+  micError,
+  isLiveCall,
+  isLiveCallBusy,
+  isLiveCallSupported,
+  onToggleLiveCall,
+  liveCallLabel,
+  endLiveCallLabel,
 }: {
   t: (k: string) => string;
   messages: Message[];
+  input: string;
+  setInput: (v: string) => void;
   sendMessage: (text?: string) => Promise<{ success: boolean; reply?: string }>;
   sending: boolean;
   chatError: string;
@@ -1517,6 +1620,17 @@ function DiagnosisView({
   completing: boolean;
   completeError: string;
   chatEndRef: React.RefObject<HTMLDivElement | null>;
+  isListening: boolean;
+  isProcessing: boolean;
+  isMicSupported: boolean;
+  onToggleMic: () => void;
+  micError: string;
+  isLiveCall?: boolean;
+  isLiveCallBusy?: boolean;
+  isLiveCallSupported?: boolean;
+  onToggleLiveCall?: () => void;
+  liveCallLabel?: string;
+  endLiveCallLabel?: string;
 }) {
   const [impression, setImpression] = useState("");
   const [management, setManagement] = useState("");
@@ -1614,32 +1728,73 @@ function DiagnosisView({
           </button>
         </div>
 
-        {messages.length > 0 && (
-          <div className="card overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 text-xs font-bold text-slate-400 uppercase bg-white dark:bg-slate-900">
+        <div className="card overflow-hidden mb-6">
+          <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 bg-white dark:bg-slate-900">
+            <h3 className="text-xs font-bold text-slate-400 uppercase">
               {t("clinicalExaminer")}
-            </div>
-            <div
-              className="max-h-72 p-4 overflow-y-auto space-y-3 bg-white dark:bg-slate-900"
-              dir="ltr"
-            >
-              {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex ${msg.role === "STUDENT" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap ${msg.role === "STUDENT" ? "bg-primary text-white" : "bg-amber-50 dark:bg-amber-950/40 border border-amber-100 dark:border-amber-800 text-amber-950 dark:text-amber-100"}`}
-                  >
-                    <span dir="auto">{msg.content}</span>
-                  </div>
-                </div>
-              ))}
-              {sending && <ChatTypingIndicator label={t("examinerTyping")} />}
-              <div ref={chatEndRef} />
-            </div>
+            </h3>
+            <LiveCallButton
+              isLiveCall={isLiveCall}
+              isLiveCallBusy={isLiveCallBusy}
+              isLiveCallSupported={isLiveCallSupported}
+              onToggleLiveCall={onToggleLiveCall}
+              liveCallLabel={liveCallLabel}
+              endLiveCallLabel={endLiveCallLabel}
+              disabled={sending}
+            />
           </div>
-        )}
+
+          {isLiveCall && (
+            <div className="px-4 py-2 border-b border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
+              <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                {isLiveCallBusy ? t("paymentProcessing") : t("liveCallActive")}
+              </p>
+            </div>
+          )}
+
+          {messages.length > 0 && (
+            <>
+              <div
+                className="max-h-72 p-4 overflow-y-auto space-y-3 bg-white dark:bg-slate-900"
+                dir="ltr"
+              >
+                {messages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`flex ${msg.role === "STUDENT" ? "justify-end" : "justify-start"}`}
+                  >
+                    <div
+                      className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap ${msg.role === "STUDENT" ? "bg-primary text-white" : "bg-amber-50 dark:bg-amber-950/40 border border-amber-100 dark:border-amber-800 text-amber-950 dark:text-amber-100"}`}
+                    >
+                      <span dir="auto">{msg.content}</span>
+                    </div>
+                  </div>
+                ))}
+                {sending && <ChatTypingIndicator label={t("examinerTyping")} />}
+                <div ref={chatEndRef} />
+              </div>
+            </>
+          )}
+          <SimulationChatInput
+            input={input}
+            setInput={setInput}
+            onSend={() => sendMessage()}
+            sending={sending}
+            placeholder={t("askExaminer")}
+            chatError={chatError}
+            isListening={isListening}
+            isProcessing={isProcessing}
+            isMicSupported={isMicSupported}
+            onToggleMic={onToggleMic}
+            micListeningLabel={t("micListening")}
+            micNotSupportedLabel={t("micNotSupported")}
+            micProcessingLabel={t("micProcessing")}
+            micError={micError}
+            disabled={isLiveCall}
+            isLiveCall={isLiveCall}
+          />
+        </div>
       </div>
     </div>
   );
@@ -1690,23 +1845,41 @@ function ClinicalStationPanel({
       </div>
 
       <div className="grid gap-3">
-        {displayImages.map((img, i) => (
+        {displayImages.map((img, i) => {
+          const mediaType = inferMediaType(img);
+          return (
           <div
             key={`${img.url}-${i}`}
             className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-950"
           >
-            <img
-              src={img.url}
-              alt={img.caption || "Clinical station"}
-              className="w-full max-h-80 object-contain mx-auto"
-            />
+            {mediaType === 'video' ? (
+              <video
+                src={img.url}
+                controls
+                playsInline
+                className="w-full max-h-80 object-contain mx-auto bg-black"
+              >
+                <track kind="captions" />
+              </video>
+            ) : mediaType === 'audio' ? (
+              <div className="px-4 py-6 bg-slate-900">
+                <audio src={img.url} controls className="w-full" />
+              </div>
+            ) : (
+              <img
+                src={img.url}
+                alt={img.caption || "Clinical station"}
+                className="w-full max-h-80 object-contain mx-auto"
+              />
+            )}
             {(img.caption || img.captionAr) && (
               <p className="text-xs text-slate-400 px-3 py-2 border-t border-slate-800">
                 {isAr ? img.captionAr || img.caption : img.caption}
               </p>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {objective && (
@@ -1848,6 +2021,7 @@ function FeedbackPendingView({
 
 function FeedbackView({
   result,
+  rankProgress,
   t,
   session,
   isAr,
@@ -1855,6 +2029,7 @@ function FeedbackView({
   regenerating,
 }: {
   result: Record<string, unknown>;
+  rankProgress?: RankSnapshot | null;
   t: (key: string) => string;
   session: Session;
   isAr: boolean;
@@ -1875,13 +2050,12 @@ function FeedbackView({
   const downloadReport = async () => {
     setDownloadingReport(true);
     try {
-      const stationTitle = isAr ? session.case.titleAr : session.case.titleEn;
       await downloadOsceReportPdf({
         sessionId: session.id,
-        stationTitle,
+        stationTitle: session.case.titleEn,
         patientName: session.case.patientName,
         result,
-        isAr,
+        isAr: false,
         labels: {
           certificateTitle: t("reportCertificateTitle"),
           officialReport: t("reportOfficialDocument"),
@@ -1975,8 +2149,8 @@ function FeedbackView({
           </h4>
           <p
             className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed"
-            dir={isAr ? "rtl" : "ltr"}
-            lang={isAr ? "ar" : "en"}
+            dir="ltr"
+            lang="en"
           >
             {result[key] as string}
           </p>
@@ -1989,13 +2163,14 @@ function FeedbackView({
           </h4>
           <div
             className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap prose prose-sm dark:prose-invert max-w-none leading-relaxed"
-            dir={isAr ? "rtl" : "ltr"}
-            lang={isAr ? "ar" : "en"}
+            dir="ltr"
+            lang="en"
           >
             {(result.fullReport as string).replace(/^## /gm, "### ")}
           </div>
         </div>
       )}
+      <XpBreakdownSection result={result} rankProgress={rankProgress} isAr={isAr} />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
+import { ensurePartnerUniversities } from './data/defaultUniversities.js';
 
 const prisma = new PrismaClient();
 
@@ -31,7 +32,7 @@ async function main() {
 
   await prisma.user.upsert({
     where: { email: 'student@synoza.com' },
-    update: { emailVerified: true },
+    update: { emailVerified: true, studentId: '202400001' },
     create: {
       email: 'student@synoza.com',
       passwordHash: await bcrypt.hash('Student@123456', 12),
@@ -40,9 +41,64 @@ async function main() {
       role: 'STUDENT',
       university: 'Cairo University',
       phone: '01024828652',
+      studentId: '202400001',
       emailVerified: true,
     },
   });
+
+  const testStudentPassword = 'Student@123456';
+  const testStudents: Array<{
+    email: string;
+    firstName: string;
+    lastName: string;
+    university: string;
+    studentId: string;
+    plan?: 'PACKAGE_50' | 'PACKAGE_150' | 'PACKAGE_300';
+  }> = [
+    { email: 'student2@synoza.com', firstName: 'Sara', lastName: 'Hassan', university: 'Ain Shams University', studentId: '202400002' },
+    { email: 'student.basic@synoza.com', firstName: 'Omar', lastName: 'Khaled', university: 'MUST', studentId: '202400003', plan: 'PACKAGE_50' },
+    { email: 'student.pro@synoza.com', firstName: 'Nour', lastName: 'Adel', university: 'Alexandria University', studentId: '202400004', plan: 'PACKAGE_150' },
+    { email: 'student.premium@synoza.com', firstName: 'Youssef', lastName: 'Mahmoud', university: 'Cairo University', studentId: '202400005', plan: 'PACKAGE_300' },
+  ];
+
+  for (const s of testStudents) {
+    const user = await prisma.user.upsert({
+      where: { email: s.email },
+      update: { emailVerified: true, studentId: s.studentId },
+      create: {
+        email: s.email,
+        passwordHash: await bcrypt.hash(testStudentPassword, 12),
+        firstName: s.firstName,
+        lastName: s.lastName,
+        role: 'STUDENT',
+        university: s.university,
+        studentId: s.studentId,
+        emailVerified: true,
+      },
+    });
+
+    if (s.plan) {
+      await prisma.subscription.updateMany({
+        where: { userId: user.id, status: 'ACTIVE' },
+        data: { status: 'CANCELLED', endDate: new Date() },
+      });
+      const months = s.plan === 'PACKAGE_50' ? 2 : s.plan === 'PACKAGE_150' ? 4 : 6;
+      const casesQuota = s.plan === 'PACKAGE_50' ? 50 : s.plan === 'PACKAGE_150' ? 150 : 300;
+      const priceEgp = s.plan === 'PACKAGE_50' ? 150 : s.plan === 'PACKAGE_150' ? 300 : 500;
+      const endDate = new Date();
+      endDate.setMonth(endDate.getMonth() + months);
+      await prisma.subscription.create({
+        data: {
+          userId: user.id,
+          plan: s.plan,
+          status: 'ACTIVE',
+          casesQuota,
+          priceEgp,
+          endDate,
+        },
+      });
+    }
+  }
 
   const specialties = [
     { nameEn: 'Cardiology', nameAr: 'أمراض القلب', description: 'Cardiovascular clinical cases' },
@@ -238,6 +294,7 @@ async function main() {
       scenarioPrompt:
         'Background: 17-year-old Egyptian male student. Worried about breathlessness during football. Do not mention this unless the doctor asks.',
       isPublished: true,
+      isFreeTier: true,
     };
 
     if (!existingCase) {
@@ -253,6 +310,7 @@ async function main() {
           vitalSigns: caseData.vitalSigns,
           teachingPoints: caseData.teachingPoints,
           evaluationRubric: caseData.evaluationRubric,
+          isFreeTier: true,
         },
       });
     }
@@ -377,32 +435,7 @@ async function main() {
     });
   }
 
-  const universities = [
-    'Misr University for Science and Technology',
-    '6th October University',
-    'Ain Shams University',
-    'Al-Azhar University',
-    'Benha University',
-    'Cairo University',
-    'Fayoum University',
-    'Galala University',
-    'Mansoura University',
-    'MTI University',
-    'Nahda University',
-    'Alexandria University',
-  ];
-
-  const existingUniCount = await prisma.partnerUniversity.count();
-  if (existingUniCount === 0) {
-    await prisma.partnerUniversity.createMany({
-      data: universities.map((name, i) => ({
-        nameEn: name,
-        nameAr: name,
-        sortOrder: i,
-        isActive: true,
-      })),
-    });
-  }
+  await ensurePartnerUniversities(prisma);
 
   await prisma.siteSettings.upsert({
     where: { id: 'default' },
@@ -412,7 +445,12 @@ async function main() {
 
   console.log('Seed completed!');
   console.log(`Admin: ${adminEmail} / ${adminPassword}`);
-  console.log('Student: student@synoza.com / Student@123456');
+  console.log('Students (password for all: Student@123456):');
+  console.log('  student@synoza.com          — Free (3 tries/case)');
+  console.log('  student2@synoza.com         — Free');
+  console.log('  student.basic@synoza.com    — Basic 150 EGP / 50 cases');
+  console.log('  student.pro@synoza.com      — Pro 300 EGP / 150 cases');
+  console.log('  student.premium@synoza.com  — Premium 500 EGP / 300 cases');
 }
 
 main()

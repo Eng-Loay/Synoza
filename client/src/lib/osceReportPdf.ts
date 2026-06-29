@@ -60,7 +60,7 @@ async function loadFontBase64(): Promise<string> {
 }
 
 async function loadReportLogo(): Promise<string | null> {
-  for (const path of ['/report-logo.png', '/report-logo.svg', '/favicon.svg']) {
+  for (const path of ['/report-logo.png', '/synoza-wordmark.png', '/synoza-logo.png', '/synoza-icon.png']) {
     try {
       const res = await fetch(path);
       if (!res.ok) continue;
@@ -76,6 +76,108 @@ async function loadReportLogo(): Promise<string | null> {
     }
   }
   return null;
+}
+
+type PreparedReportLogo = {
+  dataUrl: string;
+  widthMm: number;
+  heightMm: number;
+};
+
+function isLogoPixelEmpty(r: number, g: number, b: number, a: number): boolean {
+  if (a <= 12) return true;
+  if (r > 245 && g > 245 && b > 245) return true;
+  if (r < 18 && g < 18 && b < 18) return true;
+  return false;
+}
+
+async function trimLogoDataUrl(dataUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0);
+
+      const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      let top = height;
+      let bottom = 0;
+      let left = width;
+      let right = 0;
+
+      for (let py = 0; py < height; py += 1) {
+        for (let px = 0; px < width; px += 1) {
+          const i = (py * width + px) * 4;
+          if (!isLogoPixelEmpty(data[i], data[i + 1], data[i + 2], data[i + 3])) {
+            top = Math.min(top, py);
+            bottom = Math.max(bottom, py);
+            left = Math.min(left, px);
+            right = Math.max(right, px);
+          }
+        }
+      }
+
+      if (top >= bottom || left >= right) {
+        resolve(dataUrl);
+        return;
+      }
+
+      const pad = Math.max(2, Math.round(Math.min(width, height) * 0.01));
+      const cropX = Math.max(0, left - pad);
+      const cropY = Math.max(0, top - pad);
+      const cropRight = Math.min(width, right + pad + 1);
+      const cropBottom = Math.min(height, bottom + pad + 1);
+      const cropW = cropRight - cropX;
+      const cropH = cropBottom - cropY;
+
+      const out = document.createElement('canvas');
+      out.width = cropW;
+      out.height = cropH;
+      out.getContext('2d')!.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+      resolve(out.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+async function loadImageSize(dataUrl: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => reject(new Error('logo-size-failed'));
+    img.src = dataUrl;
+  });
+}
+
+async function prepareReportLogo(dataUrl: string | null): Promise<PreparedReportLogo | null> {
+  if (!dataUrl) return null;
+  try {
+    const trimmed = await trimLogoDataUrl(dataUrl);
+    const { width, height } = await loadImageSize(trimmed);
+    if (!width || !height) return null;
+
+    const aspect = width / height;
+    const targetH = 12;
+    let logoW = targetH * aspect;
+    let logoH = targetH;
+    const maxW = 48;
+    if (logoW > maxW) {
+      logoW = maxW;
+      logoH = logoW / aspect;
+    }
+
+    return { dataUrl: trimmed, widthMm: logoW, heightMm: logoH };
+  } catch {
+    return null;
+  }
 }
 
 function prepareText(text: string, isAr: boolean): string {
@@ -123,41 +225,58 @@ function ensureSpace(doc: jsPDF, y: number, needed: number): number {
 function drawHeader(
   doc: jsPDF,
   labels: OsceReportLabels,
-  logoDataUrl: string | null,
+  logo: PreparedReportLogo | null,
   isAr: boolean,
 ): number {
-  let y = MARGIN + 2;
+  const y = MARGIN + 4;
   const x = textX(isAr);
+  let headerBottom = y + 6;
+  let logoAdded = false;
 
-  if (logoDataUrl) {
+  if (logo) {
     try {
-      const fmt = logoDataUrl.includes('png') ? 'PNG' : 'JPEG';
-      doc.addImage(logoDataUrl, fmt, isAr ? PAGE_W - MARGIN - 16 : MARGIN, y - 2, 16, 16);
+      const logoX = isAr ? PAGE_W - MARGIN - logo.widthMm : MARGIN;
+      const logoY = y + 1;
+      doc.addImage(logo.dataUrl, 'PNG', logoX, logoY, logo.widthMm, logo.heightMm);
+      logoAdded = true;
+      headerBottom = logoY + logo.heightMm;
+
+      doc.setFont('Cairo', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text(prepareText(labels.officialReport, isAr), isAr ? MARGIN : PAGE_W - MARGIN, logoY + logo.heightMm / 2 + 1, {
+        align: isAr ? 'left' : 'right',
+      });
     } catch {
-      /* skip logo */
+      logoAdded = false;
     }
   }
 
-  doc.setFont('Cairo', 'bold');
-  doc.setFontSize(18);
-  doc.setTextColor(15, 118, 110);
-  doc.text(prepareText(labels.platformName, isAr), x, y + 5, { align: isAr ? 'right' : 'left' });
+  if (!logoAdded) {
+    doc.setFont('Cairo', 'bold');
+    doc.setFontSize(18);
+    doc.setTextColor(15, 118, 110);
+    doc.text(prepareText(labels.platformName, isAr), x, y + 6, { align: isAr ? 'right' : 'left' });
+    headerBottom = y + 10;
+
+    doc.setFont('Cairo', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text(prepareText(labels.officialReport, isAr), isAr ? MARGIN : PAGE_W - MARGIN, y + 5, {
+      align: isAr ? 'left' : 'right',
+    });
+  }
 
   doc.setFont('Cairo', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
-  doc.text(prepareText(labels.certificateTitle, isAr), x, y + 11, { align: isAr ? 'right' : 'left' });
+  doc.text(prepareText(labels.certificateTitle, isAr), x, headerBottom + 5, { align: isAr ? 'right' : 'left' });
 
-  doc.setFontSize(8);
-  doc.text(prepareText(labels.officialReport, isAr), isAr ? MARGIN : PAGE_W - MARGIN, y + 5, {
-    align: isAr ? 'left' : 'right',
-  });
-
-  y += 16;
+  const lineY = headerBottom + 11;
   doc.setDrawColor(20, 184, 166);
   doc.setLineWidth(0.8);
-  doc.line(MARGIN, y, PAGE_W - MARGIN, y);
-  return y + 6;
+  doc.line(MARGIN, lineY, PAGE_W - MARGIN, lineY);
+  return lineY + 6;
 }
 
 function drawMeta(
@@ -317,6 +436,7 @@ function drawSeal(doc: jsPDF, label: string, y: number, isAr: boolean): number {
 
 export async function downloadOsceReportPdf(data: OsceReportData): Promise<void> {
   const [fontBase64, logoDataUrl] = await Promise.all([loadFontBase64(), loadReportLogo()]);
+  const logo = await prepareReportLogo(logoDataUrl);
   const { result, labels, isAr } = data;
   const doc = setupDoc(fontBase64, isAr);
 
@@ -325,7 +445,7 @@ export async function downloadOsceReportPdf(data: OsceReportData): Promise<void>
     timeStyle: 'short',
   });
 
-  let y = drawHeader(doc, labels, logoDataUrl, isAr);
+  let y = drawHeader(doc, labels, logo, isAr);
   y = drawMeta(doc, data, dateStr, y, isAr);
   y = drawScores(doc, data, y, isAr);
 

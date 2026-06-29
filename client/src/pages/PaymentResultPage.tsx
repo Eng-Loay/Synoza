@@ -18,6 +18,9 @@ export default function PaymentResultPage({ mode }: { mode: PageMode }) {
   const [error, setError] = useState('');
   const [order, setOrder] = useState<{
     status: string;
+    productType?: string;
+    qbankTermId?: string;
+    qbankModuleId?: string;
     planLabelEn?: string;
     planLabelAr?: string;
     amountEgp?: number;
@@ -37,6 +40,8 @@ export default function PaymentResultPage({ mode }: { mode: PageMode }) {
 
         if (mode === 'success' && res.data.order.status !== 'PAID') {
           setError(t('paymentPending'));
+        } else if (mode === 'success' && res.data.order.status === 'PAID') {
+          window.dispatchEvent(new Event('synoza:entitlements-changed'));
         }
       } catch {
         setError(t('paymentVerifyFailed'));
@@ -49,6 +54,12 @@ export default function PaymentResultPage({ mode }: { mode: PageMode }) {
   }, [mode, orderRef, t]);
 
   const planLabel = order ? (isAr ? order.planLabelAr : order.planLabelEn) : '';
+  const isQbankModule = order?.productType === 'QBANK_MODULE';
+  const successLink =
+    isQbankModule && order?.qbankTermId && order?.qbankModuleId
+      ? `/student/mcq/${order.qbankTermId}/${order.qbankModuleId}/setup`
+      : '/student';
+  const successCta = isQbankModule ? t('portalMcqStartExam') : t('startTraining');
 
   return (
     <div className="min-h-screen auth-bg flex flex-col">
@@ -75,15 +86,17 @@ export default function PaymentResultPage({ mode }: { mode: PageMode }) {
             <>
               <IconBox icon={CheckCircle2} variant="brand" size="xl" className="mx-auto mb-4" />
               <h1 className="text-heading text-xl mb-2">{t('paymentSuccessTitle')}</h1>
-              <p className="text-body text-sm mb-2">{t('paymentSuccessDesc')}</p>
+              <p className="text-body text-sm mb-2">
+                {isQbankModule ? t('paymentModuleSuccessDesc') : t('paymentSuccessDesc')}
+              </p>
               {planLabel && (
                 <p className="text-sm font-semibold text-teal-700 dark:text-teal-300 mb-6">
                   {planLabel}
                   {order?.amountEgp ? ` · ${order.amountEgp} ${t('egp')}` : ''}
                 </p>
               )}
-              <Link to="/student" className="btn-primary inline-block px-6 py-3">
-                {t('startTraining')}
+              <Link to={successLink} className="btn-primary inline-block px-6 py-3">
+                {successCta}
               </Link>
             </>
           )}

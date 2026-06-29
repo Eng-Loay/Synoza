@@ -1,16 +1,15 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import axios from 'axios';
-import api from '../lib/api';
-export interface User {
-  id: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  role: 'STUDENT' | 'ADMIN';
-  university?: string;
-  phone?: string;
-  avatarUrl?: string;
-}
+import api, { refreshAuthToken } from '../lib/api';
+import {
+  clearAuthSession,
+  getStoredToken,
+  getStoredUser,
+  setAuthSession,
+  type StoredUser,
+} from '../lib/authStorage';
+
+export type User = StoredUser;
 
 interface AuthContextType {
   user: User | null;
@@ -25,70 +24,85 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-function readStoredUser(): User | null {
-  try {
-    const raw = localStorage.getItem('synoza_user');
-    return raw ? (JSON.parse(raw) as User) : null;
-  } catch {
-    return null;
-  }
-}
-
-function clearAuthStorage() {
-  localStorage.removeItem('synoza_token');
-  localStorage.removeItem('synoza_user');
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(readStoredUser);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('synoza_token'));
+  const [user, setUser] = useState<User | null>(() => getStoredUser());
+  const [token, setToken] = useState<string | null>(() => getStoredToken());
   const [loading, setLoading] = useState(true);
 
   const logout = () => {
-    clearAuthStorage();
+    clearAuthSession();
     setToken(null);
     setUser(null);
   };
 
   useEffect(() => {
-    if (!token) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
+    let cancelled = false;
 
-    api
-      .get('/auth/me')
-      .then(async (res) => {
+    async function bootstrapSession() {
+      const storedToken = getStoredToken();
+      const storedUser = getStoredUser();
+
+      if (!storedToken) {
+        setToken(null);
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
+      setToken(storedToken);
+      if (storedUser) setUser(storedUser);
+
+      try {
+        let activeToken = storedToken;
+        const refreshed = await refreshAuthToken();
+        if (refreshed) {
+          activeToken = refreshed;
+          if (!cancelled) setToken(refreshed);
+        }
+
+        const res = await api.get('/auth/me', {
+          headers: { Authorization: `Bearer ${activeToken}` },
+        });
+
+        if (cancelled) return;
+
         if (res.data.user) {
           setUser(res.data.user);
-          localStorage.setItem('synoza_user', JSON.stringify(res.data.user));
-          try {
-            const refreshed = await api.post('/auth/refresh');
-            if (refreshed.data.token) {
-              localStorage.setItem('synoza_token', refreshed.data.token);
-              setToken(refreshed.data.token);
-            }
-          } catch {
-            /* keep existing token if refresh fails */
-          }
+          setAuthSession(activeToken, res.data.user);
         } else {
           logout();
         }
-      })
-      .catch((err: unknown) => {
+      } catch (err) {
+        if (cancelled) return;
         if (axios.isAxiosError(err) && err.response?.status === 401) {
           logout();
         }
-      })
-      .finally(() => setLoading(false));
-  }, [token]);
+        /* Network errors: keep cached session so the portal stays open offline */
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void bootstrapSession();
+
+    const refreshOnFocus = () => {
+      if (getStoredToken()) void refreshAuthToken();
+    };
+    window.addEventListener('focus', refreshOnFocus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refreshOnFocus();
+    });
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', refreshOnFocus);
+    };
+  }, []);
 
   const login = async (email: string, password: string) => {
     try {
       const res = await api.post('/auth/login', { email, password });
-      localStorage.setItem('synoza_token', res.data.token);
-      localStorage.setItem('synoza_user', JSON.stringify(res.data.user));
+      setAuthSession(res.data.token, res.data.user);
       setToken(res.data.token);
       setUser(res.data.user);
     } catch (err: unknown) {
@@ -106,15 +120,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const verifyOtp = async (email: string, code: string) => {
     const res = await api.post('/auth/verify-otp', { email, code });
-    localStorage.setItem('synoza_token', res.data.token);
-    localStorage.setItem('synoza_user', JSON.stringify(res.data.user));
+    setAuthSession(res.data.token, res.data.user);
     setToken(res.data.token);
     setUser(res.data.user);
   };
 
   const updateUser = (updated: User) => {
     setUser(updated);
-    localStorage.setItem('synoza_user', JSON.stringify(updated));
+    const currentToken = getStoredToken();
+    if (currentToken) setAuthSession(currentToken, updated);
   };
 
   return (

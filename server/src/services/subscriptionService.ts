@@ -5,9 +5,9 @@ export const FREE_ATTEMPTS_PER_CASE = 3;
 
 export const PLAN_CATALOG = {
   FREE: { priceEgp: 0, casesQuota: 0, durationMonths: 0, labelEn: 'Free', labelAr: 'مجاني' },
-  PACKAGE_50: { priceEgp: 150, casesQuota: 75, durationMonths: 2, labelEn: '75 Cases', labelAr: '75 حالة' },
-  PACKAGE_150: { priceEgp: 300, casesQuota: 200, durationMonths: 4, labelEn: '200 Cases', labelAr: '200 حالة' },
-  PACKAGE_300: { priceEgp: 500, casesQuota: 400, durationMonths: 6, labelEn: '400 Cases', labelAr: '400 حالة' },
+  PACKAGE_50: { priceEgp: 150, casesQuota: 50, durationMonths: 2, labelEn: 'Basic', labelAr: 'Basic' },
+  PACKAGE_150: { priceEgp: 300, casesQuota: 150, durationMonths: 4, labelEn: 'Pro', labelAr: 'Pro' },
+  PACKAGE_300: { priceEgp: 500, casesQuota: 300, durationMonths: 6, labelEn: 'Premium', labelAr: 'Premium' },
   INSTITUTION: { priceEgp: 0, casesQuota: 999_999, durationMonths: 0, labelEn: 'Institution', labelAr: 'مؤسسة' },
 } as const;
 
@@ -126,6 +126,17 @@ export async function checkCanStartCase(userId: string, caseId: string) {
   });
 
   if (!isPaidPlan(plan)) {
+    const caseData = await prisma.case.findUnique({
+      where: { id: caseId },
+      select: { isFreeTier: true },
+    });
+    if (!caseData?.isFreeTier) {
+      return {
+        allowed: false as const,
+        code: 'SUBSCRIPTION_REQUIRED' as const,
+      };
+    }
+
     const attempts = await getEffectiveAttempts(userId, caseId);
     if (attempts >= FREE_ATTEMPTS_PER_CASE) {
       return {
@@ -173,9 +184,14 @@ export async function recordCaseAttempt(userId: string, caseId: string) {
 }
 
 export async function pickRandomEligibleCase(userId: string, categoryId?: string) {
+  const subscription = await getActiveSubscription(userId);
+  const plan = subscription?.plan ?? 'FREE';
+  const freePlan = !isPaidPlan(plan);
+
   const cases = await prisma.case.findMany({
     where: {
       isPublished: true,
+      ...(freePlan ? { isFreeTier: true } : {}),
       ...(categoryId ? { categoryId } : {}),
     },
     include: { specialty: true, difficulty: true, category: true },

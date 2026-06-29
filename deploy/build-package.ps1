@@ -21,7 +21,7 @@ try {
   New-Item -ItemType Directory -Force -Path "$Stage/client/public/exam" | Out-Null
   New-Item -ItemType Directory -Force -Path "$Stage/server/dist" | Out-Null
   New-Item -ItemType Directory -Force -Path "$Stage/server/prisma" | Out-Null
-  New-Item -ItemType Directory -Force -Path "$Stage/server/src" | Out-Null
+  New-Item -ItemType Directory -Force -Path "$Stage/server/src/data" | Out-Null
   New-Item -ItemType Directory -Force -Path "$Stage/deploy" | Out-Null
 
   Copy-Item -Recurse "$Root/client/dist/*" "$Stage/client/dist/"
@@ -30,6 +30,7 @@ try {
   Copy-Item "$Root/server/package.json" "$Stage/server/"
   Copy-Item "$Root/server/package-lock.json" "$Stage/server/" -ErrorAction SilentlyContinue
   Copy-Item "$Root/server/src/seed.ts" "$Stage/server/src/"
+  Copy-Item -Recurse "$Root/server/src/data/*" "$Stage/server/src/data/"
   Copy-Item "$Root/server/prisma/schema.mysql.prisma" "$Stage/server/prisma/schema.prisma"
   Copy-Item "$Root/deploy/install-on-server.sh" "$Stage/deploy/"
   # Ensure Unix line endings for bash on Linux

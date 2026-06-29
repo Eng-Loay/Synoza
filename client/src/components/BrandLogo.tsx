@@ -1,5 +1,4 @@
-import { Stethoscope } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { SynozaLogo } from './SynozaLogo';
 
 interface BrandLogoProps {
   size?: 'sm' | 'md' | 'lg';
@@ -8,29 +7,22 @@ interface BrandLogoProps {
   onClick?: () => void;
 }
 
-const sizes = {
-  sm: { box: 'w-9 h-9 rounded-xl', icon: 18, title: 'text-base font-bold', sub: 'hidden sm:block text-[10px]' },
-  md: { box: 'w-10 h-10 rounded-xl', icon: 20, title: 'text-lg font-bold', sub: 'text-[11px]' },
-  lg: { box: 'p-2.5 rounded-xl', icon: 24, title: 'text-xl font-bold', sub: 'text-[10px] font-semibold uppercase tracking-widest' },
-};
+const heights = { sm: 44, md: 52, lg: 60 } as const;
+const subtitles = {
+  sm: 'hidden sm:block text-[10px]',
+  md: 'text-[11px]',
+  lg: 'text-[10px] font-semibold uppercase tracking-widest',
+} as const;
 
 export function BrandLogo({ size = 'md', showSubtitle = true, subtitle, onClick }: BrandLogoProps) {
-  const s = sizes[size];
   return (
-    <Link to="/" className="flex items-center gap-3 min-w-0 group" onClick={onClick}>
-      <div
-        className={`${s.box} bg-gradient-to-br from-teal-500 via-teal-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-teal-500/30 group-hover:shadow-teal-500/40 group-hover:scale-[1.02] transition-all duration-300 shrink-0`}
-      >
-        <Stethoscope className="text-white" size={s.icon} strokeWidth={2.25} />
-      </div>
-      <div className="min-w-0 text-start">
-        <span className={`${s.title} text-slate-900 dark:text-white block truncate leading-tight tracking-tight`}>
-          Synoza
+    <div className="flex flex-col items-start min-w-0">
+      <SynozaLogo height={heights[size]} to="/" onClick={onClick} />
+      {showSubtitle && subtitle && (
+        <span className={`${subtitles[size]} text-slate-500 dark:text-slate-400 truncate max-w-full mt-0.5 leading-tight`}>
+          {subtitle}
         </span>
-        {showSubtitle && subtitle && (
-          <span className={`${s.sub} text-slate-500 dark:text-slate-400 truncate block`}>{subtitle}</span>
-        )}
-      </div>
-    </Link>
+      )}
+    </div>
   );
 }

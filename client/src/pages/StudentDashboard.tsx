@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Search, BarChart3, ClipboardList, Clock, Play, Lock, TrendingUp, Shuffle } from 'lucide-react';
+import { Clock, Play, Lock } from 'lucide-react';
 import api from '../lib/api';
-import { Navbar } from '../components/Navbar';
+import { boardDisplayName } from '../lib/boardLabels';
 import { BoardIcon, getBoardIconBg } from '../components/BoardIcon';
-import { IconBox } from '../components/IconBox';
-import { SectionPicker, type SectionOption } from '../components/SectionPicker';
-import { SubscriptionPlansSection } from '../components/SubscriptionPlansSection';
-import { StudentWelcomeCard } from '../components/StudentWelcomeCard';
-import { useAuth } from '../context/AuthContext';
+import { BlindMockOsceCard } from '../components/student/BlindMockOsceCard';
+import { RandomCasePreview } from '../components/student/RandomCasePreview';
+import { StartCaseConfirmDialog } from '../components/student/StartCaseConfirmDialog';
+import { StudentCaseCard } from '../components/student/StudentCaseCard';
+import { PortalSupportCard } from '../components/student/PortalSupportCard';
+import {
+  shouldConfirmCaseStart,
+  type PendingCaseStart,
+} from '../lib/startCaseConfirm';
 
 interface Case {
   id: string;
@@ -21,6 +25,7 @@ interface Case {
   difficulty: { nameEn: string; nameAr: string; color: string; level: number };
   category?: { nameEn: string; nameAr: string } | null;
   examImages?: string;
+  isFreeTier?: boolean;
 }
 
 interface CategoryNode {
@@ -30,12 +35,6 @@ interface CategoryNode {
   description?: string | null;
   children: CategoryNode[];
   _count?: { cases: number; children: number };
-}
-
-interface Stats {
-  totalSessions: number;
-  completedStations: number;
-  averageScore: number;
 }
 
 interface Entitlements {
@@ -50,17 +49,6 @@ interface Entitlements {
   planDurationMonths?: number;
   attemptsByCase: Record<string, number>;
 }
-
-interface PlanOption {
-  id: string;
-  priceEgp: number;
-  casesQuota: number;
-  durationMonths: number;
-  labelEn: string;
-  labelAr: string;
-}
-
-// PlanOption shape matches SubscriptionPlansSection
 
 const DEFAULT_COVER = '/exam/chest-inspection.svg';
 function getCaseCover(examImages?: string): string {
@@ -111,6 +99,14 @@ function boardIsComingSoon(board: CategoryNode) {
   return (board._count?.cases ?? 0) === 0 && childCases === 0 && board.children.length === 0;
 }
 
+type SectionOption = {
+  id: string;
+  label: string;
+  shortLabel: string;
+  boardLabel?: string;
+  caseCount: number;
+};
+
 function buildSectionOptions(categories: CategoryNode[], isAr: boolean): SectionOption[] {
   const options: SectionOption[] = [];
 
@@ -149,30 +145,28 @@ function buildSectionOptions(categories: CategoryNode[], isAr: boolean): Section
 
 export default function StudentDashboard() {
   const { t, i18n } = useTranslation();
-  const { user } = useAuth();
   const navigate = useNavigate();
   const isAr = i18n.language?.startsWith('ar');
 
   const [cases, setCases] = useState<Case[]>([]);
-  const [stats, setStats] = useState<Stats | null>(null);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [rootCategories, setRootCategories] = useState<CategoryNode[]>([]);
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
   const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
   const [entitlements, setEntitlements] = useState<Entitlements | null>(null);
-  const [plans, setPlans] = useState<PlanOption[]>([]);
   const [startError, setStartError] = useState<string | null>(null);
   const [randomLoading, setRandomLoading] = useState<'all' | 'section' | null>(null);
   const [randomSectionId, setRandomSectionId] = useState('');
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingStart, setPendingStart] = useState<PendingCaseStart | null>(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
   const randomErrorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.get('/categories').then((r) => setRootCategories(r.data.categories));
-    api.get('/student/overview').then((r) => setStats(r.data.stats));
     api.get('/student/entitlements').then((r) => {
       setEntitlements(r.data.entitlements);
-      setPlans(r.data.plans ?? []);
     });
   }, []);
 
@@ -243,6 +237,7 @@ export default function StudentDashboard() {
     if (code === 'NO_CASES') return scope === 'section' ? t('noCasesInSection') : t('noStationsInCategory');
     if (code === 'FREE_LIMIT_REACHED') return t('freeLimitReached');
     if (code === 'CASE_QUOTA_EXCEEDED') return t('caseQuotaExceeded');
+    if (code === 'SUBSCRIPTION_REQUIRED') return t('subscriptionRequired');
     return t('error');
   };
 
@@ -277,27 +272,47 @@ export default function StudentDashboard() {
       showStartError(resolveStartError(err, categoryId ? 'section' : 'all'));
     } finally {
       setRandomLoading(null);
+      setConfirmLoading(false);
+      setConfirmOpen(false);
+      setPendingStart(null);
     }
   };
 
-  const startSectionRandom = () => {
-    if (!randomSectionId) {
-      showStartError(t('randomCaseChooseSection'));
+  const executePendingStart = async (pending: PendingCaseStart) => {
+    setConfirmLoading(true);
+    try {
+      if (pending.type === 'random') {
+        await startRandomCase(pending.categoryId);
+      } else {
+        setConfirmOpen(false);
+        setPendingStart(null);
+        await startStation(pending.caseId);
+      }
+    } finally {
+      if (pending.type !== 'random') setConfirmLoading(false);
+    }
+  };
+
+  const requestCaseStart = (pending: PendingCaseStart) => {
+    if (shouldConfirmCaseStart(entitlements, pending)) {
+      setPendingStart(pending);
+      setConfirmOpen(true);
       return;
     }
-    void startRandomCase(randomSectionId);
+    void executePendingStart(pending);
   };
 
   const getCaseAttempts = (caseId: string) => entitlements?.attemptsByCase[caseId] ?? 0;
 
-  const canStartCase = (caseId: string) => {
+  const canStartCase = (c: Case) => {
     if (!entitlements) return true;
-    if (!entitlements.isFree) {
-      const attempts = getCaseAttempts(caseId);
-      if (attempts > 0) return true;
-      return entitlements.casesRemaining > 0;
+    if (entitlements.isFree) {
+      if (!c.isFreeTier) return false;
+      return getCaseAttempts(c.id) < entitlements.freeAttemptsPerCase;
     }
-    return getCaseAttempts(caseId) < entitlements.freeAttemptsPerCase;
+    const attempts = getCaseAttempts(c.id);
+    if (attempts > 0) return true;
+    return entitlements.casesRemaining > 0;
   };
 
   const caseAttemptLabel = (caseId: string) => {
@@ -311,267 +326,160 @@ export default function StudentDashboard() {
     return null;
   };
 
+  const sortedCases = useMemo(() => {
+    if (entitlements?.isFree) {
+      return cases.filter((c) => !c.isFreeTier);
+    }
+    return cases;
+  }, [cases, entitlements?.isFree]);
+
   return (
-    <div className="min-h-screen bg-[var(--color-medical-bg)] dark:bg-[#060b14]">
-      <Navbar />
+    <div className="max-w-6xl mx-auto space-y-6">
+      <StartCaseConfirmDialog
+        open={confirmOpen}
+        pending={pendingStart}
+        entitlements={entitlements}
+        confirming={confirmLoading}
+        title={t('startCaseConfirmTitle')}
+        confirmLabel={t('startCaseConfirmButton')}
+        cancelLabel={t('stayInExam')}
+        onConfirm={() => pendingStart && void executePendingStart(pendingStart)}
+        onCancel={() => {
+          if (confirmLoading) return;
+          setConfirmOpen(false);
+          setPendingStart(null);
+        }}
+      />
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8">
-        {entitlements && user && (
-          <StudentWelcomeCard user={user} entitlements={entitlements} isAr={isAr} />
-        )}
+      {entitlements?.isFree ? (
+        <RandomCasePreview entitlements={entitlements} />
+      ) : entitlements && sectionOptions.length > 0 ? (
+        <BlindMockOsceCard
+          sections={sectionOptions.map((o) => ({
+            id: o.id,
+            shortLabel: o.shortLabel,
+            caseCount: o.caseCount,
+          }))}
+          selectedSectionId={randomSectionId}
+          onSectionChange={setRandomSectionId}
+          onSurpriseMe={() => requestCaseStart({ type: 'random', categoryId: randomSectionId })}
+          loading={randomLoading !== null}
+          error={startError}
+          errorRef={randomErrorRef}
+        />
+      ) : null}
 
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <p className="text-label mb-1">{t('dashboard')}</p>
-            <h2 className="text-heading text-xl sm:text-2xl">{t('chooseExamArea')}</h2>
-          </div>
-
-          <div className="relative w-full sm:max-w-md">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} strokeWidth={2} />
-            <input
-              className="input-field !pl-11 w-full"
-              placeholder={t('search')}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
+      {/* Active rotations */}
+      <section className="space-y-5">
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">{t('portalActiveRotations')}</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{t('portalActiveRotationsDesc')}</p>
         </div>
 
-        {stats && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {[
-              { label: t('totalSessions'), value: stats.totalSessions, icon: ClipboardList, variant: 'teal' as const },
-              { label: t('completedStations'), value: stats.completedStations, icon: BarChart3, variant: 'emerald' as const },
-              { label: t('avgScore'), value: `${stats.averageScore}%`, icon: TrendingUp, variant: 'violet' as const },
-            ].map(({ label, value, icon, variant }) => (
-              <div key={label} className="stat-card flex items-center gap-4">
-                <IconBox icon={icon} variant={variant} size="lg" />
-                <div>
-                  <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">{label}</p>
-                  <p className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">{value}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {entitlements && (
-          <div id="subscription-plans">
-            <SubscriptionPlansSection
-              entitlements={entitlements}
-              plans={plans}
-              isAr={isAr}
-            />
-          </div>
-        )}
-
-        <section className="card overflow-hidden">
-          <div className="relative p-5 sm:p-8 flex flex-col gap-5 sm:gap-6 sm:flex-row sm:items-start">
-            <div
-              className="absolute inset-0 bg-gradient-to-br from-teal-500/10 via-indigo-500/5 to-transparent dark:from-teal-500/15 dark:via-indigo-500/10 pointer-events-none"
-              aria-hidden
-            />
-            <div className="relative flex items-start gap-4 min-w-0">
-              <IconBox icon={Shuffle} variant="brand" size="xl" className="shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-label mb-1">{t('randomCase')}</p>
-                <h2 className="text-subheading text-lg sm:text-xl mb-1">{t('randomCaseTitle')}</h2>
-                <p className="text-body text-sm">{t('randomCaseDesc')}</p>
-              </div>
-            </div>
-
-            <div className="relative flex flex-col gap-3 w-full min-w-0 sm:flex-1 sm:max-w-md lg:max-w-lg">
-              {startError && (
-                <div
-                  ref={randomErrorRef}
-                  className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 rounded-xl px-4 py-3 text-sm font-medium"
-                >
-                  {startError}
-                </div>
-              )}
-
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {rootCategories.map((board) => {
+            const soon = boardIsComingSoon(board);
+            const selected = selectedBoardId === board.id;
+            const label = boardDisplayName(board.nameEn, !!isAr);
+            return (
               <button
+                key={board.id}
                 type="button"
-                onClick={() => void startRandomCase()}
-                disabled={randomLoading !== null}
-                className="btn-primary flex items-center justify-center gap-2 px-6 py-3 disabled:opacity-70 w-full"
+                onClick={() => selectBoard(board)}
+                disabled={soon}
+                className={`rounded-2xl border p-4 text-center transition-all min-h-[120px] flex flex-col items-center justify-center gap-3 ${
+                  soon
+                    ? 'border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-300 dark:text-slate-500 cursor-not-allowed'
+                    : selected
+                      ? 'border-teal-200 dark:border-teal-700 bg-teal-50/80 dark:bg-teal-950/50 shadow-md ring-1 ring-teal-200 dark:ring-teal-800'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/80 hover:border-teal-200 dark:hover:border-teal-700 hover:shadow-sm'
+                }`}
               >
-                {randomLoading === 'all' ? (
-                  <>
-                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    {t('randomCaseLoading')}
-                  </>
-                ) : (
-                  <>
-                    <Shuffle size={18} strokeWidth={2.5} />
-                    {t('randomCaseAll')}
-                  </>
+                <div className={`w-10 h-10 rounded-xl border flex items-center justify-center ${getBoardIconBg(board.nameEn)}`}>
+                  <BoardIcon nameEn={board.nameEn} size={20} />
+                </div>
+                <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 leading-tight">{label}</span>
+                {soon && (
+                  <span className="text-[9px] uppercase tracking-wide text-slate-400 dark:text-slate-500">{t('comingSoon')}</span>
                 )}
               </button>
+            );
+          })}
+        </div>
 
-              {sectionOptions.length > 0 && (
-                <div className="flex flex-col gap-2 w-full min-w-0">
-                  <label htmlFor="random-section" className="text-label !normal-case !tracking-normal text-slate-600 dark:text-slate-400">
-                    {t('randomCaseChooseSection')}
-                  </label>
-                  <SectionPicker
-                    id="random-section"
-                    options={sectionOptions}
-                    value={randomSectionId}
-                    onChange={setRandomSectionId}
-                    disabled={randomLoading !== null}
-                    chooseLabel={t('randomCaseChooseSection')}
-                    casesLabel={(count) => t('packageCases', { count })}
-                    startLabel={t('randomCaseFromSection')}
-                    starting={randomLoading === 'section'}
-                    onStart={startSectionRandom}
-                  />
-                  <button
-                    type="button"
-                    onClick={startSectionRandom}
-                    disabled={randomLoading !== null || !randomSectionId}
-                    className="btn-secondary flex items-center justify-center gap-2 px-5 py-3 disabled:opacity-70 w-full"
-                  >
-                    {randomLoading === 'section' ? (
-                      <>
-                        <span className="w-4 h-4 border-2 border-slate-400/30 border-t-slate-600 dark:border-t-slate-200 rounded-full animate-spin" />
-                        {t('randomCaseLoading')}
-                      </>
-                    ) : (
-                      <>
-                        <Shuffle size={16} strokeWidth={2} />
-                        {t('randomCaseFromSection')}
-                      </>
-                    )}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="space-y-6">
-          <div className="text-center md:text-start space-y-1">
-            <p className="text-label">{t('rotationsLibrary')}</p>
-            <h2 className="text-heading text-xl sm:text-2xl">
-              {t('specialtyBoards')} <span className="text-slate-400 font-medium">({t('specialtyBoardsAr')})</span>
-            </h2>
-            <p className="text-body text-sm max-w-3xl">{t('browseStationsHint')}</p>
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-            {rootCategories.map((board) => {
-              const soon = boardIsComingSoon(board);
-              const selected = selectedBoardId === board.id;
+        {!search.trim() && subCategories.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {subCategories.map((sub) => {
+              const selected = selectedSubId === sub.id;
               return (
                 <button
-                  key={board.id}
+                  key={sub.id}
                   type="button"
-                  onClick={() => selectBoard(board)}
-                  disabled={soon}
-                  className={`p-4 sm:p-5 rounded-2xl border text-start transition-all relative overflow-hidden flex flex-col justify-between min-h-[118px] ${
-                    soon
-                      ? 'border-slate-200 dark:border-slate-800 bg-slate-100/50 dark:bg-slate-900/30 text-slate-400 cursor-not-allowed opacity-70'
-                      : selected
-                        ? 'border-teal-500 bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-lg shadow-teal-500/10 ring-1 ring-teal-500/20 scale-[1.02]'
-                        : 'border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900/80 text-slate-600 dark:text-slate-300 hover:border-teal-200 dark:hover:border-teal-800 hover:shadow-md'
+                  onClick={() => setSelectedSubId(sub.id)}
+                  className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold border transition-all ${
+                    selected
+                      ? 'bg-teal-600 text-white border-teal-600 shadow-md'
+                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600 hover:border-teal-300 dark:hover:border-teal-600'
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="space-y-1 min-w-0">
-                      <span className="text-sm font-bold block tracking-tight leading-snug">{isAr ? board.nameAr : board.nameEn}</span>
-                      <span className="text-[11px] text-slate-400 block font-medium leading-none">
-                        {isAr ? board.nameEn : board.nameAr}
-                      </span>
-                    </div>
-                    {soon && (
-                      <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[9px] shrink-0">
-                        {t('comingSoon')}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex justify-end pt-3">
-                    <div className={`w-9 h-9 rounded-xl border flex items-center justify-center ${getBoardIconBg(board.nameEn)}`}>
-                      <BoardIcon nameEn={board.nameEn} size={17} />
-                    </div>
-                  </div>
+                  <BoardIcon nameEn={sub.nameEn} size={14} />
+                  {boardDisplayName(sub.nameEn, !!isAr)}
                 </button>
               );
             })}
           </div>
+        )}
 
-          {!search.trim() && subCategories.length > 0 && (
-            <div className="flex overflow-x-auto gap-2 pb-2 pt-1 scrollbar-thin">
-              {subCategories.map((sub) => {
-                const selected = selectedSubId === sub.id;
-                return (
-                  <button
-                    key={sub.id}
-                    type="button"
-                    onClick={() => setSelectedSubId(sub.id)}
-                    className={`px-4 py-2 rounded-xl border font-semibold text-xs shrink-0 tracking-tight transition-all flex items-center gap-2 ${
-                      selected
-                        ? 'bg-gradient-to-r from-teal-600 to-teal-500 text-white border-transparent shadow-md shadow-teal-500/20'
-                        : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-teal-200 dark:hover:border-teal-800'
-                    }`}
-                  >
-                    <BoardIcon nameEn={sub.nameEn} size={14} />
-                    {isAr ? sub.nameAr : sub.nameEn}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          {loading ? (
-            <p className="text-slate-500 py-12 text-center">{t('loading')}</p>
-          ) : cases.length === 0 ? (
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-500">
-              {t('noStationsInCategory')}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {cases.map((c) => (
+        {loading ? (
+          <p className="text-slate-500 dark:text-slate-400 py-16 text-center">{t('loading')}</p>
+        ) : sortedCases.length === 0 ? (
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/80 p-12 text-center text-slate-500 dark:text-slate-400">
+            {t('noStationsInCategory')}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {sortedCases.map((c) =>
+              entitlements?.isFree ? (
+                <StudentCaseCard
+                  key={c.id}
+                  caseData={c}
+                  isAr={!!isAr}
+                  isFreeUser
+                  canStart={canStartCase(c)}
+                  attemptLabel={caseAttemptLabel(c.id)}
+                  onStart={(id) => requestCaseStart({ type: 'station', caseId: id })}
+                />
+              ) : (
                 <article
                   key={c.id}
-                  className="card card-interactive overflow-hidden flex flex-col group"
+                  className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/90 overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col"
                 >
-                  <div className="h-44 bg-slate-100 dark:bg-slate-800 relative overflow-hidden">
+                  <div className="h-44 bg-slate-100 dark:bg-slate-900 relative overflow-hidden">
                     <CaseCoverImage examImages={c.examImages} title={isAr ? c.titleAr : c.titleEn} />
-                    <div className="absolute inset-0 bg-gradient-to-t from-slate-900/40 via-transparent to-transparent pointer-events-none" />
-                    <div className="absolute top-3 left-3 flex gap-2">
+                    <div className="absolute top-3 start-3 flex gap-2">
                       <span
-                        className={`badge text-white text-[9px] uppercase tracking-wide ${difficultyTone(c.difficulty.level)}`}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase text-white ${difficultyTone(c.difficulty.level)}`}
                       >
                         {isAr ? c.difficulty.nameAr : c.difficulty.nameEn}
                       </span>
-                      <span className="badge bg-slate-900/75 text-white text-[9px] flex items-center gap-1 backdrop-blur-sm">
-                        <Clock size={11} strokeWidth={2.5} />
-                        {t('estimatedTime')}
+                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-900/70 text-white flex items-center gap-1">
+                        <Clock size={10} />
+                        18 {t('portalMins')}
                       </span>
                     </div>
                   </div>
 
-                  <div className="p-5 flex-1 flex flex-col justify-between gap-4">
+                  <div className="p-5 flex-1 flex flex-col gap-4">
                     <div>
-                      <span className="text-label !text-teal-600 dark:!text-teal-400 !normal-case !tracking-wide">
+                      <p className="text-[10px] font-bold tracking-[0.12em] text-teal-600 dark:text-teal-400 uppercase">
                         {isAr ? c.specialty.nameAr : c.specialty.nameEn}
-                      </span>
-                      <h4 className="text-subheading text-base mt-1 mb-1.5 leading-snug">
-                        {isAr ? c.titleAr : c.titleEn}
-                      </h4>
-                      <p className="text-body text-xs line-clamp-3">
-                        {c.chiefComplaint}
                       </p>
-                      <p className="text-xs text-slate-400 mt-2">{c.patientName}</p>
+                      <h3 className="text-lg font-bold text-slate-900 dark:text-white mt-2 mb-2">
+                        {isAr ? c.titleAr : c.titleEn}
+                      </h3>
+                      <p className="text-sm text-slate-500 dark:text-slate-400 line-clamp-2">{c.chiefComplaint}</p>
                       {caseAttemptLabel(c.id) && (
-                        <p
-                          className={`text-xs font-semibold mt-2 ${
-                            canStartCase(c.id)
-                              ? 'text-teal-600 dark:text-teal-400'
-                              : 'text-red-600 dark:text-red-400'
-                          }`}
-                        >
+                        <p className={`text-xs font-semibold mt-2 ${canStartCase(c) ? 'text-teal-600 dark:text-teal-400' : 'text-red-500 dark:text-red-400'}`}>
                           {caseAttemptLabel(c.id)}
                         </p>
                       )}
@@ -579,33 +487,26 @@ export default function StudentDashboard() {
 
                     <button
                       type="button"
-                      onClick={() => startStation(c.id)}
-                      disabled={!canStartCase(c.id)}
-                      className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold uppercase tracking-wide transition-all flex items-center justify-center gap-2 ${
-                        canStartCase(c.id)
-                          ? 'btn-primary !py-2.5'
-                          : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed shadow-none'
+                      onClick={() => requestCaseStart({ type: 'station', caseId: c.id })}
+                      disabled={!canStartCase(c)}
+                      className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 ${
+                        canStartCase(c)
+                          ? 'bg-gradient-to-r from-slate-800 to-teal-800 text-white hover:opacity-95'
+                          : 'bg-slate-100 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'
                       }`}
                     >
-                      {canStartCase(c.id) ? <Play size={14} strokeWidth={2.5} fill="currentColor" /> : <Lock size={14} strokeWidth={2} />}
-                      {canStartCase(c.id) ? t('startOsceSession') : t('attemptsUsedUp')}
+                      {canStartCase(c) ? <Play size={14} fill="currentColor" /> : <Lock size={14} />}
+                      {canStartCase(c) ? t('portalOpenSimulator') : t('attemptsUsedUp')}
                     </button>
                   </div>
                 </article>
-              ))}
-            </div>
-          )}
-        </section>
+              ),
+            )}
+          </div>
+        )}
+      </section>
 
-        <div className="flex flex-wrap gap-4 pt-2 border-t border-slate-200/70 dark:border-slate-800/70">
-          <Link to="/student/results" className="text-sm font-semibold text-teal-600 dark:text-teal-400 hover:underline">
-            {t('myResults')}
-          </Link>
-          <Link to="/student/profile" className="text-sm font-semibold text-teal-600 dark:text-teal-400 hover:underline">
-            {t('profile')}
-          </Link>
-        </div>
-      </main>
+      <PortalSupportCard isAr={!!isAr} topic="general" />
     </div>
   );
 }

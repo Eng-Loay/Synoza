@@ -24,9 +24,11 @@ export function PasswordInput({
 
   return (
     <div>
-      <label htmlFor={id} className="block text-sm font-medium mb-1.5 text-slate-700 dark:text-slate-300">
-        {label}
-      </label>
+      {label ? (
+        <label htmlFor={id} className="block text-sm font-medium mb-1.5 text-slate-700 dark:text-slate-300">
+          {label}
+        </label>
+      ) : null}
       <div className="relative">
         <input
           id={id}

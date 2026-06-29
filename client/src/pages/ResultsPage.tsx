@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import api from '../lib/api';
-import { Navbar } from '../components/Navbar';
 
 interface Result {
   id: string;
@@ -25,9 +24,7 @@ export default function ResultsPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-slate-950">
-      <Navbar />
-      <div className="max-w-4xl mx-auto px-4 py-8">
+    <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold">{t('myResults')}</h1>
           <Link to="/student" className="btn-secondary text-sm">{t('dashboard')}</Link>
@@ -53,7 +50,6 @@ export default function ResultsPage() {
             ))}
           </div>
         )}
-      </div>
     </div>
   );
 }
