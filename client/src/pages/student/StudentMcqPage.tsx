@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -16,14 +17,9 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { QbankHeroIllustration } from '../../components/student/QbankHeroIllustration';
-import { QBANK_TERMS } from '../../data/qbankMock';
+import type { QbankTerm } from '../../data/qbankMock';
 import { QBANK } from '../../lib/qbankTheme';
-
-const TERMS = QBANK_TERMS.map((term) => ({
-  ...term,
-  progress: term.id === '401' ? 32 : term.id === '402' ? 18 : term.id === '501' ? 7 : 0,
-  enabled: term.id === '401',
-}));
+import api from '../../lib/api';
 
 const FEATURES: Array<{
   icon: LucideIcon;
@@ -104,7 +100,7 @@ function TermCard({
   isAr,
   t,
 }: {
-  term: (typeof TERMS)[number];
+  term: QbankTerm & { progress: number; enabled: boolean };
   isAr: boolean;
   t: (key: string) => string;
 }) {
@@ -225,6 +221,21 @@ function StepIconCircle({ icon: Icon, iconBg, iconColor }: { icon: LucideIcon; i
 export default function StudentMcqPage() {
   const { t, i18n } = useTranslation();
   const isAr = i18n.language?.startsWith('ar');
+  const [terms, setTerms] = useState<Array<QbankTerm & { progress: number; enabled: boolean }>>([]);
+
+  useEffect(() => {
+    api.get('/student/qbank/terms')
+      .then((res) => {
+        setTerms(
+          (res.data.terms as QbankTerm[]).map((term) => ({
+            ...term,
+            progress: 0,
+            enabled: term.modules > 0,
+          })),
+        );
+      })
+      .catch(() => setTerms([]));
+  }, []);
 
   return (
     <div className="max-w-[1100px] mx-auto space-y-10 pb-8">
@@ -245,7 +256,7 @@ export default function StudentMcqPage() {
           {t('portalMcqSelectTerm')}
         </h2>
         <div className="grid sm:grid-cols-2 gap-4 sm:gap-5">
-          {TERMS.map((term) => (
+          {terms.map((term) => (
             <TermCard key={term.id} term={term} isAr={!!isAr} t={t} />
           ))}
         </div>

@@ -13,10 +13,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import {
-  QBANK_CHAPTERS,
-  QBANK_REFERENCES,
   examStorageKey,
-  getModule,
   scoreExamResult,
   type QbankExamResult,
 } from '../../data/qbankMock';
@@ -49,7 +46,7 @@ export default function StudentMcqExamReportPage() {
     }
   }, [moduleId, navigate, termId]);
 
-  const module = getModule(termId, moduleId);
+  const moduleName = moduleId;
   const scored = useMemo(() => (result ? scoreExamResult(result) : null), [result]);
 
   const chapterStats = useMemo(() => {
@@ -108,7 +105,7 @@ export default function StudentMcqExamReportPage() {
       .filter((entry) => (reviewMode === 'all' ? true : !entry.isCorrect));
   }, [result, reviewMode]);
 
-  if (!result || !scored || !module) {
+  if (!result || !scored) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="animate-spin w-8 h-8 border-4 border-violet-500 border-t-transparent rounded-full" />
@@ -139,7 +136,7 @@ export default function StudentMcqExamReportPage() {
             {t('portalMcqExamCompleted')} 🎉
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            {termId} · {module.nameEn} · {result.config.mode === 'practice' ? t('portalMcqPracticeMode') : t('portalMcqExamMode')}
+            {termId} · {moduleName} · {result.config.mode === 'practice' ? t('portalMcqPracticeMode') : t('portalMcqExamMode')}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -202,7 +199,7 @@ export default function StudentMcqExamReportPage() {
         <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/90 p-6">
           <h2 className="font-bold text-slate-900 dark:text-white mb-4">{t('portalMcqByChapter')}</h2>
           <div className="space-y-3">
-            {(chapterStats.length ? chapterStats : QBANK_CHAPTERS.slice(0, 5).map((c) => ({ chapter: c, pct: 0 }))).map(({ chapter, pct }) => (
+            {chapterStats.map(({ chapter, pct }) => (
               <div key={chapter}>
                 <div className="flex justify-between text-xs mb-1">
                   <span className="text-slate-600 dark:text-slate-300">{chapter}</span>

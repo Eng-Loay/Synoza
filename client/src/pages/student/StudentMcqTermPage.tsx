@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, ChevronRight, Lock, CheckCircle2, Loader2 } from 'lucide-react';
 import api from '../../lib/api';
-import { getTerm, getModulesForTerm } from '../../data/qbankMock';
 
 type ModuleView = {
   id: string;
@@ -31,7 +30,6 @@ export default function StudentMcqTermPage() {
   const { t, i18n } = useTranslation();
   const isAr = i18n.language?.startsWith('ar');
 
-  const fallbackTerm = getTerm(termId);
   const [loading, setLoading] = useState(true);
   const [purchasingId, setPurchasingId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -46,27 +44,13 @@ export default function StudentMcqTermPage() {
       setTerm(res.data.term);
       setModules(res.data.modules);
     } catch {
-      const mockModules = getModulesForTerm(termId);
-      if (fallbackTerm) {
-        setTerm({
-          id: fallbackTerm.id,
-          titleEn: fallbackTerm.titleEn,
-          titleAr: fallbackTerm.titleAr,
-          modules: fallbackTerm.modules,
-          questions: fallbackTerm.questions,
-        });
-      }
-      if (mockModules.length > 0) {
-        setModules(mockModules.map((m) => ({ ...m, owned: m.owned ?? false })));
-        setError('');
-      } else {
-        setError(t('portalMcqLoadFailed'));
-        setModules([]);
-      }
+      setError(t('portalMcqLoadFailed'));
+      setModules([]);
+      setTerm(null);
     } finally {
       setLoading(false);
     }
-  }, [termId, fallbackTerm, t]);
+  }, [termId, t]);
 
   useEffect(() => {
     void loadModules();

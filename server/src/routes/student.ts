@@ -8,7 +8,7 @@ import {
 } from '../services/subscriptionService.js';
 import { getPaymentPublicConfig } from '../services/payment/paymentService.js';
 import { getRankProgress } from '../services/xpService.js';
-import { getModulesForUser, userHasModuleAccess } from '../services/qbankService.js';
+import { getModulesForUser, userHasModuleAccess, getActiveTerms, getModuleSetupMeta, countAvailableQuestions, fetchExamQuestions } from '../services/qbankService.js';
 
 const router = Router();
 
@@ -134,6 +134,11 @@ router.get('/results/:sessionId', async (req, res) => {
   res.json({ result });
 });
 
+router.get('/qbank/terms', async (_req, res) => {
+  const terms = await getActiveTerms();
+  res.json({ terms });
+});
+
 router.get('/qbank/:termId/modules', async (req, res) => {
   const termId = String(req.params.termId);
   const data = await getModulesForUser(req.user!.id, termId);
@@ -148,6 +153,64 @@ router.get('/qbank/:termId/modules/:moduleId/access', async (req, res) => {
   const moduleId = String(req.params.moduleId);
   const hasAccess = await userHasModuleAccess(req.user!.id, termId, moduleId);
   res.json({ hasAccess });
+});
+
+router.get('/qbank/:termId/modules/:moduleId/setup', async (req, res) => {
+  const termId = String(req.params.termId);
+  const moduleId = String(req.params.moduleId);
+  const hasAccess = await userHasModuleAccess(req.user!.id, termId, moduleId);
+  if (!hasAccess) {
+    return res.status(403).json({ error: 'ACCESS_DENIED' });
+  }
+  const meta = await getModuleSetupMeta(termId, moduleId);
+  if (!meta) {
+    return res.status(404).json({ error: 'MODULE_NOT_FOUND' });
+  }
+  res.json(meta);
+});
+
+router.get('/qbank/:termId/modules/:moduleId/questions', async (req, res) => {
+  const termId = String(req.params.termId);
+  const moduleId = String(req.params.moduleId);
+  const hasAccess = await userHasModuleAccess(req.user!.id, termId, moduleId);
+  if (!hasAccess) {
+    return res.status(403).json({ error: 'ACCESS_DENIED' });
+  }
+
+  const chapterIds = String(req.query.chapters ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const referenceIds = String(req.query.references ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const subjectTags = String(req.query.subjects ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const count = Number.parseInt(String(req.query.count ?? '20'), 10) || 20;
+  const mode = String(req.query.mode ?? 'exam');
+
+  const available = await countAvailableQuestions(
+    moduleId,
+    chapterIds,
+    referenceIds,
+    subjectTags.length ? subjectTags : undefined,
+  );
+  if (available === 0) {
+    return res.status(404).json({ error: 'NO_QUESTIONS', message: 'No questions match the selected filters' });
+  }
+
+  const questions = await fetchExamQuestions(moduleId, {
+    chapterIds,
+    referenceIds,
+    subjectTags: subjectTags.length ? subjectTags : undefined,
+    count: Math.min(count, available),
+    includeAnswers: true,
+  });
+
+  res.json({ questions, available });
 });
 
 export default router;

@@ -206,7 +206,11 @@ export async function pickRandomEligibleCase(userId: string, categoryId?: string
   return { ok: true as const, case: picked, eligibleCount: eligible.length };
 }
 
-export async function activatePlan(userId: string, plan: SubscriptionPlan) {
+export async function activatePlan(
+  userId: string,
+  plan: SubscriptionPlan,
+  options?: { endDate?: Date },
+) {
   if (plan === 'FREE') {
     throw new Error('INVALID_PLAN');
   }
@@ -221,7 +225,9 @@ export async function activatePlan(userId: string, plan: SubscriptionPlan) {
     data: { status: 'CANCELLED', endDate: new Date() },
   });
 
-  const endDate = addMonths(new Date(), config.durationMonths);
+  const endDate =
+    options?.endDate ??
+    (config.durationMonths > 0 ? addMonths(new Date(), config.durationMonths) : null);
 
   return prisma.subscription.create({
     data: {
@@ -233,4 +239,20 @@ export async function activatePlan(userId: string, plan: SubscriptionPlan) {
       endDate,
     },
   });
+}
+
+export async function setUserSubscriptionPlan(
+  userId: string,
+  plan: SubscriptionPlan,
+  options?: { endDate?: Date },
+) {
+  if (plan === 'FREE') {
+    await prisma.subscription.updateMany({
+      where: { userId, status: 'ACTIVE' },
+      data: { status: 'CANCELLED', endDate: new Date() },
+    });
+    return null;
+  }
+
+  return activatePlan(userId, plan, options);
 }

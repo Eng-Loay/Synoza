@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -11,13 +11,12 @@ import {
 } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import {
-  buildMockExamQuestions,
   examStorageKey,
-  getModule,
-  getTerm,
+  examQuestionsStorageKey,
   type QbankAnswerState,
   type QbankExamConfig,
   type QbankExamResult,
+  type QbankQuestion,
 } from '../../data/qbankMock';
 import {
   buildSavedQuestionKey,
@@ -31,6 +30,7 @@ type McqExamPersisted = {
   current: number;
   answers: QbankAnswerState[];
   timerPaused?: boolean;
+  meta?: { termTitleEn?: string; moduleNameEn?: string };
 };
 
 function emptyAnswers(count: number): QbankAnswerState[] {
@@ -50,12 +50,12 @@ export default function StudentMcqExamPage() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const term = getTerm(termId);
-  const module = getModule(termId, moduleId);
   const storageKey = examStorageKey(termId, moduleId);
+  const questionsKey = examQuestionsStorageKey(termId, moduleId);
 
   const [config, setConfig] = useState<QbankExamConfig | null>(null);
-  const [questions, setQuestions] = useState(() => buildMockExamQuestions(30));
+  const [questions, setQuestions] = useState<QbankQuestion[]>([]);
+  const [displayMeta, setDisplayMeta] = useState({ termTitle: termId, moduleName: moduleId });
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState<QbankAnswerState[]>([]);
   const [startedAt, setStartedAt] = useState<number | null>(null);
@@ -64,8 +64,27 @@ export default function StudentMcqExamPage() {
   const [exitPrompt, setExitPrompt] = useState<'navigation' | 'refresh' | null>(null);
   const [questionSaved, setQuestionSaved] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const finishTriggeredRef = useRef(false);
 
   const examInProgress = loaded && !!config;
+
+  const finishExam = useCallback(() => {
+    if (finishTriggeredRef.current || !config) return;
+    finishTriggeredRef.current = true;
+    const result: QbankExamResult = {
+      config,
+      answers,
+      questions,
+      startedAt: startedAt ?? Date.now(),
+      finishedAt: Date.now(),
+      termId,
+      moduleId,
+    };
+    sessionStorage.removeItem(storageKey);
+    sessionStorage.removeItem(questionsKey);
+    sessionStorage.setItem(`${storageKey}-result`, JSON.stringify(result));
+    navigate(`/student/mcq/${termId}/${moduleId}/report`);
+  }, [answers, config, moduleId, navigate, questions, questionsKey, startedAt, storageKey, termId]);
 
   const persistProgress = useCallback(
     (patch: Partial<McqExamPersisted>) => {
@@ -85,9 +104,10 @@ export default function StudentMcqExamPage() {
 
   const confirmExit = useCallback(() => {
     sessionStorage.removeItem(storageKey);
+    sessionStorage.removeItem(questionsKey);
     setExitPrompt(null);
     navigate(`/student/mcq/${termId}/${moduleId}/setup`);
-  }, [moduleId, navigate, storageKey, termId]);
+  }, [moduleId, navigate, questionsKey, storageKey, termId]);
 
   useEffect(() => {
     const activeQuestion = questions[current];
@@ -99,10 +119,12 @@ export default function StudentMcqExamPage() {
 
   useEffect(() => {
     const raw = sessionStorage.getItem(storageKey);
-    if (raw) {
+    const qRaw = sessionStorage.getItem(questionsKey);
+    if (raw && qRaw) {
       try {
         const parsed = JSON.parse(raw) as Partial<McqExamPersisted> & { config: QbankExamConfig };
-        const qs = buildMockExamQuestions(parsed.config.questionCount);
+        const qs = JSON.parse(qRaw) as QbankQuestion[];
+        if (!parsed.config || qs.length === 0) throw new Error('invalid');
         const started = parsed.startedAt ?? Date.now();
         const restoredAnswers =
           parsed.answers?.length === qs.length ? parsed.answers : emptyAnswers(qs.length);
@@ -114,6 +136,12 @@ export default function StudentMcqExamPage() {
         setCurrent(restoredCurrent);
         setStartedAt(started);
         setTimerPaused(!!parsed.timerPaused);
+        if (parsed.meta) {
+          setDisplayMeta({
+            termTitle: parsed.meta.termTitleEn ?? termId,
+            moduleName: parsed.meta.moduleNameEn ?? moduleId,
+          });
+        }
 
         const progress: McqExamPersisted = {
           config: parsed.config,
@@ -121,6 +149,7 @@ export default function StudentMcqExamPage() {
           current: restoredCurrent,
           answers: restoredAnswers,
           timerPaused: !!parsed.timerPaused,
+          meta: parsed.meta,
         };
         sessionStorage.setItem(storageKey, JSON.stringify(progress));
         setLoaded(true);
@@ -130,7 +159,7 @@ export default function StudentMcqExamPage() {
       }
     }
     navigate(`/student/mcq/${termId}/${moduleId}/setup`, { replace: true });
-  }, [moduleId, navigate, storageKey, termId]);
+  }, [moduleId, navigate, questionsKey, storageKey, termId]);
 
   useEffect(() => {
     if (!loaded || !config || startedAt == null) return;
@@ -143,17 +172,31 @@ export default function StudentMcqExamPage() {
       setSecondsLeft(99 * 3600);
       return;
     }
-    if (timerPaused) return;
 
     const durationSec = (config.examDurationMinutes ?? 60) * 60;
     const tick = () => {
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      setSecondsLeft(Math.max(0, durationSec - elapsed));
+      const remaining = Math.max(0, durationSec - elapsed);
+      if (!timerPaused) {
+        setSecondsLeft(remaining);
+      }
+      if (remaining <= 0) {
+        finishExam();
+      }
     };
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [config, startedAt, timerPaused]);
+  }, [config, finishExam, startedAt, timerPaused]);
+
+  useEffect(() => {
+    if (!loaded || !config || config.mode !== 'exam' || startedAt == null) return;
+    const durationSec = (config.examDurationMinutes ?? 60) * 60;
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    if (elapsed >= durationSec) {
+      finishExam();
+    }
+  }, [config, finishExam, loaded, secondsLeft, startedAt]);
 
   useEffect(() => {
     if (!examInProgress) return;
@@ -190,7 +233,7 @@ export default function StudentMcqExamPage() {
     };
   }, [answers, questions.length]);
 
-  if (!term || !module || !config || !q) {
+  if (!config || !q) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="animate-spin w-8 h-8 border-4 border-violet-500 border-t-transparent rounded-full" />
@@ -206,22 +249,10 @@ export default function StudentMcqExamPage() {
     });
   };
 
-  const finishExam = () => {
-    const result: QbankExamResult = {
-      config,
-      answers,
-      questions,
-      startedAt: startedAt ?? Date.now(),
-      finishedAt: Date.now(),
-      termId,
-      moduleId,
-    };
-    sessionStorage.removeItem(storageKey);
-    sessionStorage.setItem(`${storageKey}-result`, JSON.stringify(result));
-    navigate(`/student/mcq/${termId}/${moduleId}/report`);
-  };
+  const examTimedOut = config.mode === 'exam' && secondsLeft <= 0;
 
   const submitAnswer = () => {
+    if (examTimedOut) return;
     if (config.mode === 'practice') {
       if (ans.revealed) {
         if (current < questions.length - 1) setCurrent((c) => c + 1);
@@ -263,14 +294,16 @@ export default function StudentMcqExamPage() {
         <div className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
           <span>{termId}</span>
           <ChevronRight size={12} />
-          <span>{module.nameEn}</span>
+          <span>{displayMeta.moduleName}</span>
           <ChevronRight size={12} />
           <span className="text-violet-600 dark:text-violet-400 font-medium">
             {config.mode === 'practice' ? t('portalMcqPracticeMode') : t('portalMcqExamMode')}
           </span>
         </div>
         <div className="flex items-center gap-2 text-sm font-mono text-slate-700 dark:text-slate-200">
-          <span>{formatTimer(secondsLeft)}</span>
+          <span className={examTimedOut ? 'text-red-600 dark:text-red-400 font-bold' : secondsLeft < 300 ? 'text-amber-600 dark:text-amber-400' : ''}>
+            {formatTimer(secondsLeft)}
+          </span>
           <span className="text-xs text-slate-400">{t('portalMcqTimeRemaining')}</span>
           {config.mode === 'exam' && (
             <button type="button" onClick={() => setTimerPaused((p) => !p)} className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-600">
@@ -299,14 +332,15 @@ export default function StudentMcqExamPage() {
             <div className="space-y-3">
               {q.options.map((opt, idx) => {
                 const selected = ans.selected === idx;
-                const isCorrect = ans.revealed && idx === q.correctIndex;
-                const isWrong = ans.revealed && selected && idx !== q.correctIndex;
+                const isCorrect = ans.revealed && q.correctIndex != null && idx === q.correctIndex;
+                const isWrong = ans.revealed && selected && q.correctIndex != null && idx !== q.correctIndex;
                 return (
                   <button
                     key={opt}
                     type="button"
-                    onClick={() => updateAnswer({ selected: idx, skipped: false })}
-                    className={`w-full text-start flex items-center gap-3 p-4 rounded-xl border-2 transition-all ${
+                    onClick={() => !examTimedOut && updateAnswer({ selected: idx, skipped: false })}
+                    disabled={examTimedOut}
+                    className={`w-full text-start flex items-center gap-3 p-4 rounded-xl border-2 transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                       isCorrect
                         ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30'
                         : isWrong
@@ -349,7 +383,7 @@ export default function StudentMcqExamPage() {
                   {questionSaved ? t('portalMcqSavedQuestion') : t('portalMcqSaveQuestion')}
                 </button>
               </div>
-              <button type="button" onClick={submitAnswer} className="px-5 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-bold hover:bg-violet-700">
+              <button type="button" onClick={submitAnswer} disabled={examTimedOut} className="px-5 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-bold hover:bg-violet-700 disabled:opacity-50">
                 {config.mode === 'practice' && ans.revealed ? t('portalMcqNext') : t('portalMcqSubmitAnswer')}
               </button>
             </div>

@@ -2,9 +2,16 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../lib/prisma.js';
 import { authenticate, authorize } from '../middleware/auth.js';
-import { Role } from '@prisma/client';
-import { getPlanConfig, activatePlan } from '../services/subscriptionService.js';
+import { Role, type SubscriptionPlan } from '@prisma/client';
+import {
+  getPlanConfig,
+  getUserEntitlements,
+  getActiveSubscription,
+  setUserSubscriptionPlan,
+  PLAN_CATALOG,
+} from '../services/subscriptionService.js';
 import { clearAISettingsCache } from '../services/aiService.js';
+import adminQbankRoutes from './adminQbank.js';
 
 const router = Router();
 
@@ -57,6 +64,44 @@ router.get('/users', async (_req, res) => {
     orderBy: { createdAt: 'desc' },
   });
   res.json({ users });
+});
+
+const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
+  'FREE',
+  'PACKAGE_50',
+  'PACKAGE_150',
+  'PACKAGE_300',
+  'INSTITUTION',
+];
+
+router.get('/users/:userId/entitlements', async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.userId },
+    select: {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      role: true,
+    },
+  });
+
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const [entitlements, subscription] = await Promise.all([
+    getUserEntitlements(user.id),
+    getActiveSubscription(user.id),
+  ]);
+
+  res.json({
+    user,
+    entitlements,
+    subscription,
+    plans: SUBSCRIPTION_PLANS.map((id) => ({
+      id,
+      ...PLAN_CATALOG[id as keyof typeof PLAN_CATALOG],
+    })),
+  });
 });
 
 router.patch('/users/:id', async (req, res) => {
@@ -175,15 +220,49 @@ router.patch('/subscriptions/:id', async (req, res) => {
 });
 
 router.post('/users/:userId/subscription', async (req, res) => {
-  const { plan } = req.body;
-  if (!plan || plan === 'FREE') {
+  const { plan, endDate } = req.body;
+
+  if (!plan || !SUBSCRIPTION_PLANS.includes(plan)) {
     return res.status(400).json({ error: 'Invalid plan' });
   }
+
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.userId },
+    select: { id: true, role: true },
+  });
+
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.role !== Role.STUDENT) {
+    return res.status(400).json({ error: 'Only student accounts can have subscription plans assigned' });
+  }
+
   try {
-    const subscription = await activatePlan(req.params.userId, plan);
-    res.json({ subscription });
+    const parsedEndDate = endDate ? new Date(endDate) : undefined;
+    if (parsedEndDate && Number.isNaN(parsedEndDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid end date' });
+    }
+
+    const subscription = await setUserSubscriptionPlan(user.id, plan as SubscriptionPlan, {
+      endDate: parsedEndDate,
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user!.id,
+        action: 'SUBSCRIPTION_CHANGED',
+        entity: 'User',
+        entityId: user.id,
+        details: JSON.stringify({
+          plan,
+          endDate: parsedEndDate?.toISOString() ?? null,
+        }),
+      },
+    });
+
+    const entitlements = await getUserEntitlements(user.id);
+    res.json({ subscription, entitlements });
   } catch {
-    return res.status(400).json({ error: 'Could not activate plan' });
+    return res.status(400).json({ error: 'Could not update subscription plan' });
   }
 });
 
@@ -327,5 +406,7 @@ router.put('/site-settings', async (req, res) => {
   settings = await prisma.siteSettings.update({ where: { id: 'default' }, data: req.body });
   res.json({ settings });
 });
+
+router.use('/qbank', adminQbankRoutes);
 
 export default router;

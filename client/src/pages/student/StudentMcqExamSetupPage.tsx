@@ -13,16 +13,21 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
-  QBANK_CHAPTERS,
   QBANK_QUESTION_COUNTS,
-  QBANK_REFERENCES,
-  countAvailableQuestions,
   examStorageKey,
-  getModule,
-  getTerm,
+  examQuestionsStorageKey,
   resolveQuestionCount,
 } from '../../data/qbankMock';
 import api from '../../lib/api';
+
+type SetupChapter = { id: string; nameEn: string; nameAr?: string | null };
+type SetupReference = { id: string; nameEn: string; nameAr?: string | null };
+type SetupMeta = {
+  module: { id: string; nameEn: string; nameAr: string; subjects: string[] };
+  chapters: SetupChapter[];
+  references: SetupReference[];
+  pairCounts: Array<{ chapterId: string; chapter: string; referenceId: string; reference: string; count: number }>;
+};
 
 type TubeId = 'subjects' | 'chapters' | 'references' | 'questions' | 'mode';
 
@@ -40,18 +45,29 @@ export default function StudentMcqExamSetupPage() {
   const navigate = useNavigate();
   const isAr = i18n.language?.startsWith('ar');
 
-  const term = getTerm(termId);
-  const module = getModule(termId, moduleId);
+  const [setupMeta, setSetupMeta] = useState<SetupMeta | null>(null);
+  const [termTitle, setTermTitle] = useState('');
   const [accessChecked, setAccessChecked] = useState(false);
 
   useEffect(() => {
     const check = async () => {
       try {
-        const res = await api.get(`/student/qbank/${termId}/modules/${moduleId}/access`);
-        if (!res.data.hasAccess) {
+        const [accessRes, setupRes, termRes] = await Promise.all([
+          api.get(`/student/qbank/${termId}/modules/${moduleId}/access`),
+          api.get(`/student/qbank/${termId}/modules/${moduleId}/setup`),
+          api.get(`/student/qbank/${termId}/modules`),
+        ]);
+        if (!accessRes.data.hasAccess) {
           navigate(`/student/mcq/${termId}`, { replace: true });
           return;
         }
+        setSetupMeta(setupRes.data);
+        setTermTitle(termRes.data.term?.titleEn ?? termId);
+        const chapterNames = setupRes.data.chapters.map((c: SetupChapter) => c.nameEn);
+        const refNames = setupRes.data.references.slice(0, 4).map((r: SetupReference) => r.nameEn);
+        setSelectedChapters(chapterNames);
+        setSelectedRefs(refNames);
+        setSelectedSubjects(setupRes.data.module.subjects.slice(0, 2));
       } catch {
         navigate(`/student/mcq/${termId}`, { replace: true });
         return;
@@ -61,11 +77,14 @@ export default function StudentMcqExamSetupPage() {
     void check();
   }, [termId, moduleId, navigate]);
 
+  const module = setupMeta?.module;
+  const term = setupMeta ? { id: termId, titleEn: termTitle, titleAr: termTitle } : null;
+
   const [activeTube, setActiveTube] = useState<TubeId | null>('subjects');
   const [scope, setScope] = useState<'entire' | 'specific'>('specific');
-  const [selectedSubjects, setSelectedSubjects] = useState<string[]>(module?.subjects.slice(0, 2) ?? []);
-  const [selectedChapters, setSelectedChapters] = useState<string[]>([...QBANK_CHAPTERS]);
-  const [selectedRefs, setSelectedRefs] = useState<string[]>([...QBANK_REFERENCES.slice(0, 4)]);
+  const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
+  const [selectedChapters, setSelectedChapters] = useState<string[]>([]);
+  const [selectedRefs, setSelectedRefs] = useState<string[]>([]);
   const [examCoverage, setExamCoverage] = useState(true);
   const [questionCount, setQuestionCount] = useState<number | 'all'>(20);
   const [customCountInput, setCustomCountInput] = useState('20');
@@ -79,10 +98,12 @@ export default function StudentMcqExamSetupPage() {
   );
   const examDurationValid = examMode !== 'exam' || (Number.parseInt(examDurationInput, 10) >= 1 && Number.parseInt(examDurationInput, 10) <= 600);
 
-  const availableTotal = useMemo(
-    () => countAvailableQuestions(selectedChapters, selectedRefs),
-    [selectedChapters, selectedRefs],
-  );
+  const availableTotal = useMemo(() => {
+    if (!setupMeta) return 0;
+    return setupMeta.pairCounts
+      .filter((p) => selectedChapters.includes(p.chapter) && selectedRefs.includes(p.reference))
+      .reduce((sum, p) => sum + p.count, 0);
+  }, [setupMeta, selectedChapters, selectedRefs]);
 
   const resolvedQuestionCount = useMemo(
     () =>
@@ -101,18 +122,42 @@ export default function StudentMcqExamSetupPage() {
     }
   }, [availableTotal, customCountInput, useCustomCount]);
 
-  const startExam = () => {
-    if (resolvedQuestionCount <= 0) return;
+  const startExam = async () => {
+    if (resolvedQuestionCount <= 0 || !module || !setupMeta) return;
+    const chapterIds = setupMeta.chapters.filter((c) => selectedChapters.includes(c.nameEn)).map((c) => c.id);
+    const referenceIds = setupMeta.references.filter((r) => selectedRefs.includes(r.nameEn)).map((r) => r.id);
     const cfg = {
       mode: examMode,
       questionCount: resolvedQuestionCount,
-      subjects: scope === 'entire' ? module!.subjects : selectedSubjects,
+      subjects: scope === 'entire' ? module.subjects : selectedSubjects,
       chapters: selectedChapters,
       references: selectedRefs,
+      chapterIds,
+      referenceIds,
       ...(examMode === 'exam' ? { examDurationMinutes } : {}),
     };
-    sessionStorage.setItem(examStorageKey(termId, moduleId), JSON.stringify({ config: cfg }));
-    navigate(`/student/mcq/${termId}/${moduleId}/exam`, { state: { fromCaseStart: true } });
+
+    try {
+      const params = new URLSearchParams({
+        chapters: chapterIds.join(','),
+        references: referenceIds.join(','),
+        count: String(resolvedQuestionCount),
+        mode: examMode,
+      });
+      if (cfg.subjects.length) params.set('subjects', cfg.subjects.join(','));
+      const res = await api.get(`/student/qbank/${termId}/modules/${moduleId}/questions?${params}`);
+      sessionStorage.setItem(examQuestionsStorageKey(termId, moduleId), JSON.stringify(res.data.questions));
+      sessionStorage.setItem(
+        examStorageKey(termId, moduleId),
+        JSON.stringify({
+          config: cfg,
+          meta: { termTitleEn: termTitle, moduleNameEn: module.nameEn },
+        }),
+      );
+      navigate(`/student/mcq/${termId}/${moduleId}/exam`, { state: { fromCaseStart: true } });
+    } catch {
+      navigate(`/student/mcq/${termId}/${moduleId}/setup`, { replace: true });
+    }
   };
 
   if (!accessChecked) {
@@ -135,8 +180,7 @@ export default function StudentMcqExamSetupPage() {
   }
 
   const moduleName = isAr ? module.nameAr : module.nameEn;
-  const specialty = isAr ? module.specialtyAr : module.specialtyEn;
-  const termTitle = isAr ? term.titleAr : term.titleEn;
+  const termLabel = isAr ? term.titleAr : term.titleEn;
 
   const openTube = (id: TubeId) => {
     setActiveTube(id);
@@ -188,7 +232,7 @@ export default function StudentMcqExamSetupPage() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">{t('portalMcqExamSetup')}</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            {moduleName} · {specialty} · {termTitle}
+            {moduleName} · {termLabel}
           </p>
         </div>
       </div>
@@ -301,18 +345,18 @@ export default function StudentMcqExamSetupPage() {
                     </div>
                     <p className="text-sm text-slate-500 dark:text-slate-400">{t('portalMcqChooseChapters')}</p>
                     <div className="grid sm:grid-cols-2 gap-2">
-                      {QBANK_CHAPTERS.map((chapter) => (
+                      {(setupMeta?.chapters ?? []).map((chapter) => (
                         <label
-                          key={chapter}
+                          key={chapter.id}
                           className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-600 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50"
                         >
                           <input
                             type="checkbox"
-                            checked={selectedChapters.includes(chapter)}
-                            onChange={() => toggleChapter(chapter)}
+                            checked={selectedChapters.includes(chapter.nameEn)}
+                            onChange={() => toggleChapter(chapter.nameEn)}
                             className="rounded text-violet-600"
                           />
-                          <span className="text-sm text-slate-800 dark:text-slate-200">{chapter}</span>
+                          <span className="text-sm text-slate-800 dark:text-slate-200">{chapter.nameEn}</span>
                         </label>
                       ))}
                     </div>
@@ -323,18 +367,18 @@ export default function StudentMcqExamSetupPage() {
                   <>
                     <p className="text-sm text-slate-500 dark:text-slate-400">{t('portalMcqReferencesDesc')}</p>
                     <div className="grid sm:grid-cols-2 gap-2">
-                      {QBANK_REFERENCES.map((ref) => (
+                      {(setupMeta?.references ?? []).map((ref) => (
                         <label
-                          key={ref}
+                          key={ref.id}
                           className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-600 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50"
                         >
                           <input
                             type="checkbox"
-                            checked={selectedRefs.includes(ref)}
-                            onChange={() => toggleRef(ref)}
+                            checked={selectedRefs.includes(ref.nameEn)}
+                            onChange={() => toggleRef(ref.nameEn)}
                             className="rounded text-violet-600"
                           />
-                          <span className="text-sm text-slate-800 dark:text-slate-200">{ref}</span>
+                          <span className="text-sm text-slate-800 dark:text-slate-200">{ref.nameEn}</span>
                         </label>
                       ))}
                     </div>

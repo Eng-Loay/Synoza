@@ -1,8 +1,7 @@
 import type { PaymentProductType, SubscriptionPlan } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { activatePlan, getActiveSubscription, getPlanConfig, isPaidPlan, PLAN_CATALOG } from '../subscriptionService.js';
-import { getQbankModule, isPurchasableModule } from '../../data/qbankCatalog.js';
-import { grantModuleAccess, userHasModuleAccess } from '../qbankService.js';
+import { getModuleFromDb, grantModuleAccess, isPurchasableModule, userHasModuleAccess } from '../qbankService.js';
 import {
   createPaymobCheckout,
   isPaymobConfigured,
@@ -133,11 +132,11 @@ export async function createCheckout(userId: string, planId: CheckoutPlanId) {
 }
 
 export async function createModuleCheckout(userId: string, termId: string, moduleId: string) {
-  if (!isPurchasableModule(termId, moduleId)) {
+  if (!(await isPurchasableModule(termId, moduleId))) {
     throw new Error('INVALID_MODULE');
   }
 
-  const mod = getQbankModule(termId, moduleId);
+  const mod = await getModuleFromDb(termId, moduleId);
   if (!mod) throw new Error('INVALID_MODULE');
 
   const alreadyOwned = await userHasModuleAccess(userId, termId, moduleId);
@@ -221,7 +220,7 @@ export async function getOrderForUser(merchantOrderId: string, userId: string) {
   const productType = order.productType as PaymentProductType;
 
   if (productType === 'QBANK_MODULE' && order.qbankTermId && order.qbankModuleId) {
-    const mod = getQbankModule(order.qbankTermId, order.qbankModuleId);
+    const mod = await getModuleFromDb(order.qbankTermId, order.qbankModuleId);
     const labelEn = mod ? `QBank · ${mod.nameEn} (${order.qbankTermId})` : 'QBank Module';
     const labelAr = mod ? `بنك الأسئلة · ${mod.nameAr} (${order.qbankTermId})` : 'موديول بنك الأسئلة';
     return {

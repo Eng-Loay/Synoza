@@ -522,7 +522,14 @@ router.post('/:id/complete', async (req, res) => {
 
   if (!session) return res.status(404).json({ error: 'Session not found' });
 
-  if (session.messages.length === 0) {
+  const durationSeconds = Math.floor(
+    (Date.now() - new Date(session.startedAt).getTime()) / 1000
+  );
+  const STATION_DURATION_SECONDS = 20 * 60;
+  const timedOut =
+    req.body?.timedOut === true || durationSeconds >= STATION_DURATION_SECONDS;
+
+  if (session.messages.length === 0 && !timedOut) {
     return res.status(400).json({ error: 'No messages in session to evaluate' });
   }
 
@@ -551,10 +558,6 @@ router.post('/:id/complete', async (req, res) => {
     sessionMessages,
     evaluationLang,
     { completedManeuvers }
-  );
-
-  const durationSeconds = Math.floor(
-    (Date.now() - new Date(session.startedAt).getTime()) / 1000
   );
 
   await prisma.session.update({

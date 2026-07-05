@@ -1,8 +1,4 @@
-import {
-  getModule,
-  getTerm,
-  type QbankQuestion,
-} from '../data/qbankMock';
+import type { QbankQuestion } from '../data/qbankMock';
 
 const STORAGE_KEY = 'synoza-qbank-saved-v1';
 const SAVED_CHANGED_EVENT = 'synoza:qbank-saved-changed';
@@ -24,7 +20,7 @@ export type QbankSavedModuleGroup = {
   questions: QbankSavedRecord[];
 };
 
-export function buildSavedQuestionKey(termId: string, moduleId: string, questionId: number) {
+export function buildSavedQuestionKey(termId: string, moduleId: string, questionId: string | number) {
   return `${termId}:${moduleId}:${questionId}`;
 }
 
@@ -86,10 +82,6 @@ export function groupSavedByModule(records: QbankSavedRecord[], isAr: boolean): 
 
   for (const record of records) {
     const groupKey = `${record.termId}:${record.moduleId}`;
-    const term = getTerm(record.termId);
-    const module = getModule(record.termId, record.moduleId);
-    if (!term || !module) continue;
-
     const existing = groups.get(groupKey);
     if (existing) {
       existing.questions.push(record);
@@ -98,14 +90,15 @@ export function groupSavedByModule(records: QbankSavedRecord[], isAr: boolean): 
 
     groups.set(groupKey, {
       termId: record.termId,
-      termTitle: isAr ? term.titleAr : term.titleEn,
+      termTitle: record.termId,
       moduleId: record.moduleId,
-      moduleTitle: isAr ? module.nameAr : module.nameEn,
-      specialty: isAr ? module.specialtyAr : module.specialtyEn,
+      moduleTitle: record.moduleId,
+      specialty: '',
       questions: [record],
     });
   }
 
+  void isAr;
   return Array.from(groups.values()).map((group) => ({
     ...group,
     questions: [...group.questions].sort((a, b) => b.savedAt - a.savedAt),

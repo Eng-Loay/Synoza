@@ -533,18 +533,6 @@ export default function SimulationPage() {
   }, [loadSession]);
 
   useEffect(() => {
-    if (!session?.startedAt || result) return;
-    const startedAtMs = new Date(session.startedAt).getTime();
-    const updateTimer = () => {
-      const elapsed = Math.floor((Date.now() - startedAtMs) / 1000);
-      setSecondsLeft(Math.max(0, STATION_SECONDS - elapsed));
-    };
-    updateTimer();
-    const timer = setInterval(updateTimer, 1000);
-    return () => clearInterval(timer);
-  }, [session?.startedAt, result]);
-
-  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [session?.messages, activeStage, activeManeuver, sending]);
 
@@ -737,13 +725,14 @@ export default function SimulationPage() {
     stopListening();
   }, [sessionLocked, patientLiveCall, examinerLiveCall, stopListening]);
 
-  const completeSession = useCallback(async () => {
+  const completeSession = useCallback(async (options?: { timedOut?: boolean }) => {
     setCompleting(true);
     setCompleteError("");
     const evaluationLanguage = 'EN';
     try {
       const res = await api.post(`/sessions/${sessionId}/complete`, {
         language: evaluationLanguage,
+        ...(options?.timedOut ? { timedOut: true } : {}),
       });
       setResult(res.data.result);
       const progress = parseRankSnapshot(res.data.rankProgress ?? res.data.result?.xpRankSnapshot);
@@ -766,12 +755,33 @@ export default function SimulationPage() {
     }
   }, [sessionId, t]);
 
-  useEffect(() => {
-    if (!session || result || completing || autoCompleteTriggeredRef.current) return;
-    if (secondsLeft > 0) return;
+  const triggerTimeUpComplete = useCallback(() => {
+    if (autoCompleteTriggeredRef.current) return;
     autoCompleteTriggeredRef.current = true;
-    void completeSession();
-  }, [session, result, completing, secondsLeft, completeSession]);
+    void completeSession({ timedOut: true });
+  }, [completeSession]);
+
+  useEffect(() => {
+    if (!session?.startedAt || result) return;
+    const startedAtMs = new Date(session.startedAt).getTime();
+    const updateTimer = () => {
+      const elapsed = Math.floor((Date.now() - startedAtMs) / 1000);
+      const remaining = Math.max(0, STATION_SECONDS - elapsed);
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        triggerTimeUpComplete();
+      }
+    };
+    updateTimer();
+    const timer = setInterval(updateTimer, 1000);
+    return () => clearInterval(timer);
+  }, [session?.startedAt, result, triggerTimeUpComplete]);
+
+  useEffect(() => {
+    if (!session || result || completing) return;
+    if (secondsLeft > 0) return;
+    triggerTimeUpComplete();
+  }, [session, result, completing, secondsLeft, triggerTimeUpComplete]);
 
   if (!session) {
     return (

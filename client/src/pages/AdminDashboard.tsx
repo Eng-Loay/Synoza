@@ -4,13 +4,15 @@ import axios from 'axios';
 import {
   Users, FileText, BarChart3, ClipboardList,
   TrendingUp, Activity, CheckCircle2, BookOpen, FolderTree, Plus, Trash2,
-  Globe, GraduationCap, Pencil, X, Eye, ExternalLink, RefreshCw,
+  Globe, GraduationCap, Pencil, X, Eye, ExternalLink, RefreshCw, Library,
 } from 'lucide-react';
 import api, { pingServer } from '../lib/api';
 import { DashboardLayout } from '../components/DashboardLayout';
+import { AdminQbankTab } from '../components/admin/AdminQbankTab';
+import { AdminUserPlanModal } from '../components/admin/AdminUserPlanModal';
 import type { SiteSettings } from '../components/SiteFooter';
 
-type Tab = 'overview' | 'users' | 'cases' | 'results' | 'knowledge' | 'site';
+type Tab = 'overview' | 'users' | 'cases' | 'results' | 'knowledge' | 'site' | 'qbank';
 
 interface CategoryRow {
   id: string;
@@ -46,6 +48,24 @@ interface AISettingsRow {
   systemPromptEn?: string | null;
 }
 
+interface UserSubscriptionRow {
+  id: string;
+  plan: string;
+  status: string;
+  endDate?: string | null;
+}
+
+interface AdminUserRow {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: string;
+  isActive: boolean;
+  university?: string | null;
+  subscriptions?: UserSubscriptionRow[];
+}
+
 interface UniversityRow {
   id: string;
   nameEn: string;
@@ -69,7 +89,8 @@ export default function AdminDashboard() {
   const [tab, setTab] = useState<Tab>('overview');
   const [stats, setStats] = useState<Record<string, number>>({});
   const [recentSessions, setRecentSessions] = useState<Record<string, unknown>[]>([]);
-  const [users, setUsers] = useState<Record<string, unknown>[]>([]);
+  const [users, setUsers] = useState<AdminUserRow[]>([]);
+  const [planModalUser, setPlanModalUser] = useState<AdminUserRow | null>(null);
   const [cases, setCases] = useState<Record<string, unknown>[]>([]);
   const [results, setResults] = useState<Record<string, unknown>[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
@@ -163,7 +184,7 @@ export default function AdminDashboard() {
         setRecentSessions(r.data.recentSessions || []);
       });
     }
-    if (tab === 'users') api.get('/admin/users').then((r) => setUsers(r.data.users));
+    if (tab === 'users') api.get('/admin/users').then((r) => setUsers(r.data.users as AdminUserRow[]));
     if (tab === 'cases') api.get('/admin/cases').then((r) => setCases(r.data.cases));
     if (tab === 'results') api.get('/admin/results').then((r) => setResults(r.data.results));
     if (tab === 'knowledge') {
@@ -180,12 +201,32 @@ export default function AdminDashboard() {
     }
   }, [tab, selectedCategoryId]);
 
+  const refreshUsers = () => {
+    void api.get('/admin/users').then((r) => setUsers(r.data.users as AdminUserRow[]));
+  };
+
+  const formatPlanEndDate = (value?: string | null) => {
+    if (!value) return '—';
+    try {
+      return new Date(value).toLocaleDateString();
+    } catch {
+      return '—';
+    }
+  };
+
+  const activePlanForUser = (user: AdminUserRow) => {
+    const sub = user.subscriptions?.[0];
+    if (!sub || sub.status !== 'ACTIVE') return 'FREE';
+    return sub.plan;
+  };
+
   const navItems = [
     { id: 'overview', label: t('statistics'), icon: BarChart3 },
     { id: 'users', label: t('users'), icon: Users },
     { id: 'cases', label: t('cases'), icon: FileText },
     { id: 'results', label: t('results'), icon: ClipboardList },
     { id: 'knowledge', label: t('knowledgeBase'), icon: BookOpen },
+    { id: 'qbank', label: t('adminQbankNav'), icon: Library },
     { id: 'site', label: 'Site Content', icon: Globe },
   ];
 
@@ -416,7 +457,14 @@ export default function AdminDashboard() {
       )}
 
       {tab === 'users' && (
-        <div className="card overflow-hidden">
+        <>
+          <AdminUserPlanModal
+            user={planModalUser ?? { id: '', email: '', firstName: '', lastName: '', role: 'STUDENT' }}
+            open={planModalUser !== null}
+            onClose={() => setPlanModalUser(null)}
+            onSaved={refreshUsers}
+          />
+          <div className="card overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-white">{t('users')}</h2>
             <span className="badge bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">{users.length} total</span>
@@ -428,21 +476,41 @@ export default function AdminDashboard() {
                   <th>Name</th>
                   <th>Email</th>
                   <th>Role</th>
+                  <th>{t('subscriptions')}</th>
+                  <th>{t('adminPlanValidUntil')}</th>
                   <th>University</th>
                   <th>Status</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
                 {users.map((u) => (
-                  <tr key={u.id as string}>
-                    <td className="font-medium">{u.firstName as string} {u.lastName as string}</td>
-                    <td>{u.email as string}</td>
-                    <td><span className="badge bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300">{u.role as string}</span></td>
-                    <td className="text-slate-500">{(u.university as string) || '—'}</td>
+                  <tr key={u.id}>
+                    <td className="font-medium">{u.firstName} {u.lastName}</td>
+                    <td>{u.email}</td>
+                    <td><span className="badge bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300">{u.role}</span></td>
+                    <td>
+                      <span className="badge bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">
+                        {activePlanForUser(u)}
+                      </span>
+                    </td>
+                    <td className="text-slate-500">{formatPlanEndDate(u.subscriptions?.[0]?.endDate)}</td>
+                    <td className="text-slate-500">{u.university || '—'}</td>
                     <td>
                       <span className={`badge ${u.isActive ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
                         {u.isActive ? 'Active' : 'Inactive'}
                       </span>
+                    </td>
+                    <td>
+                      {u.role === 'STUDENT' && (
+                        <button
+                          type="button"
+                          onClick={() => setPlanModalUser(u)}
+                          className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline"
+                        >
+                          {t('adminManagePlan')}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -450,6 +518,7 @@ export default function AdminDashboard() {
             </table>
           </div>
         </div>
+        </>
       )}
 
       {tab === 'cases' && (
@@ -723,6 +792,8 @@ export default function AdminDashboard() {
         </div>
         </div>
       )}
+
+      {tab === 'qbank' && <AdminQbankTab />}
 
       {tab === 'site' && (
         <div className="grid lg:grid-cols-2 gap-6">
