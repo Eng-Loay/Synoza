@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { Role } from '@prisma/client';
 import { getPlanConfig, activatePlan } from '../services/subscriptionService.js';
+import { clearAISettingsCache } from '../services/aiService.js';
 
 const router = Router();
 
@@ -134,6 +135,7 @@ router.put('/ai-settings', async (req, res) => {
   let settings = await prisma.aISettings.findFirst();
   if (!settings) settings = await prisma.aISettings.create({ data: {} });
   settings = await prisma.aISettings.update({ where: { id: settings.id }, data: req.body });
+  clearAISettingsCache();
   res.json({ settings });
 });
 

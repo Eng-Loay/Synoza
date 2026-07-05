@@ -1,9 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { shouldUseBrowserStt, startBrowserStt, type BrowserSttSession } from '../lib/browserStt';
+import {
+  getMicConstraints,
+  IS_MOBILE,
+  maxRecordDurationMs,
+  minBlobBytes,
+  minRecordMs,
+  recorderTimesliceMs,
+  unlockMobileAudio,
+} from '../lib/mobileAudio';
+import { abortActiveSpeechRecognition, releaseMicrophoneStream } from '../lib/speechRecognition';
 import {
   isAudioRecordingSupported,
   pickAudioMimeType,
   transcribeAudioBlob,
 } from '../lib/transcribe';
+
+const PROCESSING_TIMEOUT_MS = IS_MOBILE ? 22_000 : 28_000;
 
 interface UseSpeechInputOptions {
   lang: string;
@@ -17,6 +30,9 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
   const [isListening, setIsListening] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const browserSttRef = useRef<BrowserSttSession | null>(null);
+  const recordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const processingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const mimeTypeRef = useRef('audio/webm');
@@ -33,16 +49,73 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
   langRef.current = lang;
   sessionLangRef.current = sessionLang;
 
-  const isSupported = isAudioRecordingSupported();
+  const useBrowserStt = shouldUseBrowserStt();
+  // Prefer device STT; server/OpenAI transcription only when Web Speech API is unavailable (e.g. Firefox).
+  const isSupported = useBrowserStt || isAudioRecordingSupported();
 
   const releaseStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
   }, []);
 
+  const clearProcessingTimer = useCallback(() => {
+    if (processingTimerRef.current) {
+      clearTimeout(processingTimerRef.current);
+      processingTimerRef.current = null;
+    }
+  }, []);
+
+  const forceReleaseMic = useCallback(() => {
+    clearProcessingTimer();
+    if (recordTimerRef.current) {
+      clearTimeout(recordTimerRef.current);
+      recordTimerRef.current = null;
+    }
+    browserSttRef.current?.abort();
+    browserSttRef.current = null;
+    abortActiveSpeechRecognition();
+    releaseMicrophoneStream();
+
+    const recorder = mediaRecorderRef.current;
+    mediaRecorderRef.current = null;
+    chunksRef.current = [];
+    releaseStream();
+    if (recorder && recorder.state !== 'inactive') {
+      try {
+        recorder.onstop = null;
+        recorder.stop();
+      } catch {
+        // ignore
+      }
+    }
+    setIsListening(false);
+    setIsProcessing(false);
+  }, [clearProcessingTimer, releaseStream]);
+
+  const armProcessingTimeout = useCallback(() => {
+    clearProcessingTimer();
+    processingTimerRef.current = setTimeout(() => {
+      processingTimerRef.current = null;
+      forceReleaseMic();
+      onErrorRef.current?.('network');
+    }, PROCESSING_TIMEOUT_MS);
+  }, [clearProcessingTimer, forceReleaseMic]);
+
   const stopRecording = useCallback(() => {
+    if (browserSttRef.current) {
+      setIsProcessing(true);
+      armProcessingTimeout();
+      browserSttRef.current.stop();
+      return;
+    }
+
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
+      try {
+        recorder.requestData();
+      } catch {
+        // Some browsers don't support requestData.
+      }
       try {
         recorder.stop();
       } catch {
@@ -53,23 +126,73 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
     }
     releaseStream();
     setIsListening(false);
-  }, [releaseStream]);
+  }, [armProcessingTimeout, releaseStream]);
 
-  const startListening = useCallback(async () => {
-    if (isListening || isProcessing) return;
+  const startBrowserListening = useCallback(async () => {
+    await unlockMobileAudio();
+    releaseMicrophoneStream();
+    setIsListening(true);
 
-    if (!isSupported) {
+    const session = await startBrowserStt({
+      lang: langRef.current,
+      sessionLang: sessionLangRef.current,
+      manualStop: true,
+      maxDurationMs: maxRecordDurationMs(),
+      onInterim: (text) => onInterimRef.current?.(text),
+      onResult: (text) => {
+        if (recordTimerRef.current) {
+          clearTimeout(recordTimerRef.current);
+          recordTimerRef.current = null;
+        }
+        clearProcessingTimer();
+        browserSttRef.current = null;
+        setIsListening(false);
+        setIsProcessing(false);
+        onCompleteRef.current?.(text);
+      },
+      onError: (code) => {
+        if (recordTimerRef.current) {
+          clearTimeout(recordTimerRef.current);
+          recordTimerRef.current = null;
+        }
+        clearProcessingTimer();
+        browserSttRef.current = null;
+        setIsListening(false);
+        setIsProcessing(false);
+        if (code === 'transcription-invalid') {
+          onErrorRef.current?.('micArabicFailed');
+        } else {
+          onErrorRef.current?.(code);
+        }
+      },
+    });
+
+    if (!session) {
+      setIsListening(false);
+      return;
+    }
+
+    browserSttRef.current = session;
+    recordTimerRef.current = setTimeout(() => {
+      if (browserSttRef.current) {
+        setIsProcessing(true);
+        armProcessingTimeout();
+        browserSttRef.current.stop();
+      }
+    }, maxRecordDurationMs());
+  }, [armProcessingTimeout, clearProcessingTimer]);
+
+  const startRecorderListening = useCallback(async () => {
+    if (!isAudioRecordingSupported()) {
       onErrorRef.current?.('not-supported');
       return;
     }
 
     try {
+      await unlockMobileAudio();
+      releaseMicrophoneStream();
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: getMicConstraints(),
       });
 
       streamRef.current = stream;
@@ -91,6 +214,10 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
       };
 
       recorder.onstop = async () => {
+        if (recordTimerRef.current) {
+          clearTimeout(recordTimerRef.current);
+          recordTimerRef.current = null;
+        }
         setIsListening(false);
         releaseStream();
         mediaRecorderRef.current = null;
@@ -99,12 +226,13 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
         const blob = new Blob(chunksRef.current, { type: mimeTypeRef.current });
         chunksRef.current = [];
 
-        if (elapsed < 700 || blob.size < 500) {
+        if (elapsed < minRecordMs() || blob.size < minBlobBytes()) {
           onErrorRef.current?.('no-speech');
           return;
         }
 
         setIsProcessing(true);
+        armProcessingTimeout();
         onInterimRef.current?.('…');
 
         try {
@@ -115,9 +243,12 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
             onErrorRef.current?.('no-speech');
           }
         } catch (err) {
+          const code = err instanceof Error ? err.message : '';
           const status = (err as { response?: { status?: number; data?: { error?: string } } })?.response?.status;
           const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || '';
-          if (status === 422 || status === 400) {
+          if (code === 'transcription-timeout') {
+            onErrorRef.current?.('network');
+          } else if (status === 422 || status === 400) {
             onErrorRef.current?.(errMsg.toLowerCase().includes('arabic') ? 'micArabicFailed' : 'no-speech');
           } else if (status === 503) {
             onErrorRef.current?.('transcription-unavailable');
@@ -125,13 +256,19 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
             onErrorRef.current?.('transcription-failed');
           }
         } finally {
+          clearProcessingTimer();
           setIsProcessing(false);
         }
       };
 
       mediaRecorderRef.current = recorder;
       startedAtRef.current = Date.now();
-      recorder.start(150);
+      recorder.start(recorderTimesliceMs());
+      recordTimerRef.current = setTimeout(() => {
+        if (mediaRecorderRef.current?.state === 'recording') {
+          stopRecording();
+        }
+      }, maxRecordDurationMs());
       setIsListening(true);
     } catch (err) {
       releaseStream();
@@ -142,27 +279,33 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
         onErrorRef.current?.('audio-capture');
       }
     }
-  }, [isListening, isProcessing, isSupported, releaseStream]);
+  }, [armProcessingTimeout, clearProcessingTimer, releaseStream, stopRecording]);
+
+  const startListening = useCallback(async () => {
+    if (isListening || isProcessing) return;
+
+    if (useBrowserStt) {
+      await startBrowserListening();
+      return;
+    }
+
+    await startRecorderListening();
+  }, [isListening, isProcessing, startBrowserListening, startRecorderListening, useBrowserStt]);
 
   const toggleListening = useCallback(() => {
-    if (isProcessing) return;
+    if (isProcessing) {
+      forceReleaseMic();
+      return;
+    }
     if (isListening) stopRecording();
     else void startListening();
-  }, [isListening, isProcessing, startListening, stopRecording]);
+  }, [forceReleaseMic, isListening, isProcessing, startListening, stopRecording]);
 
   useEffect(
     () => () => {
-      const recorder = mediaRecorderRef.current;
-      if (recorder && recorder.state !== 'inactive') {
-        try {
-          recorder.stop();
-        } catch {
-          // ignore
-        }
-      }
-      releaseStream();
+      forceReleaseMic();
     },
-    [releaseStream],
+    [forceReleaseMic],
   );
 
   return {
@@ -171,6 +314,7 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
     isSupported,
     toggleListening,
     stopListening: stopRecording,
+    forceReleaseMic,
     startListening,
   };
 };

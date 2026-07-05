@@ -299,8 +299,8 @@ model QbankModuleEntitlement {
 model AISettings {
   id              String   @id @default(cuid())
   provider        String   @default("mock")
-  patientModel    String   @default("gpt-4o-mini")
-  examinerModel   String   @default("gpt-4o-mini")
+  patientModel    String   @default("gpt-realtime-mini")
+  examinerModel   String   @default("gpt-realtime-mini")
   temperature     Float    @default(0.7)
   maxTokens       Int      @default(1024)
   systemPromptAr  String?  @db.Text

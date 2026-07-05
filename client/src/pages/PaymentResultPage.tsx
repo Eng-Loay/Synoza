@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import api from '../lib/api';
+import { dispatchEntitlementsChanged } from '../lib/entitlementsEvents';
 import { Navbar } from '../components/Navbar';
 import { IconBox } from '../components/IconBox';
 
@@ -41,7 +42,7 @@ export default function PaymentResultPage({ mode }: { mode: PageMode }) {
         if (mode === 'success' && res.data.order.status !== 'PAID') {
           setError(t('paymentPending'));
         } else if (mode === 'success' && res.data.order.status === 'PAID') {
-          window.dispatchEvent(new Event('synoza:entitlements-changed'));
+          dispatchEntitlementsChanged();
         }
       } catch {
         setError(t('paymentVerifyFailed'));

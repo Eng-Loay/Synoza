@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import axios from "axios";
 import {
@@ -20,7 +20,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import api from "../lib/api";
-import { downloadTextFile } from "../lib/download";
+import { dispatchEntitlementsChanged } from "../lib/entitlementsEvents";
 import { downloadOsceReportPdf } from "../lib/osceReportPdf";
 import { ConnectionStatus } from "../components/ConnectionStatus";
 import chestInspectionImg from "../assets/exam/chest-inspection.svg?url";
@@ -34,6 +34,8 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useSpeechInput } from '../hooks/useSpeechInput';
 import { useLiveVoiceCall } from '../hooks/useLivePatientCall';
 import { speakText, stopSpeaking } from '../lib/speech';
+import { IS_MOBILE, unlockMobileAudio } from '../lib/mobileAudio';
+import type { VoiceTurnResponse } from '../lib/voiceTurn';
 import {
   XpBreakdownSection,
   parseRankSnapshot,
@@ -70,6 +72,7 @@ interface Session {
   activeManeuver: string | null;
   completedManeuvers: string;
   language: string;
+  startedAt: string;
   case: {
     titleEn: string;
     titleAr: string;
@@ -110,73 +113,6 @@ const EXAM_MANEUVERS = [
 ] as const;
 
 const STATION_SECONDS = 20 * 60;
-
-const MANEUVER_OBJECTIVES: Record<
-  string,
-  { en: string; ar: string; checklistEn: string[]; checklistAr: string[] }
-> = {
-  inspection: {
-    en: "Inspect the precordium, chest wall, and any visible scars. Comment on breathing pattern and chest shape.",
-    ar: "افحص منطقة القلب والصدر والـ scars الظاهرة. علّق على نمط التنفس وشكل الصدر.",
-    checklistEn: [
-      "Scars / deformity",
-      "Apex visible",
-      "Chest movement",
-      "Cyanosis / clubbing",
-    ],
-    checklistAr: [
-      "Scars / deformity",
-      "الذروة ظاهرة",
-      "حركة الصدر",
-      "Cyanosis / clubbing",
-    ],
-  },
-  palpation: {
-    en: "Palpate the apex beat, heaves, and thrills. Assess character and position.",
-    ar: "اجس نبض الذروة والـ heaves والـ thrills. قيّم المكان والطبيعة.",
-    checklistEn: [
-      "Apex location",
-      "Character (tapping/heaving)",
-      "Thrills at RUSB",
-      "Parasternal heave",
-    ],
-    checklistAr: [
-      "مكان الذروة",
-      "الطبيعة",
-      "Thrills عند RUSB",
-      "Parasternal heave",
-    ],
-  },
-  percussion: {
-    en: "Percuss heart borders and compare with expected normal limits.",
-    ar: "انقر حدود القلب وقارن بالطبيعي.",
-    checklistEn: [
-      "Right heart border",
-      "Left heart border",
-      "Upper border",
-      "Compare lung fields",
-    ],
-    checklistAr: ["الحد الأيمن", "الحد الأيسر", "الحد العلوي", "قارن بالرئة"],
-  },
-  auscultation: {
-    en: "Auscultate all valve areas with the bell and diaphragm. Describe murmurs systematically.",
-    ar: "استمع لكل مناطق الصمامات بالـ bell والـ diaphragm. صِف الـ murmurs بشكل منظم.",
-    checklistEn: [
-      "Aortic area (RUSB)",
-      "Pulmonary area",
-      "Mitral area (apex)",
-      "Tricuspid area",
-      "Radiation to carotids",
-    ],
-    checklistAr: [
-      "Aortic (RUSB)",
-      "Pulmonary",
-      "Mitral (apex)",
-      "Tricuspid",
-      "Radiation للـ carotids",
-    ],
-  },
-};
 
 const DEFAULT_MANEUVER_IMAGES: Record<string, string> = {
   inspection: chestInspectionImg,
@@ -241,6 +177,7 @@ function ChatTypingIndicator({ label }: { label: string }) {
 export default function SimulationPage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { t, i18n } = useTranslation();
   const isAr = i18n.language.startsWith("ar");
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -262,8 +199,11 @@ export default function SimulationPage() {
   const [completeError, setCompleteError] = useState("");
   const [vivaActive, setVivaActive] = useState(false);
   const [micError, setMicError] = useState('');
-  const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [exitPrompt, setExitPrompt] = useState<'navigation' | 'refresh' | null>(null);
   const [exiting, setExiting] = useState(false);
+  const autoCompleteTriggeredRef = useRef(false);
+
+  const sessionLocked = !!result || completing || secondsLeft <= 0;
 
   const voiceCallContext =
     activeStage === 'history' && !showExaminerPanel
@@ -274,14 +214,19 @@ export default function SimulationPage() {
           ? 'examiner'
           : null;
 
-  const examinerSpeechLang = lang === 'EN' ? 'en-US' : 'ar-EG';
+  const examinerSpeechLang =
+    activeStage === 'examination' || (activeStage === 'history' && showExaminerPanel)
+      ? 'en-US'
+      : lang === 'EN'
+        ? 'en-US'
+        : 'ar-EG';
   const listenLang = voiceCallContext === 'patient' ? 'ar-EG' : examinerSpeechLang;
   const speakLang = voiceCallContext === 'patient' ? 'ar-EG' : examinerSpeechLang;
 
   const sendMessage = useCallback(
     async (overrideText?: string): Promise<{ success: boolean; reply?: string }> => {
       const text = (overrideText ?? input).trim();
-      if (!text || sending) return { success: false };
+      if (!text || sending || sessionLocked) return { success: false };
       setSending(true);
       setChatError("");
       setInput("");
@@ -358,8 +303,25 @@ export default function SimulationPage() {
       showExaminerPanel,
       sessionId,
       t,
+      sessionLocked,
     ],
   );
+
+  const getVoiceTurnMeta = useCallback(() => {
+    const isExamViva = activeStage === 'examination' && activeManeuver;
+    const endpoint =
+      isExamViva || activeStage === 'diagnosis' || showExaminerPanel ? 'examiner' : 'chat';
+    const stage = isExamViva
+      ? maneuverStage(activeManeuver!)
+      : activeStage === 'history' && showExaminerPanel
+        ? HISTORY_EXAMINER_STAGE
+        : activeStage;
+    return {
+      endpoint: endpoint as 'chat' | 'examiner',
+      stage,
+      maneuverId: isExamViva ? activeManeuver! : undefined,
+    };
+  }, [activeStage, activeManeuver, showExaminerPanel]);
 
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
@@ -369,11 +331,12 @@ export default function SimulationPage() {
   const micSpeechLang = voiceCallContext === 'patient' ? 'ar-EG' : lang === 'EN' ? 'en-US' : 'ar-EG';
   const micSessionLang = voiceCallContext === 'patient' ? 'AR' : lang === 'AUTO' ? 'AR' : lang;
 
-  const { isListening, isProcessing, isSupported: isMicSupported, toggleListening, stopListening } = useSpeechInput({
+  const { isListening, isProcessing, isSupported: isMicSupported, toggleListening, stopListening, forceReleaseMic } = useSpeechInput({
     lang: micSpeechLang,
     sessionLang: micSessionLang,
-    onInterim: () => {
+    onInterim: (text) => {
       setMicError('');
+      if (text.trim()) setInput(text);
     },
     onComplete: async (transcript) => {
       setMicError('');
@@ -382,9 +345,7 @@ export default function SimulationPage() {
       if (!result.success || !result.reply) return;
 
       const ctx = voiceCallContextRef.current;
-      if (ctx === 'patient') {
-        await speakText(result.reply, 'ar-EG');
-      } else if (ctx === 'examiner') {
+      if (ctx === 'examiner') {
         await speakText(result.reply, lang === 'EN' ? 'en-US' : 'ar-EG');
       }
     },
@@ -403,12 +364,38 @@ export default function SimulationPage() {
     },
   });
 
-  const liveVoiceCall = useLiveVoiceCall({
+  const appendVoiceTurnMessages = useCallback((result: VoiceTurnResponse) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const studentMsg: Message = {
+        ...result.studentMessage,
+        role: result.studentMessage.role as Message['role'],
+      };
+      const replyMsg: Message = {
+        ...result.replyMessage,
+        role: result.replyMessage.role as Message['role'],
+      };
+      return {
+        ...prev,
+        messages: [...prev.messages, studentMsg, replyMsg],
+      };
+    });
+  }, []);
+
+  const patientLiveCall = useLiveVoiceCall({
     listenLang,
     speakLang,
     sessionLang: micSessionLang,
     sendMessage,
-    disabled: !voiceCallContext || sending,
+    speakReplies: false,
+    voiceTurn: sessionId
+      ? {
+          sessionId,
+          getRequestMeta: getVoiceTurnMeta,
+          onTurn: appendVoiceTurnMessages,
+        }
+      : undefined,
+    disabled: voiceCallContext !== 'patient' || sessionLocked,
     onError: (code) => {
       if (code === 'not-supported') setMicError(t('liveCallNotSupported'));
       else if (code === 'not-allowed') setMicError(t('micPermissionDenied'));
@@ -422,39 +409,105 @@ export default function SimulationPage() {
     },
   });
 
-  useEffect(() => {
-    if (!voiceCallContext && liveVoiceCall.isLiveCall) {
-      liveVoiceCall.stopCall();
-      stopListening();
-    }
-  }, [voiceCallContext, liveVoiceCall.isLiveCall, liveVoiceCall.stopCall, stopListening]);
+  const examinerLiveCall = useLiveVoiceCall({
+    listenLang,
+    speakLang,
+    sessionLang: micSessionLang,
+    sendMessage,
+    voiceTurn: sessionId
+      ? {
+          sessionId,
+          getRequestMeta: getVoiceTurnMeta,
+          onTurn: appendVoiceTurnMessages,
+        }
+      : undefined,
+    disabled: voiceCallContext !== 'examiner' || sessionLocked,
+    onError: (code) => {
+      if (code === 'not-supported') setMicError(t('liveCallNotSupported'));
+      else if (code === 'not-allowed') setMicError(t('micPermissionDenied'));
+      else if (code === 'no-speech') setMicError('');
+      else if (code === 'network') setMicError(t('micNetworkError'));
+      else if (code === 'audio-capture') setMicError(t('micCaptureError'));
+      else if (code === 'start-failed') setMicError(t('micStartFailed'));
+      else if (code === 'transcription-failed') setMicError(t('micTranscriptionFailed'));
+      else if (code === 'transcription-unavailable') setMicError(t('micTranscriptionUnavailable'));
+      else setMicError(t('micError'));
+    },
+  });
+
+  const isPatientLiveCall = voiceCallContext === 'patient';
+  const activeLiveCall = isPatientLiveCall ? patientLiveCall : examinerLiveCall;
 
   useEffect(() => {
-    if (liveVoiceCall.isLiveCall) {
-      liveVoiceCall.stopCall();
+    if (!voiceCallContext) {
+      patientLiveCall.stopCall();
+      examinerLiveCall.stopCall();
       stopListening();
     }
+  }, [voiceCallContext, patientLiveCall.stopCall, examinerLiveCall.stopCall, stopListening]);
+
+  useEffect(() => {
+    if (patientLiveCall.isLiveCall) patientLiveCall.stopCall();
+    if (examinerLiveCall.isLiveCall) examinerLiveCall.stopCall();
+    stopListening();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listenLang]);
 
-  const toggleMic = () => {
+  const toggleMic = useCallback(() => {
     setMicError('');
-    if (liveVoiceCall.isLiveCall) liveVoiceCall.stopCall();
+    patientLiveCall.stopCall();
+    examinerLiveCall.stopCall();
     stopSpeaking();
+    void unlockMobileAudio();
+    // Only release mic when starting a new recording — not when stopping (would skip onstop/transcribe).
+    if (!isListening && !isProcessing) {
+      forceReleaseMic();
+    }
     toggleListening();
-  };
+  }, [
+    examinerLiveCall,
+    forceReleaseMic,
+    isListening,
+    isProcessing,
+    patientLiveCall,
+    toggleListening,
+  ]);
 
-  const toggleLiveCall = () => {
+  const toggleLiveCall = useCallback(() => {
     setMicError('');
+    if (isPatientLiveCall) {
+      if (patientLiveCall.isLiveCall) {
+        patientLiveCall.stopCall();
+        return;
+      }
+      forceReleaseMic();
+      stopListening();
+      examinerLiveCall.stopCall();
+      setInput('');
+      window.setTimeout(() => patientLiveCall.toggleLiveCall(), IS_MOBILE ? 650 : 300);
+      return;
+    }
+    if (examinerLiveCall.isLiveCall) {
+      examinerLiveCall.stopCall();
+      return;
+    }
+    forceReleaseMic();
     stopListening();
-    if (!liveVoiceCall.isLiveCall) setInput('');
-    liveVoiceCall.toggleLiveCall();
-  };
+    patientLiveCall.stopCall();
+    setInput('');
+    window.setTimeout(() => examinerLiveCall.toggleLiveCall(), IS_MOBILE ? 650 : 300);
+  }, [
+    isPatientLiveCall,
+    patientLiveCall,
+    examinerLiveCall,
+    forceReleaseMic,
+    stopListening,
+  ]);
 
   const liveCallInputProps = {
-    isLiveCall: liveVoiceCall.isLiveCall,
-    isLiveCallBusy: liveVoiceCall.isBusy,
-    isLiveCallSupported: liveVoiceCall.isSupported,
+    isLiveCall: activeLiveCall.isLiveCall,
+    isLiveCallBusy: activeLiveCall.isBusy,
+    isLiveCallSupported: activeLiveCall.isSupported,
     onToggleLiveCall: voiceCallContext ? toggleLiveCall : undefined,
     liveCallLabel: t('liveCall'),
     endLiveCallLabel: t('endLiveCall'),
@@ -480,18 +533,59 @@ export default function SimulationPage() {
   }, [loadSession]);
 
   useEffect(() => {
-    const timer = setInterval(
-      () => setSecondsLeft((s) => Math.max(0, s - 1)),
-      1000,
-    );
+    if (!session?.startedAt || result) return;
+    const startedAtMs = new Date(session.startedAt).getTime();
+    const updateTimer = () => {
+      const elapsed = Math.floor((Date.now() - startedAtMs) / 1000);
+      setSecondsLeft(Math.max(0, STATION_SECONDS - elapsed));
+    };
+    updateTimer();
+    const timer = setInterval(updateTimer, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [session?.startedAt, result]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [session?.messages, activeStage, activeManeuver, sending]);
 
+  const initExaminerViva = useCallback(async () => {
+    if (!sessionId) return;
+    setSending(true);
+    setChatError("");
+    try {
+      const res = await api.post(`/sessions/${sessionId}/examiner-viva/init`);
+      setSession((prev) => {
+        if (!prev) return prev;
+        if (prev.messages.some((m) => m.id === res.data.message.id)) return prev;
+        return { ...prev, messages: [...prev.messages, res.data.message] };
+      });
+    } catch {
+      setChatError(t("completeSessionError"));
+    } finally {
+      setSending(false);
+    }
+  }, [sessionId, t]);
+
+  useEffect(() => {
+    if (!showExaminerPanel || !session) return;
+    const hasOpening = session.messages.some(
+      (m) => m.stage === HISTORY_EXAMINER_STAGE && m.role === "EXAMINER",
+    );
+    if (!hasOpening) void initExaminerViva();
+  }, [showExaminerPanel, session, initExaminerViva]);
+
   const examInProgress = !!session && !result;
+
+  useEffect(() => {
+    if (!session || result) return;
+    if ((location.state as { fromCaseStart?: boolean } | null)?.fromCaseStart) return;
+    const nav = performance.getEntriesByType('navigation')[0] as
+      | PerformanceNavigationTiming
+      | undefined;
+    if (nav?.type === 'reload' && session.status !== 'COMPLETED') {
+      setExitPrompt('refresh');
+    }
+  }, [session, result, location.state]);
 
   useEffect(() => {
     if (!examInProgress) return;
@@ -500,11 +594,13 @@ export default function SimulationPage() {
 
     const onPopState = () => {
       window.history.pushState({ synozaExamGuard: true }, "");
-      setShowExitConfirm(true);
+      setExitPrompt('navigation');
     };
 
     window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
   }, [examInProgress]);
 
   const requestExit = useCallback(() => {
@@ -512,16 +608,17 @@ export default function SimulationPage() {
       navigate("/student");
       return;
     }
-    setShowExitConfirm(true);
+    setExitPrompt('navigation');
   }, [examInProgress, navigate]);
 
   const cancelExit = useCallback(() => {
-    setShowExitConfirm(false);
+    setExitPrompt(null);
   }, []);
 
   const confirmExit = useCallback(async () => {
     setExiting(true);
-    liveVoiceCall.stopCall();
+    patientLiveCall.stopCall();
+    examinerLiveCall.stopCall();
     stopListening();
     try {
       await api.post(`/sessions/${sessionId}/abandon`);
@@ -529,9 +626,10 @@ export default function SimulationPage() {
       /* leave even if abandon fails */
     }
     setExiting(false);
-    setShowExitConfirm(false);
+    setExitPrompt(null);
+    dispatchEntitlementsChanged();
     navigate("/student");
-  }, [navigate, liveVoiceCall, sessionId, stopListening]);
+  }, [navigate, patientLiveCall, examinerLiveCall, sessionId, stopListening]);
 
   const formatTime = (s: number) => {
     const m = Math.floor(s / 60)
@@ -553,7 +651,7 @@ export default function SimulationPage() {
   }
 
   const startManeuver = async (maneuverId: string) => {
-    if (maneuverId === activeManeuver) return;
+    if (maneuverId === activeManeuver || sessionLocked) return;
     setSending(true);
     try {
       const res = await api.post(`/sessions/${sessionId}/maneuver/start`, {
@@ -613,6 +711,7 @@ export default function SimulationPage() {
   };
 
   const changeStage = (stage: string) => {
+    if (sessionLocked && stage !== "feedback") return;
     setActiveStage(stage);
     api.patch(`/sessions/${sessionId}/stage`, { stage });
     if (stage === "feedback" && session?.result) {
@@ -631,7 +730,14 @@ export default function SimulationPage() {
     if (next) void startManeuver(next);
   }, [session, result, activeStage, activeManeuver, completedManeuvers, sending]);
 
-  const completeSession = async () => {
+  useEffect(() => {
+    if (!sessionLocked) return;
+    patientLiveCall.stopCall();
+    examinerLiveCall.stopCall();
+    stopListening();
+  }, [sessionLocked, patientLiveCall, examinerLiveCall, stopListening]);
+
+  const completeSession = useCallback(async () => {
     setCompleting(true);
     setCompleteError("");
     const evaluationLanguage = 'EN';
@@ -643,12 +749,13 @@ export default function SimulationPage() {
       const progress = parseRankSnapshot(res.data.rankProgress ?? res.data.result?.xpRankSnapshot);
       setRankProgress(progress);
       if (progress?.promoted) setPromotionModal(progress);
-      window.dispatchEvent(new Event('synoza:entitlements-changed'));
+      dispatchEntitlementsChanged();
       setSession((prev) =>
         prev ? { ...prev, result: res.data.result, status: "COMPLETED" } : prev,
       );
       setActiveStage("feedback");
     } catch (err) {
+      autoCompleteTriggeredRef.current = false;
       if (!axios.isAxiosError(err) || !err.response) {
         setCompleteError(t("chatErrorOffline"));
       } else {
@@ -657,7 +764,14 @@ export default function SimulationPage() {
     } finally {
       setCompleting(false);
     }
-  };
+  }, [sessionId, t]);
+
+  useEffect(() => {
+    if (!session || result || completing || autoCompleteTriggeredRef.current) return;
+    if (secondsLeft > 0) return;
+    autoCompleteTriggeredRef.current = true;
+    void completeSession();
+  }, [session, result, completing, secondsLeft, completeSession]);
 
   if (!session) {
     return (
@@ -682,6 +796,12 @@ export default function SimulationPage() {
     ? historyExaminerMessages
     : historyPatientMessages;
 
+  const examinerVivaComplete = historyExaminerMessages.some(
+    (m) =>
+      m.role === "EXAMINER" &&
+      m.content.includes("completes the examiner viva"),
+  );
+
   const maneuverMessages = activeManeuver
     ? session.messages.filter(
         (m) =>
@@ -702,37 +822,12 @@ export default function SimulationPage() {
 
   const feedbackResult = result ?? session.result ?? null;
 
-  const downloadChatTranscript = () => {
-    const title = isAr ? session.case.titleAr : session.case.titleEn;
-    const lines = session.messages.map((m) => {
-      const role =
-        m.role === "STUDENT"
-          ? "Student"
-          : m.role === "PATIENT"
-            ? "Patient"
-            : m.role === "EXAMINER"
-              ? "Examiner"
-              : m.role;
-      return `[${new Date(m.createdAt).toLocaleString()}] [${m.stage}] ${role}: ${m.content}`;
-    });
-    const body = [
-      `Synoza OSCE Chat Transcript`,
-      `Station: ${title}`,
-      `Patient: ${session.case.patientName}`,
-      `Session: ${session.id}`,
-      `Exported: ${new Date().toLocaleString()}`,
-      "",
-      ...lines,
-    ].join("\n");
-    downloadTextFile(`synoza-chat-${session.id.slice(0, 8)}.txt`, body);
-  };
-
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col">
+    <div className="h-dvh overflow-hidden bg-slate-100 dark:bg-slate-950 flex flex-col">
       <ConfirmDialog
-        open={showExitConfirm}
-        title={t("exitExamTitle")}
-        message={t("exitExamMessage")}
+        open={exitPrompt !== null}
+        title={exitPrompt === 'refresh' ? t("refreshExamTitle") : t("exitExamTitle")}
+        message={exitPrompt === 'refresh' ? t("refreshExamMessage") : t("exitExamMessage")}
         confirmLabel={t("leaveExam")}
         cancelLabel={t("stayInExam")}
         confirming={exiting}
@@ -768,13 +863,6 @@ export default function SimulationPage() {
           <div className="flex items-center gap-2 shrink-0">
             <ConnectionStatus />
             <button
-              type="button"
-              onClick={downloadChatTranscript}
-              className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
-            >
-              <Download size={14} /> {t("downloadChat")}
-            </button>
-            <button
               onClick={() => setShowExaminerPanel((v) => !v)}
               className={`hidden sm:block text-xs font-bold px-3 py-1.5 rounded border ${
                 showExaminerPanel
@@ -806,7 +894,8 @@ export default function SimulationPage() {
               <button
                 key={stage}
                 onClick={() => changeStage(stage)}
-                className={`flex items-center gap-1.5 px-5 py-2.5 text-sm border-b-2 whitespace-nowrap transition-colors ${
+                disabled={sessionLocked && stage !== "feedback"}
+                className={`flex items-center gap-1.5 px-5 py-2.5 text-sm border-b-2 whitespace-nowrap transition-colors disabled:opacity-40 disabled:pointer-events-none ${
                   activeStage === stage
                     ? "border-primary text-primary font-semibold bg-primary/5"
                     : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
@@ -933,6 +1022,18 @@ export default function SimulationPage() {
 
         {/* Main content */}
         <main className="flex-1 flex flex-col overflow-hidden bg-slate-100 dark:bg-slate-950 relative">
+          {completeError && !result && secondsLeft <= 0 && !completing && (
+            <div className="shrink-0 bg-red-50 dark:bg-red-950/40 border-b border-red-200 dark:border-red-900 px-4 py-2 flex items-center justify-between gap-3">
+              <p className="text-sm text-red-700 dark:text-red-300">{completeError}</p>
+              <button
+                type="button"
+                onClick={() => void completeSession()}
+                className="text-xs font-bold text-red-700 dark:text-red-300 underline shrink-0"
+              >
+                {t("completeSession")}
+              </button>
+            </div>
+          )}
           {completing && (
             <div className="absolute inset-0 z-20 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center">
               <div className="card p-8 text-center max-w-sm mx-4">
@@ -998,6 +1099,7 @@ export default function SimulationPage() {
                 micError={micError}
                 completedManeuvers={completedManeuvers}
                 onStartManeuver={startManeuver}
+                sessionLocked={sessionLocked}
                 {...liveCallInputProps}
               />
             </>
@@ -1025,6 +1127,7 @@ export default function SimulationPage() {
               isMicSupported={isMicSupported}
               onToggleMic={toggleMic}
               micError={micError}
+              sessionLocked={sessionLocked}
               {...liveCallInputProps}
             />
           ) : (
@@ -1042,11 +1145,13 @@ export default function SimulationPage() {
               setLang={setLang}
               showExaminerPanel={showExaminerPanel}
               setShowExaminerPanel={setShowExaminerPanel}
+              examinerVivaComplete={examinerVivaComplete}
               isListening={isListening}
               isProcessing={isProcessing}
               isMicSupported={isMicSupported}
               onToggleMic={toggleMic}
               micError={micError}
+              sessionLocked={sessionLocked}
               {...liveCallInputProps}
             />
           )}
@@ -1132,6 +1237,7 @@ function ExaminationView({
   onToggleLiveCall,
   liveCallLabel,
   endLiveCallLabel,
+  sessionLocked = false,
 }: {
   session: Session;
   isAr: boolean;
@@ -1163,6 +1269,7 @@ function ExaminationView({
   onToggleLiveCall?: () => void;
   liveCallLabel?: string;
   endLiveCallLabel?: string;
+  sessionLocked?: boolean;
 }) {
   if (!activeManeuver || !activeManeuverMeta) {
     const nextId = getNextManeuver(completedManeuvers);
@@ -1205,8 +1312,7 @@ function ExaminationView({
       <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-5 py-3 flex items-center justify-between">
         <div>
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            {isAr ? activeManeuverMeta.nameAr : activeManeuverMeta.nameEn} ·{" "}
-            {t("observationStation")}
+            {activeManeuverMeta.nameEn} · {t("observationStation")}
           </p>
           <p className="text-sm font-bold text-slate-800 dark:text-white uppercase">
             {t("mustExaminerPanel")}
@@ -1231,42 +1337,44 @@ function ExaminationView({
 
         {/* Clinical examiner chat */}
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col min-h-[280px]">
-          <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
-                <Stethoscope size={16} className="text-amber-700" />
+          <div className="sticky top-0 z-30 shrink-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-100 dark:border-slate-800 rounded-t-xl shadow-sm">
+            <div className="px-4 py-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                  <Stethoscope size={16} className="text-amber-700" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">
+                    {t("clinicalExaminer")}
+                  </p>
+                  <p className="text-xs text-slate-600 truncate">
+                    {activeManeuverMeta.nameEn}
+                  </p>
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="text-[10px] font-bold text-slate-400 uppercase">
-                  {t("clinicalExaminer")}
-                </p>
-                <p className="text-xs text-slate-600 truncate">
-                  {isAr ? activeManeuverMeta.nameAr : activeManeuverMeta.nameEn}
-                </p>
-              </div>
+              <LiveCallButton
+                isLiveCall={isLiveCall}
+                isLiveCallBusy={isLiveCallBusy}
+                isLiveCallSupported={isLiveCallSupported}
+                onToggleLiveCall={onToggleLiveCall}
+                liveCallLabel={liveCallLabel}
+                endLiveCallLabel={endLiveCallLabel}
+                disabled={sending}
+              />
             </div>
-            <LiveCallButton
-              isLiveCall={isLiveCall}
-              isLiveCallBusy={isLiveCallBusy}
-              isLiveCallSupported={isLiveCallSupported}
-              onToggleLiveCall={onToggleLiveCall}
-              liveCallLabel={liveCallLabel}
-              endLiveCallLabel={endLiveCallLabel}
-              disabled={sending}
-            />
+
+            {isLiveCall && (
+              <div className="px-4 py-2 border-t border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
+                <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  {isLiveCallBusy ? t("liveCallProcessing") : t("liveCallActive")}
+                </p>
+              </div>
+            )}
           </div>
 
-          {isLiveCall && (
-            <div className="px-4 py-2 border-b border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
-              <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                {isLiveCallBusy ? t("paymentProcessing") : t("liveCallActive")}
-              </p>
-            </div>
-          )}
-
           <div
-            className="flex-1 p-4 overflow-y-auto space-y-3 max-h-64"
+            className="flex-1 min-h-0 p-4 overflow-y-auto space-y-3 max-h-64"
             dir="ltr"
           >
             {messages.length === 0 ? (
@@ -1321,6 +1429,7 @@ function ExaminationView({
               micNotSupportedLabel={t("micNotSupported")}
               micProcessingLabel={t("micProcessing")}
               micError={micError}
+              disabled={sessionLocked}
               isLiveCall={isLiveCall}
             />
           </div>
@@ -1344,6 +1453,7 @@ function HistoryChatView({
   setLang,
   showExaminerPanel,
   setShowExaminerPanel,
+  examinerVivaComplete,
   isListening,
   isProcessing,
   isMicSupported,
@@ -1353,6 +1463,9 @@ function HistoryChatView({
   isLiveCallBusy,
   isLiveCallSupported,
   onToggleLiveCall,
+  liveCallLabel,
+  endLiveCallLabel,
+  sessionLocked = false,
 }: {
   t: (k: string) => string;
   session: Session;
@@ -1367,6 +1480,7 @@ function HistoryChatView({
   setLang: (l: "AUTO" | "AR" | "EN") => void;
   showExaminerPanel: boolean;
   setShowExaminerPanel: (value: boolean) => void;
+  examinerVivaComplete: boolean;
   isListening: boolean;
   isProcessing: boolean;
   isMicSupported: boolean;
@@ -1376,31 +1490,35 @@ function HistoryChatView({
   isLiveCallBusy?: boolean;
   isLiveCallSupported?: boolean;
   onToggleLiveCall?: () => void;
+  liveCallLabel?: string;
+  endLiveCallLabel?: string;
+  sessionLocked?: boolean;
 }) {
   return (
-    <div className="flex-1 flex flex-col overflow-hidden p-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 shrink-0">
+    <div className="flex-1 flex flex-col overflow-hidden p-3 sm:p-4 min-h-0">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-2 sm:mb-4 shrink-0">
         <button
           type="button"
+          disabled={sessionLocked}
           onClick={() => setShowExaminerPanel(false)}
-          className={`flex items-center gap-3 p-4 rounded-xl border-2 text-left transition-all ${
+          className={`flex items-center gap-2 sm:gap-3 p-2.5 sm:p-4 rounded-xl border-2 text-left transition-all min-w-0 ${
             !showExaminerPanel
               ? "bg-sky-50 dark:bg-sky-950/40 border-sky-300 dark:border-sky-600 shadow-sm"
               : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600"
           }`}
         >
           <div
-            className={`w-11 h-11 rounded-full flex items-center justify-center shrink-0 ${
+            className={`w-8 h-8 sm:w-11 sm:h-11 rounded-full flex items-center justify-center shrink-0 ${
               !showExaminerPanel
                 ? "bg-sky-500 text-white"
                 : "bg-slate-100 dark:bg-slate-800 text-slate-400"
             }`}
           >
-            <UserCircle size={24} />
+            <UserCircle className="w-4 h-4 sm:w-6 sm:h-6" />
           </div>
           <div className="min-w-0">
             <p
-              className={`text-[11px] font-bold uppercase tracking-wider ${
+              className={`text-[9px] sm:text-[11px] font-bold uppercase tracking-wide sm:tracking-wider leading-tight ${
                 !showExaminerPanel
                   ? "text-sky-700 dark:text-sky-300"
                   : "text-slate-500 dark:text-slate-400"
@@ -1409,7 +1527,7 @@ function HistoryChatView({
               {t("patientEncounter")}
             </p>
             <p
-              className={`text-sm font-semibold truncate ${
+              className={`text-xs sm:text-sm font-semibold truncate leading-tight mt-0.5 ${
                 !showExaminerPanel
                   ? "text-sky-900 dark:text-sky-100"
                   : "text-slate-600 dark:text-slate-300"
@@ -1422,25 +1540,26 @@ function HistoryChatView({
 
         <button
           type="button"
+          disabled={sessionLocked}
           onClick={() => setShowExaminerPanel(true)}
-          className={`flex items-center gap-3 p-4 rounded-xl border-2 text-left transition-all ${
+          className={`flex items-center gap-2 sm:gap-3 p-2.5 sm:p-4 rounded-xl border-2 text-left transition-all min-w-0 ${
             showExaminerPanel
               ? "bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-600 shadow-sm"
               : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600"
           }`}
         >
           <div
-            className={`w-11 h-11 rounded-full flex items-center justify-center shrink-0 ${
+            className={`w-8 h-8 sm:w-11 sm:h-11 rounded-full flex items-center justify-center shrink-0 ${
               showExaminerPanel
                 ? "bg-amber-500 text-white"
                 : "bg-slate-100 dark:bg-slate-800 text-slate-400"
             }`}
           >
-            <Shield size={22} />
+            <Shield className="w-4 h-4 sm:w-[22px] sm:h-[22px]" />
           </div>
           <div className="min-w-0">
             <p
-              className={`text-[11px] font-bold uppercase tracking-wider ${
+              className={`text-[9px] sm:text-[11px] font-bold uppercase tracking-wide sm:tracking-wider leading-tight ${
                 showExaminerPanel
                   ? "text-amber-800 dark:text-amber-300"
                   : "text-slate-500 dark:text-slate-400"
@@ -1449,7 +1568,7 @@ function HistoryChatView({
               {t("examinerBox")}
             </p>
             <p
-              className={`text-sm font-medium ${
+              className={`text-xs sm:text-sm font-medium leading-tight mt-0.5 truncate ${
                 showExaminerPanel
                   ? "text-amber-900 dark:text-amber-100"
                   : "text-slate-600 dark:text-slate-300"
@@ -1462,40 +1581,38 @@ function HistoryChatView({
       </div>
 
       <div className="card flex flex-col flex-1 min-h-0 overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 bg-white dark:bg-slate-900">
-          <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase min-w-0 truncate">
-            {showExaminerPanel
-              ? t("examinerBox")
-              : `${t("interviewLog")}: ${session.case.patientName}`}
-          </h3>
-          <div className="flex items-center gap-2 shrink-0">
-            <LiveCallButton
-              isLiveCall={isLiveCall}
-              isLiveCallBusy={isLiveCallBusy}
-              isLiveCallSupported={isLiveCallSupported}
-              onToggleLiveCall={onToggleLiveCall}
-              liveCallLabel={t("liveCall")}
-              endLiveCallLabel={t("endLiveCall")}
-              disabled={sending}
-            />
-            <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />{" "}
-              {t("active")}
-            </span>
+        <div className="sticky top-0 z-30 shrink-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-100 dark:border-slate-800 shadow-sm">
+          <div className="px-3 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2 sm:gap-3">
+            <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase min-w-0 truncate">
+              {showExaminerPanel
+                ? t("examinerBox")
+                : `${t("interviewLog")}: ${session.case.patientName}`}
+            </h3>
+            <div className="flex items-center gap-2 shrink-0">
+              <LiveCallButton
+                isLiveCall={isLiveCall}
+                isLiveCallBusy={isLiveCallBusy}
+                isLiveCallSupported={isLiveCallSupported}
+                onToggleLiveCall={onToggleLiveCall}
+                liveCallLabel={t("liveCall")}
+                endLiveCallLabel={t("endLiveCall")}
+                disabled={sending}
+              />
+            </div>
           </div>
+
+          {isLiveCall && (
+            <div className="px-4 py-2 border-t border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
+              <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                {isLiveCallBusy ? t("liveCallProcessing") : t("liveCallActive")}
+              </p>
+            </div>
+          )}
         </div>
 
-        {isLiveCall && (
-          <div className="px-4 py-2 border-b border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
-            <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              {isLiveCallBusy ? t("paymentProcessing") : t("liveCallActive")}
-            </p>
-          </div>
-        )}
-
         <div
-          className="flex-1 p-4 overflow-y-auto space-y-3 bg-white dark:bg-slate-900"
+          className="flex-1 min-h-0 p-3 sm:p-4 overflow-y-auto overscroll-y-contain space-y-2 sm:space-y-3 bg-white dark:bg-slate-900"
           dir="ltr"
         >
           {messages.length === 0 ? (
@@ -1539,7 +1656,7 @@ function HistoryChatView({
                 className={`flex ${msg.role === "STUDENT" ? "justify-end" : "justify-start"}`}
               >
                 <div
-                  className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm ${
+                  className={`max-w-[88%] sm:max-w-[80%] px-3 py-2 sm:px-4 sm:py-2.5 rounded-2xl text-xs sm:text-sm leading-snug ${
                     msg.role === "STUDENT"
                       ? "bg-primary text-white rounded-br-md"
                       : msg.role === "EXAMINER"
@@ -1562,24 +1679,26 @@ function HistoryChatView({
           <div ref={chatEndRef} />
         </div>
 
-        <SimulationChatInput
-          input={input}
-          setInput={setInput}
-          onSend={() => sendMessage()}
-          sending={sending}
-          placeholder={showExaminerPanel ? t("askExaminer") : t("askPatient")}
-          chatError={chatError}
-          isListening={isListening}
-          isProcessing={isProcessing}
-          isMicSupported={isMicSupported}
-          onToggleMic={onToggleMic}
-          micListeningLabel={t("micListening")}
-          micNotSupportedLabel={t("micNotSupported")}
-          micProcessingLabel={t("micProcessing")}
-          micError={micError}
-          disabled={isLiveCall}
-          isLiveCall={isLiveCall}
-        />
+        <div className="shrink-0 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+          <SimulationChatInput
+            input={input}
+            setInput={setInput}
+            onSend={() => sendMessage()}
+            sending={sending}
+            placeholder={showExaminerPanel ? t("askExaminer") : t("askPatient")}
+            chatError={chatError}
+            isListening={isListening}
+            isProcessing={isProcessing}
+            isMicSupported={isMicSupported}
+            onToggleMic={onToggleMic}
+            micListeningLabel={t("micListening")}
+            micNotSupportedLabel={t("micNotSupported")}
+            micProcessingLabel={t("micProcessing")}
+            micError={micError}
+            disabled={sessionLocked || isLiveCall || (showExaminerPanel && examinerVivaComplete)}
+            isLiveCall={isLiveCall}
+          />
+        </div>
       </div>
     </div>
   );
@@ -1608,6 +1727,7 @@ function DiagnosisView({
   onToggleLiveCall,
   liveCallLabel,
   endLiveCallLabel,
+  sessionLocked = false,
 }: {
   t: (k: string) => string;
   messages: Message[];
@@ -1631,6 +1751,7 @@ function DiagnosisView({
   onToggleLiveCall?: () => void;
   liveCallLabel?: string;
   endLiveCallLabel?: string;
+  sessionLocked?: boolean;
 }) {
   const [impression, setImpression] = useState("");
   const [management, setManagement] = useState("");
@@ -1687,7 +1808,7 @@ function DiagnosisView({
               placeholder={t("diagnosticImpressionPlaceholder")}
               value={impression}
               onChange={(e) => setImpression(e.target.value)}
-              disabled={sending}
+              disabled={sending || sessionLocked}
             />
           </div>
 
@@ -1703,7 +1824,7 @@ function DiagnosisView({
               placeholder={t("initialManagementPlaceholder")}
               value={management}
               onChange={(e) => setManagement(e.target.value)}
-              disabled={sending}
+              disabled={sending || sessionLocked}
             />
           </div>
         </div>
@@ -1714,7 +1835,7 @@ function DiagnosisView({
           )}
           <button
             onClick={() => void handleCompleteAndEvaluate()}
-            disabled={completing || sending}
+            disabled={completing || sending || sessionLocked}
             className="btn-primary px-8 min-w-[220px] flex items-center justify-center gap-2"
           >
             {completing || sending ? (
@@ -1728,35 +1849,37 @@ function DiagnosisView({
           </button>
         </div>
 
-        <div className="card overflow-hidden mb-6">
-          <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 bg-white dark:bg-slate-900">
-            <h3 className="text-xs font-bold text-slate-400 uppercase">
-              {t("clinicalExaminer")}
-            </h3>
-            <LiveCallButton
-              isLiveCall={isLiveCall}
-              isLiveCallBusy={isLiveCallBusy}
-              isLiveCallSupported={isLiveCallSupported}
-              onToggleLiveCall={onToggleLiveCall}
-              liveCallLabel={liveCallLabel}
-              endLiveCallLabel={endLiveCallLabel}
-              disabled={sending}
-            />
-          </div>
-
-          {isLiveCall && (
-            <div className="px-4 py-2 border-b border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
-              <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                {isLiveCallBusy ? t("paymentProcessing") : t("liveCallActive")}
-              </p>
+        <div className="card overflow-hidden mb-6 flex flex-col">
+          <div className="sticky top-0 z-30 shrink-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-100 dark:border-slate-800 shadow-sm">
+            <div className="px-4 py-3 flex items-center justify-between gap-3">
+              <h3 className="text-xs font-bold text-slate-400 uppercase">
+                {t("clinicalExaminer")}
+              </h3>
+              <LiveCallButton
+                isLiveCall={isLiveCall}
+                isLiveCallBusy={isLiveCallBusy}
+                isLiveCallSupported={isLiveCallSupported}
+                onToggleLiveCall={onToggleLiveCall}
+                liveCallLabel={liveCallLabel}
+                endLiveCallLabel={endLiveCallLabel}
+                disabled={sending || sessionLocked}
+              />
             </div>
-          )}
+
+            {isLiveCall && (
+              <div className="px-4 py-2 border-t border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/30">
+                <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  {isLiveCallBusy ? t("liveCallProcessing") : t("liveCallActive")}
+                </p>
+              </div>
+            )}
+          </div>
 
           {messages.length > 0 && (
             <>
               <div
-                className="max-h-72 p-4 overflow-y-auto space-y-3 bg-white dark:bg-slate-900"
+                className="max-h-72 min-h-0 p-4 overflow-y-auto space-y-3 bg-white dark:bg-slate-900"
                 dir="ltr"
               >
                 {messages.map((msg) => (
@@ -1776,24 +1899,26 @@ function DiagnosisView({
               </div>
             </>
           )}
-          <SimulationChatInput
-            input={input}
-            setInput={setInput}
-            onSend={() => sendMessage()}
-            sending={sending}
-            placeholder={t("askExaminer")}
-            chatError={chatError}
-            isListening={isListening}
-            isProcessing={isProcessing}
-            isMicSupported={isMicSupported}
-            onToggleMic={onToggleMic}
-            micListeningLabel={t("micListening")}
-            micNotSupportedLabel={t("micNotSupported")}
-            micProcessingLabel={t("micProcessing")}
-            micError={micError}
-            disabled={isLiveCall}
-            isLiveCall={isLiveCall}
-          />
+          <div className="shrink-0 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+            <SimulationChatInput
+              input={input}
+              setInput={setInput}
+              onSend={() => sendMessage()}
+              sending={sending}
+              placeholder={t("askExaminer")}
+              chatError={chatError}
+              isListening={isListening}
+              isProcessing={isProcessing}
+              isMicSupported={isMicSupported}
+              onToggleMic={onToggleMic}
+              micListeningLabel={t("micListening")}
+              micNotSupportedLabel={t("micNotSupported")}
+              micProcessingLabel={t("micProcessing")}
+              micError={micError}
+              disabled={isLiveCall || sessionLocked}
+              isLiveCall={isLiveCall}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -1811,7 +1936,6 @@ function ClinicalStationPanel({
   isAr: boolean;
   t: (k: string) => string;
 }) {
-  const objective = MANEUVER_OBJECTIVES[maneuverId];
   const stationImages = examImages.filter(
     (img) => !img.maneuver || img.maneuver === maneuverId,
   );
@@ -1833,16 +1957,9 @@ function ClinicalStationPanel({
 
   return (
     <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-4">
-      <div>
-        <p className="text-xs font-bold text-slate-500 uppercase mb-1">
-          {t("patientSlideGallery")}
-        </p>
-        {objective && (
-          <p className="text-sm text-slate-600 dark:text-slate-300">
-            {isAr ? objective.ar : objective.en}
-          </p>
-        )}
-      </div>
+      <p className="text-xs font-bold text-slate-500 uppercase">
+        {t("patientSlideGallery")}
+      </p>
 
       <div className="grid gap-3">
         {displayImages.map((img, i) => {
@@ -1868,49 +1985,121 @@ function ClinicalStationPanel({
             ) : (
               <img
                 src={img.url}
-                alt={img.caption || "Clinical station"}
+                alt={t("clinicalStation")}
                 className="w-full max-h-80 object-contain mx-auto"
               />
-            )}
-            {(img.caption || img.captionAr) && (
-              <p className="text-xs text-slate-400 px-3 py-2 border-t border-slate-800">
-                {isAr ? img.captionAr || img.caption : img.caption}
-              </p>
             )}
           </div>
           );
         })}
       </div>
-
-      {objective && (
-        <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
-          <p className="text-[10px] font-bold text-primary uppercase mb-2">
-            {t("examChecklist")}
-          </p>
-          <ul className="grid sm:grid-cols-2 gap-1.5">
-            {(isAr ? objective.checklistAr : objective.checklistEn).map(
-              (item) => (
-                <li
-                  key={item}
-                  className="text-xs text-slate-600 dark:text-slate-300 flex items-start gap-1.5"
-                >
-                  <span className="text-primary mt-0.5">•</span>
-                  {item}
-                </li>
-              ),
-            )}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
 
 interface LabSection {
+  id: string;
   title: string;
   titleAr?: string;
   content: string;
   contentAr?: string;
+}
+
+const EXTRA_INVESTIGATION_OPTIONS: Array<{
+  id: string;
+  title: string;
+  titleAr: string;
+  match: RegExp;
+}> = [
+  {
+    id: 'cbc',
+    title: 'CBC / Full blood count',
+    titleAr: 'صورة دم كاملة',
+    match: /cbc|full blood|blood count|صورة دم/i,
+  },
+  {
+    id: 'renal',
+    title: 'U&E / Renal profile',
+    titleAr: 'وظائف كلى وأملاح',
+    match: /renal|u&e|electrolyte|كلى/i,
+  },
+  {
+    id: 'lft',
+    title: 'Liver function tests',
+    titleAr: 'وظائف كبد',
+    match: /liver|lft|كبد/i,
+  },
+  {
+    id: 'bnp',
+    title: 'BNP / NT-proBNP',
+    titleAr: 'BNP / NT-proBNP',
+    match: /bnp|nt-probnp/i,
+  },
+  {
+    id: 'tft',
+    title: 'Thyroid function tests',
+    titleAr: 'وظائف الغدة الدرقية',
+    match: /thyroid|tft|درقية/i,
+  },
+  {
+    id: 'ddimer',
+    title: 'D-dimer',
+    titleAr: 'D-dimer',
+    match: /d-dimer|ddimer/i,
+  },
+];
+
+function slugInvestigationId(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function parseInvestigationSections(labResults: string): LabSection[] {
+  try {
+    const parsed = JSON.parse(labResults);
+    if (Array.isArray(parsed.sections)) {
+      return parsed.sections.map((section: LabSection, index: number) => ({
+        ...section,
+        id: section.id || `case-${index}-${slugInvestigationId(section.title)}`,
+      }));
+    }
+  } catch {
+    /* plain text fallback */
+  }
+  if (labResults.trim()) {
+    return [
+      {
+        id: 'case-default',
+        title: 'Investigations',
+        content: labResults,
+      },
+    ];
+  }
+  return [];
+}
+
+function buildInvestigationCatalog(caseSections: LabSection[]): LabSection[] {
+  const catalog: LabSection[] = caseSections.map((section) => ({ ...section }));
+  const usedIds = new Set(catalog.map((s) => s.id));
+
+  for (const extra of EXTRA_INVESTIGATION_OPTIONS) {
+    const alreadyCovered = caseSections.some(
+      (section) => extra.match.test(section.title) || extra.match.test(section.titleAr || ''),
+    );
+    if (alreadyCovered || usedIds.has(extra.id)) continue;
+    catalog.push({
+      id: extra.id,
+      title: extra.title,
+      titleAr: extra.titleAr,
+      content: '',
+      contentAr: '',
+    });
+    usedIds.add(extra.id);
+  }
+
+  return catalog;
 }
 
 function InvestigationsView({
@@ -1922,51 +2111,116 @@ function InvestigationsView({
   isAr: boolean;
   labResults: string;
 }) {
-  let sections: LabSection[] = [];
-  try {
-    const parsed = JSON.parse(labResults);
-    if (Array.isArray(parsed.sections)) sections = parsed.sections;
-  } catch {
-    /* plain text fallback */
-  }
+  const caseSections = parseInvestigationSections(labResults);
+  const catalog = buildInvestigationCatalog(caseSections);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  if (sections.length === 0) {
-    return (
-      <div className="flex-1 overflow-y-auto p-4">
-        <StageContent title={t("investigations")} content={labResults} />
-      </div>
-    );
-  }
+  const toggleInvestigation = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectedSections = catalog.filter((section) => selectedIds.has(section.id));
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 space-y-4">
-      <div className="card p-4">
-        <h3 className="font-semibold text-slate-900 dark:text-white mb-1">
-          {t("investigations")}
-        </h3>
-        <p className="text-sm text-slate-500">{t("investigationsDesc")}</p>
-      </div>
-      {sections.map((section) => (
-        <div key={section.title} className="card p-5">
-          <h4 className="font-semibold text-slate-900 dark:text-white mb-2">
-            {isAr ? section.titleAr || section.title : section.title}
-          </h4>
-          <p className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap">
-            {isAr ? section.contentAr || section.content : section.content}
+    <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain">
+      <div className="flex flex-col lg:flex-row lg:h-full gap-4 p-4 min-h-0 lg:overflow-hidden">
+      <div className="lg:w-[38%] xl:w-[34%] shrink-0 flex flex-col rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm lg:overflow-hidden lg:min-h-0">
+        <div className="p-5 border-b border-slate-100 dark:border-slate-800 shrink-0">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-8 h-8 rounded-lg bg-teal-50 dark:bg-teal-950/50 flex items-center justify-center">
+              <FlaskConical size={18} className="text-teal-600 dark:text-teal-400" />
+            </div>
+            <h3 className="font-bold text-slate-900 dark:text-white">
+              {t('investigationsCatalogTitle')}
+            </h3>
+          </div>
+          <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
+            {t('investigationsCatalogDesc')}
           </p>
         </div>
-      ))}
-    </div>
-  );
-}
 
-function StageContent({ title, content }: { title: string; content: string }) {
-  return (
-    <div className="card p-6">
-      <h3 className="font-semibold mb-3">{title}</h3>
-      <p className="text-slate-600 dark:text-slate-300 whitespace-pre-wrap">
-        {content}
-      </p>
+        <div className="lg:flex-1 lg:overflow-y-auto lg:overscroll-y-contain p-4 space-y-2.5 pb-6">
+          {catalog.map((section) => {
+            const active = selectedIds.has(section.id);
+            const label = isAr ? section.titleAr || section.title : section.title;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => toggleInvestigation(section.id)}
+                className={`w-full text-start px-4 py-3.5 rounded-xl border text-sm font-semibold transition-all ${
+                  active
+                    ? 'border-teal-500 bg-teal-50 dark:bg-teal-950/40 text-teal-900 dark:text-teal-100 shadow-sm ring-1 ring-teal-200 dark:ring-teal-800'
+                    : 'border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 hover:border-teal-300 dark:hover:border-teal-700 hover:bg-white dark:hover:bg-slate-800'
+                }`}
+              >
+                <span className="flex items-center justify-between gap-3">
+                  <span dir="auto">{label}</span>
+                  {active && <CheckCircle2 size={16} className="shrink-0 text-teal-600 dark:text-teal-400" />}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 shadow-xl lg:overflow-hidden lg:min-h-0 min-h-[240px]">
+        <div className="px-5 py-4 border-b border-slate-800 shrink-0 flex items-center gap-2.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+          <h3 className="text-xs sm:text-sm font-bold tracking-[0.14em] text-slate-200 uppercase">
+            {t('investigationsConsoleTitle')}
+          </h3>
+        </div>
+
+        <div className="lg:flex-1 lg:overflow-y-auto lg:overscroll-y-contain p-5 sm:p-6 pb-8">
+          {selectedSections.length === 0 ? (
+            <div className="min-h-[180px] lg:min-h-[220px] lg:h-full flex flex-col items-center justify-center text-center px-4">
+              <div className="w-16 h-16 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center mb-5">
+                <FlaskConical size={28} className="text-slate-400" />
+              </div>
+              <p className="text-lg font-semibold text-slate-200 mb-2">
+                {t('investigationsConsoleOffline')}
+              </p>
+              <p className="text-sm text-slate-500 max-w-sm leading-relaxed">
+                {t('investigationsConsoleHint')}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {selectedSections.map((section) => {
+                const title = isAr
+                  ? section.titleAr || section.title
+                  : section.title;
+                const body = section.content.trim()
+                  ? isAr
+                    ? section.contentAr || section.content
+                    : section.content
+                  : t('investigationsNormalResult');
+
+                return (
+                  <div
+                    key={section.id}
+                    className="rounded-xl border border-slate-700/80 bg-slate-800/60 p-4 sm:p-5"
+                  >
+                    <h4 className="text-sm font-bold text-teal-300 mb-2 tracking-wide uppercase">
+                      {title}
+                    </h4>
+                    <p className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed" dir="auto">
+                      {body}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+      </div>
     </div>
   );
 }

@@ -5,9 +5,12 @@ import {
   setAuthSession,
 } from './authStorage';
 
+const API_TIMEOUT_MS = 20_000;
+
 const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
+  timeout: API_TIMEOUT_MS,
 });
 
 let refreshInFlight: Promise<string | null> | null = null;
@@ -22,7 +25,7 @@ export async function refreshAuthToken(): Promise<string | null> {
     .post<{ token: string }>(
       '/api/auth/refresh',
       {},
-      { headers: { Authorization: `Bearer ${token}` } },
+      { headers: { Authorization: `Bearer ${token}` }, timeout: API_TIMEOUT_MS },
     )
     .then((res) => {
       const next = res.data.token;

@@ -15,13 +15,13 @@ export function shouldConfirmCaseStart(
   entitlements: EntitlementsLike | null | undefined,
   pending: PendingCaseStart,
 ): boolean {
-  if (!entitlements) return false;
-  if (pending.type === 'random') return !entitlements.isFree;
+  if (!entitlements) return true;
   if (entitlements.isFree) {
+    if (pending.type === 'random') return false;
     const used = entitlements.attemptsByCase[pending.caseId] ?? 0;
     return used < entitlements.freeAttemptsPerCase;
   }
-  return (entitlements.attemptsByCase[pending.caseId] ?? 0) === 0;
+  return true;
 }
 
 export function startCaseConfirmMessage(

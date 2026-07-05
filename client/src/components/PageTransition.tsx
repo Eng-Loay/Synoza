@@ -1,11 +1,6 @@
 import { ReactNode } from 'react';
-import { useLocation } from 'react-router-dom';
 
+/** Wraps the router without remounting it on every navigation (that caused UI freezes). */
 export function PageTransition({ children }: { children: ReactNode }) {
-  const location = useLocation();
-  return (
-    <div key={location.pathname} className="animate-page-enter min-h-[inherit]">
-      {children}
-    </div>
-  );
+  return <div className="min-h-[inherit]">{children}</div>;
 }

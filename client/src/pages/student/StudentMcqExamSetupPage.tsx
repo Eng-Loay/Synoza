@@ -112,7 +112,7 @@ export default function StudentMcqExamSetupPage() {
       ...(examMode === 'exam' ? { examDurationMinutes } : {}),
     };
     sessionStorage.setItem(examStorageKey(termId, moduleId), JSON.stringify({ config: cfg }));
-    navigate(`/student/mcq/${termId}/${moduleId}/exam`);
+    navigate(`/student/mcq/${termId}/${moduleId}/exam`, { state: { fromCaseStart: true } });
   };
 
   if (!accessChecked) {
@@ -358,7 +358,7 @@ export default function StudentMcqExamSetupPage() {
                     <div className="rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/80 dark:bg-violet-950/30 px-4 py-3">
                       <p className="text-sm font-semibold text-violet-800 dark:text-violet-200">
                         {availableTotal > 0
-                          ? t('portalMcqAvailableQuestions', { count: availableTotal.toLocaleString() })
+                          ? t('portalMcqAvailableQuestions', { count: availableTotal })
                           : t('portalMcqNoQuestionsAvailable')}
                       </p>
                       <p className="text-xs text-violet-600/80 dark:text-violet-300/80 mt-1">

@@ -61,24 +61,23 @@ async function getEffectiveAttempts(userId: string, caseId: string) {
   return Math.max(access?.attempts ?? 0, sessionCount);
 }
 
-async function getUnlockedCaseCount(userId: string) {
-  const [accessCount, grouped] = await Promise.all([
-    prisma.caseAccess.count({ where: { userId } }),
-    prisma.session.groupBy({
-      by: ['caseId'],
-      where: { userId },
-    }),
-  ]);
-  return Math.max(accessCount, grouped.length);
+async function getUsedCaseCredits(userId: string, since?: Date | null) {
+  return prisma.session.count({
+    where: {
+      userId,
+      ...(since ? { startedAt: { gte: since } } : {}),
+    },
+  });
 }
 
 export async function getUserEntitlements(userId: string) {
   const subscription = await getActiveSubscription(userId);
   const plan = subscription?.plan ?? 'FREE';
   const config = getPlanConfig(plan);
-  const casesUnlocked = await getUnlockedCaseCount(userId);
-  const casesQuota = subscription?.casesQuota ?? config.casesQuota;
   const isFree = !isPaidPlan(plan);
+  const periodStart = !isFree && subscription?.startDate ? subscription.startDate : null;
+  const casesUnlocked = await getUsedCaseCredits(userId, periodStart);
+  const casesQuota = subscription?.casesQuota ?? config.casesQuota;
 
   const caseAccess = await prisma.caseAccess.findMany({
     where: { userId },
@@ -121,10 +120,6 @@ export async function checkCanStartCase(userId: string, caseId: string) {
   const plan = subscription?.plan ?? 'FREE';
   const config = getPlanConfig(plan);
 
-  const existingAccess = await prisma.caseAccess.findUnique({
-    where: { userId_caseId: { userId, caseId } },
-  });
-
   if (!isPaidPlan(plan)) {
     const caseData = await prisma.case.findUnique({
       where: { id: caseId },
@@ -153,11 +148,8 @@ export async function checkCanStartCase(userId: string, caseId: string) {
     };
   }
 
-  if (existingAccess) {
-    return { allowed: true as const, alreadyUnlocked: true };
-  }
-
-  const casesUnlocked = await getUnlockedCaseCount(userId);
+  const periodStart = subscription?.startDate ?? null;
+  const casesUnlocked = await getUsedCaseCredits(userId, periodStart);
   const quota = subscription?.casesQuota ?? config.casesQuota;
   if (casesUnlocked >= quota) {
     return {
@@ -170,7 +162,6 @@ export async function checkCanStartCase(userId: string, caseId: string) {
 
   return {
     allowed: true as const,
-    alreadyUnlocked: false,
     casesRemaining: quota - casesUnlocked,
   };
 }

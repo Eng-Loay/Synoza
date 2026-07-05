@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Shuffle, Loader2 } from 'lucide-react';
 import api from '../../lib/api';
+import { dispatchEntitlementsChanged } from '../../lib/entitlementsEvents';
 import { StartCaseConfirmDialog } from './StartCaseConfirmDialog';
 import { shouldConfirmCaseStart } from '../../lib/startCaseConfirm';
 
@@ -35,7 +36,12 @@ export function RandomCasePreview({ entitlements }: RandomCasePreviewProps) {
         return;
       }
       const sessionRes = await api.post('/sessions/start', { caseId, language: 'AR' });
-      navigate(`/simulation/${sessionRes.data.session.id}`);
+      if (sessionRes.data.entitlements) {
+        dispatchEntitlementsChanged(sessionRes.data.entitlements);
+      } else {
+        dispatchEntitlementsChanged();
+      }
+      navigate(`/simulation/${sessionRes.data.session.id}`, { state: { fromCaseStart: true } });
     } catch (err: unknown) {
       const code = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
       if (code === 'NO_ELIGIBLE_CASES') setError(t('noEligibleRandomCase'));

@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronRight,
   Flag,
   Pause,
   Play,
+  Bookmark,
   X,
 } from 'lucide-react';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import {
   buildMockExamQuestions,
   examStorageKey,
@@ -17,6 +19,23 @@ import {
   type QbankExamConfig,
   type QbankExamResult,
 } from '../../data/qbankMock';
+import {
+  buildSavedQuestionKey,
+  isQuestionSaved,
+  toggleSavedQuestion,
+} from '../../lib/qbankSavedQuestions';
+
+type McqExamPersisted = {
+  config: QbankExamConfig;
+  startedAt: number;
+  current: number;
+  answers: QbankAnswerState[];
+  timerPaused?: boolean;
+};
+
+function emptyAnswers(count: number): QbankAnswerState[] {
+  return Array.from({ length: count }, () => ({ selected: null, marked: false, skipped: false }));
+}
 
 function formatTimer(totalSeconds: number) {
   const h = Math.floor(totalSeconds / 3600);
@@ -29,6 +48,7 @@ export default function StudentMcqExamPage() {
   const { termId = '401', moduleId = 'med-1' } = useParams();
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const term = getTerm(termId);
   const module = getModule(termId, moduleId);
@@ -38,26 +58,72 @@ export default function StudentMcqExamPage() {
   const [questions, setQuestions] = useState(() => buildMockExamQuestions(30));
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState<QbankAnswerState[]>([]);
-  const [startedAt] = useState(() => Date.now());
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(90 * 60);
   const [timerPaused, setTimerPaused] = useState(false);
-  const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [exitPrompt, setExitPrompt] = useState<'navigation' | 'refresh' | null>(null);
+  const [questionSaved, setQuestionSaved] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  const examInProgress = loaded && !!config;
+
+  const persistProgress = useCallback(
+    (patch: Partial<McqExamPersisted>) => {
+      if (!config || startedAt == null) return;
+      const payload: McqExamPersisted = {
+        config,
+        startedAt,
+        current,
+        answers,
+        timerPaused,
+        ...patch,
+      };
+      sessionStorage.setItem(storageKey, JSON.stringify(payload));
+    },
+    [answers, config, current, startedAt, storageKey, timerPaused],
+  );
+
+  const confirmExit = useCallback(() => {
+    sessionStorage.removeItem(storageKey);
+    setExitPrompt(null);
+    navigate(`/student/mcq/${termId}/${moduleId}/setup`);
+  }, [moduleId, navigate, storageKey, termId]);
+
+  useEffect(() => {
+    const activeQuestion = questions[current];
+    if (!activeQuestion) return;
+    setQuestionSaved(
+      isQuestionSaved(buildSavedQuestionKey(termId, moduleId, activeQuestion.id)),
+    );
+  }, [termId, moduleId, questions, current]);
 
   useEffect(() => {
     const raw = sessionStorage.getItem(storageKey);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as { config: QbankExamConfig };
-        setConfig(parsed.config);
+        const parsed = JSON.parse(raw) as Partial<McqExamPersisted> & { config: QbankExamConfig };
         const qs = buildMockExamQuestions(parsed.config.questionCount);
+        const started = parsed.startedAt ?? Date.now();
+        const restoredAnswers =
+          parsed.answers?.length === qs.length ? parsed.answers : emptyAnswers(qs.length);
+        const restoredCurrent = Math.min(parsed.current ?? 0, Math.max(0, qs.length - 1));
+
+        setConfig(parsed.config);
         setQuestions(qs);
-        setAnswers(Array.from({ length: qs.length }, () => ({ selected: null, marked: false, skipped: false })));
-        if (parsed.config.mode === 'practice') {
-          setSecondsLeft(99 * 3600);
-        } else {
-          const minutes = parsed.config.examDurationMinutes ?? 60;
-          setSecondsLeft(minutes * 60);
-        }
+        setAnswers(restoredAnswers);
+        setCurrent(restoredCurrent);
+        setStartedAt(started);
+        setTimerPaused(!!parsed.timerPaused);
+
+        const progress: McqExamPersisted = {
+          config: parsed.config,
+          startedAt: started,
+          current: restoredCurrent,
+          answers: restoredAnswers,
+          timerPaused: !!parsed.timerPaused,
+        };
+        sessionStorage.setItem(storageKey, JSON.stringify(progress));
+        setLoaded(true);
         return;
       } catch {
         /* fall through */
@@ -67,12 +133,41 @@ export default function StudentMcqExamPage() {
   }, [moduleId, navigate, storageKey, termId]);
 
   useEffect(() => {
-    if (config?.mode !== 'exam' || timerPaused) return;
-    const id = window.setInterval(() => {
-      setSecondsLeft((s) => (s > 0 ? s - 1 : 0));
-    }, 1000);
+    if (!loaded || !config || startedAt == null) return;
+    persistProgress({ config, startedAt, current, answers, timerPaused });
+  }, [answers, config, current, loaded, persistProgress, startedAt, timerPaused]);
+
+  useEffect(() => {
+    if (!config || startedAt == null) return;
+    if (config.mode === 'practice') {
+      setSecondsLeft(99 * 3600);
+      return;
+    }
+    if (timerPaused) return;
+
+    const durationSec = (config.examDurationMinutes ?? 60) * 60;
+    const tick = () => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      setSecondsLeft(Math.max(0, durationSec - elapsed));
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [config?.mode, timerPaused]);
+  }, [config, startedAt, timerPaused]);
+
+  useEffect(() => {
+    if (!examInProgress) return;
+    if ((location.state as { fromCaseStart?: boolean } | null)?.fromCaseStart) return;
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    if (nav?.type === 'reload') {
+      setExitPrompt('refresh');
+    }
+  }, [examInProgress, location.state]);
+
+  useEffect(() => {
+    if (!examInProgress) return;
+    return undefined;
+  }, [examInProgress]);
 
   const progressPct = questions.length ? Math.round(((current + 1) / questions.length) * 100) : 0;
   const q = questions[current];
@@ -116,11 +211,12 @@ export default function StudentMcqExamPage() {
       config,
       answers,
       questions,
-      startedAt,
+      startedAt: startedAt ?? Date.now(),
       finishedAt: Date.now(),
       termId,
       moduleId,
     };
+    sessionStorage.removeItem(storageKey);
     sessionStorage.setItem(`${storageKey}-result`, JSON.stringify(result));
     navigate(`/student/mcq/${termId}/${moduleId}/report`);
   };
@@ -148,25 +244,19 @@ export default function StudentMcqExamPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-4 pb-8">
-      {showExitConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 max-w-sm w-full shadow-xl">
-            <p className="font-bold text-slate-900 dark:text-white mb-2">{t('portalMcqExitExam')}</p>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">{t('portalMcqExitExamDesc')}</p>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setShowExitConfirm(false)} className="flex-1 py-2 rounded-xl border border-slate-200 dark:border-slate-600 text-sm font-semibold">
-                {t('cancel')}
-              </button>
-              <button type="button" onClick={() => navigate(`/student/mcq/${termId}/${moduleId}/setup`)} className="flex-1 py-2 rounded-xl bg-red-600 text-white text-sm font-semibold">
-                {t('portalMcqExitExam')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={exitPrompt !== null}
+        title={exitPrompt === 'refresh' ? t('refreshExamTitle') : t('portalMcqExitExam')}
+        message={exitPrompt === 'refresh' ? t('refreshExamMessage') : t('portalMcqExitExamDesc')}
+        confirmLabel={t('portalMcqExitExam')}
+        cancelLabel={t('stayInExam')}
+        variant="danger"
+        onConfirm={confirmExit}
+        onCancel={() => setExitPrompt(null)}
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <button type="button" onClick={() => setShowExitConfirm(true)} className="inline-flex items-center gap-2 text-sm font-semibold text-red-600 dark:text-red-400">
+        <button type="button" onClick={() => setExitPrompt('navigation')} className="inline-flex items-center gap-2 text-sm font-semibold text-red-600 dark:text-red-400">
           <X size={16} />
           {t('portalMcqExitExam')}
         </button>
@@ -238,10 +328,27 @@ export default function StudentMcqExamPage() {
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 mt-6 pt-4 border-t border-slate-100 dark:border-slate-700">
-              <label className="inline-flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
-                <input type="checkbox" checked={ans.marked} onChange={(e) => updateAnswer({ marked: e.target.checked })} className="rounded text-violet-600" />
-                {t('portalMcqMarkReview')}
-              </label>
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="inline-flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input type="checkbox" checked={ans.marked} onChange={(e) => updateAnswer({ marked: e.target.checked })} className="rounded text-violet-600" />
+                  {t('portalMcqMarkReview')}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const saved = toggleSavedQuestion(termId, moduleId, q);
+                    setQuestionSaved(saved);
+                  }}
+                  className={`inline-flex items-center gap-2 text-sm font-semibold transition-colors ${
+                    questionSaved
+                      ? 'text-violet-600 dark:text-violet-400'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-violet-600 dark:hover:text-violet-400'
+                  }`}
+                >
+                  <Bookmark size={16} className={questionSaved ? 'fill-current' : ''} />
+                  {questionSaved ? t('portalMcqSavedQuestion') : t('portalMcqSaveQuestion')}
+                </button>
+              </div>
               <button type="button" onClick={submitAnswer} className="px-5 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-bold hover:bg-violet-700">
                 {config.mode === 'practice' && ans.revealed ? t('portalMcqNext') : t('portalMcqSubmitAnswer')}
               </button>

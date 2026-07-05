@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import express from 'express';
 import { prisma } from '../lib/prisma.js';
 import { authenticate } from '../middleware/auth.js';
 import {
@@ -8,9 +9,18 @@ import {
   getManeuverOpeningMessage,
   getManeuverExaminerResponse,
   resolveEvaluationLanguage,
+  sanitizeRealtimePatientTranscript,
 } from '../services/aiService.js';
-import { checkCanStartCase, recordCaseAttempt } from '../services/subscriptionService.js';
+import { checkCanStartCase, getUserEntitlements, recordCaseAttempt } from '../services/subscriptionService.js';
 import { applySessionXp, getRankProgress } from '../services/xpService.js';
+import { processTextTurn, processVoiceTurn } from '../services/voiceTurnService.js';
+import { createRealtimePatientCallAnswer } from '../services/realtimePatientService.js';
+import {
+  buildExaminerVivaOpening,
+  HISTORY_EXAMINER_STAGE,
+  isHistoryExaminerVivaStage,
+  respondToHistoryVivaAnswer,
+} from '../services/examinerVivaService.js';
 import { Language, MessageRole } from '@prisma/client';
 
 const router = Router();
@@ -83,7 +93,9 @@ router.post('/start', async (req, res) => {
 
   await recordCaseAttempt(userId, caseId);
 
-  res.status(201).json({ session });
+  const entitlements = await getUserEntitlements(userId);
+
+  res.status(201).json({ session, entitlements });
 });
 
 router.get('/my', async (req, res) => {
@@ -132,15 +144,21 @@ router.post('/:id/maneuver/start', async (req, res) => {
   const stage = maneuverStage(maneuverId);
   const existing = session.messages.filter((m) => m.stage === stage);
   let openingMessage = existing.find((m) => m.role === MessageRole.EXAMINER);
+  const openingContent = getManeuverOpeningMessage(session.case, maneuverId, session.language);
 
   if (!openingMessage) {
     openingMessage = await prisma.message.create({
       data: {
         sessionId: session.id,
         role: MessageRole.EXAMINER,
-        content: getManeuverOpeningMessage(session.case, maneuverId, session.language),
+        content: openingContent,
         stage,
       },
+    });
+  } else if (openingMessage.content !== openingContent) {
+    openingMessage = await prisma.message.update({
+      where: { id: openingMessage.id },
+      data: { content: openingContent },
     });
   }
 
@@ -168,6 +186,177 @@ router.post('/:id/maneuver/complete', async (req, res) => {
   });
 
   res.json({ session: updated, completedManeuvers: completed });
+});
+
+router.post(
+  '/:id/realtime/call',
+  express.text({ type: ['application/sdp', 'text/plain'] }),
+  async (req, res) => {
+    try {
+      const sdpOffer = typeof req.body === 'string' ? req.body.trim() : '';
+      if (!sdpOffer) {
+        return res.status(400).json({ error: 'SDP offer required' });
+      }
+
+      const session = await prisma.session.findFirst({
+        where: { id: req.params.id, userId: req.user!.id, status: 'IN_PROGRESS' },
+        include: { case: true },
+      });
+      if (!session) return res.status(404).json({ error: 'Active session not found' });
+
+      const answerSdp = await createRealtimePatientCallAnswer(
+        session.case,
+        session.language,
+        sdpOffer,
+      );
+      res.type('application/sdp').send(answerSdp);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Realtime call failed';
+      if (message === 'realtime-unavailable') {
+        return res.status(503).json({ error: 'Realtime API is not configured' });
+      }
+      if (message === 'invalid-sdp') {
+        return res.status(400).json({ error: 'Incomplete WebRTC offer. Refresh and try again.' });
+      }
+      console.error('[realtime/call]', error);
+      res.status(500).json({ error: 'Realtime call failed' });
+    }
+  },
+);
+
+router.post('/:id/realtime/message', async (req, res) => {
+  try {
+    const { content, role = 'STUDENT', stage = 'history', orderIndex } = req.body as {
+      content?: string;
+      role?: 'STUDENT' | 'PATIENT';
+      stage?: string;
+      orderIndex?: number;
+    };
+
+    const text = content?.trim();
+    if (!text) return res.status(400).json({ error: 'Message content required' });
+
+    const session = await prisma.session.findFirst({
+      where: { id: req.params.id, userId: req.user!.id, status: 'IN_PROGRESS' },
+      include: { case: true },
+    });
+    if (!session) return res.status(404).json({ error: 'Active session not found' });
+
+    let messageContent = text;
+    if (role === 'PATIENT') {
+      const lastStudent = await prisma.message.findFirst({
+        where: { sessionId: session.id, role: MessageRole.STUDENT },
+        orderBy: { createdAt: 'desc' },
+      });
+      messageContent = sanitizeRealtimePatientTranscript(
+        session.case,
+        lastStudent?.content ?? '',
+        text,
+        session.language,
+      );
+    }
+
+    const createdAt =
+      typeof orderIndex === 'number' && Number.isFinite(orderIndex)
+        ? new Date(session.startedAt.getTime() + orderIndex * 1000)
+        : undefined;
+
+    const message = await prisma.message.create({
+      data: {
+        sessionId: session.id,
+        role: role === 'PATIENT' ? MessageRole.PATIENT : MessageRole.STUDENT,
+        content: messageContent,
+        stage,
+        ...(createdAt ? { createdAt } : {}),
+      },
+    });
+
+    res.json({ message });
+  } catch (error) {
+    console.error('[realtime/message]', error);
+    res.status(500).json({ error: 'Failed to save realtime message' });
+  }
+});
+
+router.post('/:id/voice-turn', async (req, res) => {
+  try {
+    const {
+      audioBase64,
+      transcript: transcriptBody,
+      mimeType = 'audio/webm',
+      language = 'ar-EG',
+      forceArabic,
+      stage = 'history',
+      endpoint = 'chat',
+      maneuverId,
+    } = req.body as {
+      audioBase64?: string;
+      transcript?: string;
+      mimeType?: string;
+      language?: string;
+      forceArabic?: boolean;
+      stage?: string;
+      endpoint?: 'chat' | 'examiner';
+      maneuverId?: string;
+    };
+
+    const turnMeta = {
+      sessionId: req.params.id,
+      userId: req.user!.id,
+      endpoint: endpoint === 'examiner' ? ('examiner' as const) : ('chat' as const),
+      stage,
+      maneuverId,
+    };
+
+    let result;
+    if (typeof transcriptBody === 'string' && transcriptBody.trim()) {
+      result = await processTextTurn({
+        ...turnMeta,
+        transcript: transcriptBody,
+      });
+    } else if (audioBase64 && typeof audioBase64 === 'string') {
+      const buffer = Buffer.from(audioBase64, 'base64');
+      if (buffer.length > 6 * 1024 * 1024) {
+        return res.status(400).json({ error: 'Recording too large' });
+      }
+
+      result = await processVoiceTurn({
+        ...turnMeta,
+        audioBuffer: buffer,
+        mimeType,
+        language,
+        forceArabic: !!forceArabic,
+      });
+    } else {
+      return res.status(400).json({ error: 'No transcript or audio provided' });
+    }
+
+    res.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Voice turn failed';
+    if (message === 'recording-too-short') {
+      return res.status(400).json({ error: 'Recording too short' });
+    }
+    if (message === 'transcription-unavailable') {
+      return res.status(503).json({ error: 'Speech transcription is not configured on the server' });
+    }
+    if (message === 'transcription-not-arabic') {
+      return res.status(422).json({ error: 'Could not recognize Arabic speech — try again clearly' });
+    }
+    if (message === 'transcription-prompt-leak') {
+      return res.status(422).json({ error: 'Could not understand speech — try again' });
+    }
+    if (message === 'local-stt-ffmpeg-missing') {
+      return res.status(503).json({
+        error: 'Local speech recognition needs ffmpeg — install ffmpeg-static or set FFMPEG_PATH',
+      });
+    }
+    if (message === 'session-not-found') {
+      return res.status(404).json({ error: 'Active session not found' });
+    }
+    console.error('[voice-turn]', error);
+    res.status(500).json({ error: 'Voice turn failed' });
+  }
 });
 
 router.post('/:id/chat', async (req, res) => {
@@ -217,6 +406,38 @@ router.post('/:id/chat', async (req, res) => {
   }
 });
 
+router.post('/:id/examiner-viva/init', async (req, res) => {
+  try {
+    const session = await prisma.session.findFirst({
+      where: { id: req.params.id, userId: req.user!.id, status: 'IN_PROGRESS' },
+      include: { case: true, messages: { orderBy: { createdAt: 'asc' } } },
+    });
+    if (!session) return res.status(404).json({ error: 'Active session not found' });
+
+    const stage = HISTORY_EXAMINER_STAGE;
+    const existing = session.messages.find(
+      (m) => m.stage === stage && m.role === MessageRole.EXAMINER,
+    );
+    if (existing) {
+      return res.json({ message: existing });
+    }
+
+    const opening = await prisma.message.create({
+      data: {
+        sessionId: session.id,
+        role: MessageRole.EXAMINER,
+        content: buildExaminerVivaOpening(session.id, session.case),
+        stage,
+      },
+    });
+
+    res.json({ message: opening });
+  } catch (error) {
+    console.error('[examiner-viva/init]', error);
+    res.status(500).json({ error: 'Failed to start examiner viva' });
+  }
+});
+
 router.post('/:id/examiner', async (req, res) => {
   try {
     const { message, stage = 'history', maneuverId } = req.body;
@@ -248,14 +469,22 @@ router.post('/:id/examiner', async (req, res) => {
         maneuverId,
         message,
         examinerHistory.map((m) => ({ role: m.role, content: m.content })),
-        session.language
-      )
-    : await getExaminerVivaResponse(
-        session.case,
-        message,
-        examinerHistory.map((m) => ({ role: m.role, content: m.content })),
         session.language,
-      );
+      )
+    : isHistoryExaminerVivaStage(effectiveStage, maneuverId)
+      ? await respondToHistoryVivaAnswer(
+          session.id,
+          session.case,
+          session.messages,
+          effectiveStage,
+          message,
+        )
+      : await getExaminerVivaResponse(
+          session.case,
+          message,
+          examinerHistory.map((m) => ({ role: m.role, content: m.content })),
+          session.language,
+        );
 
   const examinerMessage = await prisma.message.create({
     data: {

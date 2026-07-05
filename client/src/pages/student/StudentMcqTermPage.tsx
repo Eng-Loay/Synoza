@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, ChevronRight, Lock, CheckCircle2, Loader2 } from 'lucide-react';
 import api from '../../lib/api';
-import { getTerm } from '../../data/qbankMock';
+import { getTerm, getModulesForTerm } from '../../data/qbankMock';
 
 type ModuleView = {
   id: string;
@@ -46,7 +46,7 @@ export default function StudentMcqTermPage() {
       setTerm(res.data.term);
       setModules(res.data.modules);
     } catch {
-      setError(t('portalMcqLoadFailed'));
+      const mockModules = getModulesForTerm(termId);
       if (fallbackTerm) {
         setTerm({
           id: fallbackTerm.id,
@@ -56,7 +56,13 @@ export default function StudentMcqTermPage() {
           questions: fallbackTerm.questions,
         });
       }
-      setModules([]);
+      if (mockModules.length > 0) {
+        setModules(mockModules.map((m) => ({ ...m, owned: m.owned ?? false })));
+        setError('');
+      } else {
+        setError(t('portalMcqLoadFailed'));
+        setModules([]);
+      }
     } finally {
       setLoading(false);
     }

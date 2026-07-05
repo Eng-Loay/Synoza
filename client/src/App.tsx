@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { GuestRoute } from './components/GuestRoute';
@@ -16,6 +17,7 @@ import StudentMcqTermPage from './pages/student/StudentMcqTermPage';
 import StudentMcqExamSetupPage from './pages/student/StudentMcqExamSetupPage';
 import StudentMcqExamPage from './pages/student/StudentMcqExamPage';
 import StudentMcqExamReportPage from './pages/student/StudentMcqExamReportPage';
+import StudentMcqSavedPage from './pages/student/StudentMcqSavedPage';
 import StudentDiagnosticsPage from './pages/student/StudentDiagnosticsPage';
 import StudentUpgradePage from './pages/student/StudentUpgradePage';
 import SimulationPage from './pages/SimulationPage';
@@ -23,6 +25,15 @@ import ProfilePage from './pages/ProfilePage';
 import ResultsPage from './pages/ResultsPage';
 import AdminDashboard from './pages/AdminDashboard';
 import { PageTransition } from './components/PageTransition';
+import { releaseStuckUiLayers } from './lib/uiCleanup';
+
+function RouteUiCleanup() {
+  const location = useLocation();
+  useEffect(() => {
+    releaseStuckUiLayers();
+  }, [location.pathname]);
+  return null;
+}
 
 function RoleRedirect() {
   const { user, loading } = useAuth();
@@ -41,6 +52,7 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <RouteUiCleanup />
         <PageTransition>
           <Routes>
           <Route path="/" element={<LandingPage />} />
@@ -57,6 +69,7 @@ export default function App() {
             <Route element={<StudentPortalShell />}>
               <Route path="/student" element={<StudentDashboard />} />
               <Route path="/student/mcq" element={<StudentMcqPage />} />
+              <Route path="/student/mcq/saved" element={<StudentMcqSavedPage />} />
               <Route path="/student/mcq/:termId" element={<StudentMcqTermPage />} />
               <Route path="/student/mcq/:termId/:moduleId/setup" element={<StudentMcqExamSetupPage />} />
               <Route path="/student/mcq/:termId/:moduleId/exam" element={<StudentMcqExamPage />} />

@@ -41,6 +41,14 @@ router.post('/', async (req, res) => {
     if (message === 'transcription-not-arabic') {
       return res.status(422).json({ error: 'Could not recognize Arabic speech — try again clearly' });
     }
+    if (message === 'transcription-prompt-leak') {
+      return res.status(422).json({ error: 'Could not understand speech — try again' });
+    }
+    if (message === 'local-stt-ffmpeg-missing') {
+      return res.status(503).json({
+        error: 'Local speech recognition needs ffmpeg — install ffmpeg-static or set FFMPEG_PATH',
+      });
+    }
     console.error('Transcription error:', err);
     res.status(500).json({ error: 'Transcription failed' });
   }

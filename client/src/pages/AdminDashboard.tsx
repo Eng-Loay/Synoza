@@ -32,6 +32,18 @@ interface KnowledgeRow {
   content: string;
   type: string;
   isActive: boolean;
+  category?: { nameEn: string; nameAr: string } | null;
+}
+
+interface AISettingsRow {
+  id: string;
+  provider: string;
+  patientModel: string;
+  examinerModel: string;
+  temperature: number;
+  maxTokens: number;
+  systemPromptAr?: string | null;
+  systemPromptEn?: string | null;
 }
 
 interface UniversityRow {
@@ -62,12 +74,15 @@ export default function AdminDashboard() {
   const [results, setResults] = useState<Record<string, unknown>[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeRow[]>([]);
+  const [aiSettings, setAiSettings] = useState<AISettingsRow | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [editingKnowledgeId, setEditingKnowledgeId] = useState<string | null>(null);
   const [categoryForm, setCategoryForm] = useState({
-    nameEn: '', nameAr: '', description: '', parentId: '', sortOrder: 0,
+    nameEn: '', nameAr: '', description: '', parentId: '', sortOrder: 0, isActive: true,
   });
   const [knowledgeForm, setKnowledgeForm] = useState({
-    titleEn: '', titleAr: '', content: '', type: 'QUESTION',
+    titleEn: '', titleAr: '', content: '', type: 'QUESTION', isActive: true,
   });
   const [universities, setUniversities] = useState<UniversityRow[]>([]);
   const [siteSettings, setSiteSettings] = useState<SiteSettings | null>(null);
@@ -78,6 +93,35 @@ export default function AdminDashboard() {
   const [uniError, setUniError] = useState('');
   const [uniSaving, setUniSaving] = useState(false);
   const [siteSaved, setSiteSaved] = useState(false);
+  const [knowledgeSaving, setKnowledgeSaving] = useState(false);
+  const [aiSaved, setAiSaved] = useState(false);
+
+  const refreshCategories = async () => {
+    const r = await api.get('/admin/categories');
+    setCategories(r.data.categories);
+    if (!selectedCategoryId && r.data.categories.length > 0) {
+      setSelectedCategoryId(r.data.categories[0].id);
+    }
+    return r.data.categories as CategoryRow[];
+  };
+
+  const refreshKnowledgeItems = async (categoryId: string) => {
+    const r = await api.get(`/admin/categories/${categoryId}/knowledge`);
+    setKnowledgeItems(r.data.items);
+  };
+
+  const loadKnowledgeAdmin = async () => {
+    const [categoriesRes, aiSettingsRes] = await Promise.all([
+      api.get('/admin/categories'),
+      api.get('/admin/ai-settings'),
+    ]);
+    const nextCategories = categoriesRes.data.categories as CategoryRow[];
+    setCategories(nextCategories);
+    setAiSettings(aiSettingsRes.data.settings);
+    if (!selectedCategoryId && nextCategories.length > 0) {
+      setSelectedCategoryId(nextCategories[0].id);
+    }
+  };
 
   const loadSiteContent = async () => {
     setUniLoading(true);
@@ -123,12 +167,7 @@ export default function AdminDashboard() {
     if (tab === 'cases') api.get('/admin/cases').then((r) => setCases(r.data.cases));
     if (tab === 'results') api.get('/admin/results').then((r) => setResults(r.data.results));
     if (tab === 'knowledge') {
-      api.get('/admin/categories').then((r) => {
-        setCategories(r.data.categories);
-        if (!selectedCategoryId && r.data.categories.length > 0) {
-          setSelectedCategoryId(r.data.categories[0].id);
-        }
-      });
+      void loadKnowledgeAdmin();
     }
     if (tab === 'site') {
       void loadSiteContent();
@@ -137,7 +176,7 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     if (tab === 'knowledge' && selectedCategoryId) {
-      api.get(`/admin/categories/${selectedCategoryId}/knowledge`).then((r) => setKnowledgeItems(r.data.items));
+      void refreshKnowledgeItems(selectedCategoryId);
     }
   }, [tab, selectedCategoryId]);
 
@@ -150,22 +189,45 @@ export default function AdminDashboard() {
     { id: 'site', label: 'Site Content', icon: Globe },
   ];
 
-  const addCategory = async () => {
-    await api.post('/admin/categories', {
-      ...categoryForm,
-      parentId: categoryForm.parentId || null,
-    });
-    setCategoryForm({ nameEn: '', nameAr: '', description: '', parentId: '', sortOrder: 0 });
-    const r = await api.get('/admin/categories');
-    setCategories(r.data.categories);
+  const resetCategoryForm = () => {
+    setEditingCategoryId(null);
+    setCategoryForm({ nameEn: '', nameAr: '', description: '', parentId: '', sortOrder: 0, isActive: true });
   };
 
-  const addKnowledge = async () => {
+  const saveCategory = async () => {
+    const payload = {
+      ...categoryForm,
+      parentId: categoryForm.parentId || null,
+    };
+    if (editingCategoryId) {
+      await api.put(`/admin/categories/${editingCategoryId}`, payload);
+    } else {
+      await api.post('/admin/categories', payload);
+    }
+    resetCategoryForm();
+    await refreshCategories();
+  };
+
+  const resetKnowledgeForm = () => {
+    setEditingKnowledgeId(null);
+    setKnowledgeForm({ titleEn: '', titleAr: '', content: '', type: 'QUESTION', isActive: true });
+  };
+
+  const saveKnowledge = async () => {
     if (!selectedCategoryId) return;
-    await api.post('/admin/knowledge', { ...knowledgeForm, categoryId: selectedCategoryId, isActive: true });
-    setKnowledgeForm({ titleEn: '', titleAr: '', content: '', type: 'QUESTION' });
-    const r = await api.get(`/admin/categories/${selectedCategoryId}/knowledge`);
-    setKnowledgeItems(r.data.items);
+    setKnowledgeSaving(true);
+    try {
+      const payload = { ...knowledgeForm, categoryId: selectedCategoryId };
+      if (editingKnowledgeId) {
+        await api.put(`/admin/knowledge/${editingKnowledgeId}`, payload);
+      } else {
+        await api.post('/admin/knowledge', payload);
+      }
+      resetKnowledgeForm();
+      await refreshKnowledgeItems(selectedCategoryId);
+    } finally {
+      setKnowledgeSaving(false);
+    }
   };
 
   const deleteKnowledge = async (id: string) => {
@@ -175,9 +237,42 @@ export default function AdminDashboard() {
 
   const deleteCategory = async (id: string) => {
     await api.delete(`/admin/categories/${id}`);
-    const r = await api.get('/admin/categories');
-    setCategories(r.data.categories);
-    if (selectedCategoryId === id) setSelectedCategoryId(r.data.categories[0]?.id || '');
+    const nextCategories = await refreshCategories();
+    if (selectedCategoryId === id) setSelectedCategoryId(nextCategories[0]?.id || '');
+    if (editingCategoryId === id) resetCategoryForm();
+  };
+
+  const editCategory = (category: CategoryRow) => {
+    setEditingCategoryId(category.id);
+    setSelectedCategoryId(category.id);
+    setCategoryForm({
+      nameEn: category.nameEn,
+      nameAr: category.nameAr,
+      description: category.description || '',
+      parentId: category.parentId || '',
+      sortOrder: category.sortOrder,
+      isActive: category.isActive,
+    });
+  };
+
+  const editKnowledge = (item: KnowledgeRow) => {
+    setEditingKnowledgeId(item.id);
+    setSelectedCategoryId(item.categoryId);
+    setKnowledgeForm({
+      titleEn: item.titleEn,
+      titleAr: item.titleAr,
+      content: item.content,
+      type: item.type,
+      isActive: item.isActive,
+    });
+  };
+
+  const saveAISettings = async () => {
+    if (!aiSettings) return;
+    const r = await api.put('/admin/ai-settings', aiSettings);
+    setAiSettings(r.data.settings);
+    setAiSaved(true);
+    setTimeout(() => setAiSaved(false), 2000);
   };
 
   const resetUniForm = () => {
@@ -409,7 +504,25 @@ export default function AdminDashboard() {
       )}
 
       {tab === 'knowledge' && (
-        <div className="grid lg:grid-cols-2 gap-6">
+        <div className="space-y-6">
+          <div className="card p-6">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center shrink-0">
+                <BookOpen className="text-violet-600" size={20} />
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-semibold text-slate-900 dark:text-white">{t('knowledgeBase')}</h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                  {t('knowledgeForAIDesc')}
+                </p>
+                <p className="text-xs text-slate-400 dark:text-slate-500 mt-2">
+                  {t('knowledgeBaseAdminHint')}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid xl:grid-cols-[360px_minmax(0,1fr)] gap-6">
           <div className="space-y-4">
             <div className="card p-6">
               <div className="flex items-center gap-2 mb-4">
@@ -427,15 +540,34 @@ export default function AdminDashboard() {
                         : 'border-slate-200 dark:border-slate-700 hover:border-primary/50'
                     }`}
                   >
-                    <p className="font-medium">{cat.nameEn} / {cat.nameAr}</p>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-medium">{cat.nameEn} / {cat.nameAr}</p>
+                        {cat.description && (
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-2">
+                            {cat.description}
+                          </p>
+                        )}
+                      </div>
+                      <span className={`badge shrink-0 ${cat.isActive ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                        {cat.isActive ? t('active') : t('inactive')}
+                      </span>
+                    </div>
                     <p className="text-xs text-slate-500">
-                      {cat.parent ? `${cat.parent.nameEn} → ` : ''}{cat._count?.items ?? 0} items · {cat._count?.children ?? 0} sub
+                      {cat.parent ? `${cat.parent.nameEn} → ` : ''}{cat._count?.items ?? 0} {t('items')} · {cat._count?.children ?? 0} {t('subcategories')} · {cat._count?.cases ?? 0} {t('cases')}
                     </p>
                   </button>
                 ))}
               </div>
               <div className="border-t border-slate-100 dark:border-slate-800 pt-4 space-y-3">
-                <p className="text-sm font-medium">{t('addCategory')}</p>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium">{editingCategoryId ? t('editCategory') : t('addCategory')}</p>
+                  {editingCategoryId && (
+                    <button type="button" onClick={resetCategoryForm} className="text-xs text-slate-500 hover:text-slate-700">
+                      {t('cancel')}
+                    </button>
+                  )}
+                </div>
                 <input className="input-field" placeholder="Name (English)" value={categoryForm.nameEn} onChange={(e) => setCategoryForm({ ...categoryForm, nameEn: e.target.value })} />
                 <input className="input-field" placeholder="الاسم (عربي)" value={categoryForm.nameAr} onChange={(e) => setCategoryForm({ ...categoryForm, nameAr: e.target.value })} />
                 <select className="input-field" value={categoryForm.parentId} onChange={(e) => setCategoryForm({ ...categoryForm, parentId: e.target.value })}>
@@ -445,8 +577,23 @@ export default function AdminDashboard() {
                   ))}
                 </select>
                 <input className="input-field" placeholder={t('description')} value={categoryForm.description} onChange={(e) => setCategoryForm({ ...categoryForm, description: e.target.value })} />
+                <div className="grid grid-cols-2 gap-3">
+                  <input type="number" className="input-field" placeholder={t('sortOrder')} value={categoryForm.sortOrder} onChange={(e) => setCategoryForm({ ...categoryForm, sortOrder: parseInt(e.target.value) || 0 })} />
+                  <label className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700">
+                    <input type="checkbox" checked={categoryForm.isActive} onChange={(e) => setCategoryForm({ ...categoryForm, isActive: e.target.checked })} />
+                    {t('active')}
+                  </label>
+                </div>
                 <div className="flex gap-2">
-                  <button onClick={addCategory} className="btn-primary flex items-center gap-2"><Plus size={16} /> {t('add')}</button>
+                  <button onClick={saveCategory} className="btn-primary flex items-center gap-2"><Plus size={16} /> {editingCategoryId ? t('save') : t('add')}</button>
+                  {selectedCategoryId && (
+                    <button onClick={() => {
+                      const category = categories.find((c) => c.id === selectedCategoryId);
+                      if (category) editCategory(category);
+                    }} className="btn-secondary flex items-center gap-2">
+                      <Pencil size={16} /> {t('edit')}
+                    </button>
+                  )}
                   {selectedCategoryId && (
                     <button onClick={() => deleteCategory(selectedCategoryId)} className="btn-secondary text-red-600 flex items-center gap-2">
                       <Trash2 size={16} /> {t('delete')}
@@ -457,52 +604,123 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          <div className="card p-6">
-            <h2 className="font-semibold text-slate-900 dark:text-white mb-1">{t('knowledgeForAI')}</h2>
-            <p className="text-sm text-slate-500 mb-4">{t('knowledgeForAIDesc')}</p>
+          <div className="space-y-6">
+            <div className="card p-6">
+              <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="font-semibold text-slate-900 dark:text-white mb-1">{t('knowledgeForAI')}</h2>
+                  <p className="text-sm text-slate-500 mb-1">{t('knowledgeForAIDesc')}</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500">{t('knowledgeBaseAdminCategoryHint')}</p>
+                </div>
+                <select className="input-field min-w-[240px]" value={selectedCategoryId} onChange={(e) => setSelectedCategoryId(e.target.value)}>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>{c.nameEn} / {c.nameAr}</option>
+                  ))}
+                </select>
+              </div>
 
-            <select className="input-field mb-4" value={selectedCategoryId} onChange={(e) => setSelectedCategoryId(e.target.value)}>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.nameEn} / {c.nameAr}</option>
-              ))}
-            </select>
-
-            <div className="space-y-3 mb-6 max-h-72 overflow-y-auto">
-              {knowledgeItems.length === 0 ? (
-                <p className="text-sm text-slate-400 text-center py-6">{t('noKnowledgeYet')}</p>
-              ) : (
-                knowledgeItems.map((item) => (
-                  <div key={item.id} className="p-4 rounded-lg border border-slate-200 dark:border-slate-700">
-                    <div className="flex justify-between items-start gap-2">
-                      <div>
-                        <span className="badge bg-blue-50 text-blue-700 text-xs mb-1">{item.type}</span>
-                        <p className="font-medium">{item.titleEn}</p>
-                        <p className="text-sm text-slate-500">{item.titleAr}</p>
-                        <p className="text-sm mt-2 text-slate-600 dark:text-slate-300">{item.content}</p>
+              <div className="space-y-3 mb-6 max-h-72 overflow-y-auto">
+                {knowledgeItems.length === 0 ? (
+                  <p className="text-sm text-slate-400 text-center py-6">{t('noKnowledgeYet')}</p>
+                ) : (
+                  knowledgeItems.map((item) => (
+                    <div key={item.id} className="p-4 rounded-lg border border-slate-200 dark:border-slate-700">
+                      <div className="flex justify-between items-start gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            <span className="badge bg-blue-50 text-blue-700 text-xs">{item.type}</span>
+                            <span className={`badge text-xs ${item.isActive ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                              {item.isActive ? t('active') : t('inactive')}
+                            </span>
+                          </div>
+                          <p className="font-medium">{item.titleEn}</p>
+                          <p className="text-sm text-slate-500">{item.titleAr}</p>
+                          <p className="text-sm mt-2 text-slate-600 dark:text-slate-300 whitespace-pre-wrap">{item.content}</p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button onClick={() => editKnowledge(item)} className="p-2 text-slate-500 hover:text-primary rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800">
+                            <Pencil size={15} />
+                          </button>
+                          <button onClick={() => deleteKnowledge(item.id)} className="p-2 text-red-500 hover:text-red-700 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30">
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
                       </div>
-                      <button onClick={() => deleteKnowledge(item.id)} className="text-red-500 hover:text-red-700 p-1">
-                        <Trash2 size={16} />
-                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="border-t border-slate-100 dark:border-slate-800 pt-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium">{editingKnowledgeId ? t('editKnowledge') : t('addKnowledge')}</p>
+                  {editingKnowledgeId && (
+                    <button type="button" onClick={resetKnowledgeForm} className="text-xs text-slate-500 hover:text-slate-700">
+                      {t('cancel')}
+                    </button>
+                  )}
+                </div>
+                <input className="input-field" placeholder="Title (English)" value={knowledgeForm.titleEn} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, titleEn: e.target.value })} />
+                <input className="input-field" placeholder="العنوان (عربي)" value={knowledgeForm.titleAr} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, titleAr: e.target.value })} />
+                <select className="input-field" value={knowledgeForm.type} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, type: e.target.value })}>
+                  <option value="QUESTION">Question</option>
+                  <option value="TOPIC">Topic</option>
+                  <option value="GUIDELINE">Guideline</option>
+                  <option value="TEACHING">Teaching</option>
+                </select>
+                <textarea className="input-field min-h-[120px]" placeholder={t('knowledgeContent')} value={knowledgeForm.content} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, content: e.target.value })} />
+                <label className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <input type="checkbox" checked={knowledgeForm.isActive} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, isActive: e.target.checked })} />
+                  {t('knowledgeEnabledForAI')}
+                </label>
+                <button onClick={saveKnowledge} disabled={!selectedCategoryId || knowledgeSaving} className="btn-primary flex items-center gap-2"><Plus size={16} /> {knowledgeSaving ? t('save') : editingKnowledgeId ? t('save') : t('add')}</button>
+              </div>
+            </div>
+
+            <div className="card p-6">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="font-semibold text-slate-900 dark:text-white">{t('aiSettings')}</h2>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{t('aiSettingsAdminDesc')}</p>
+                </div>
+                {aiSaved && <span className="text-sm text-emerald-600">{t('aiSettingsSaved')}</span>}
+              </div>
+              {aiSettings && (
+                <div className="space-y-4">
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('patientModel')}</label>
+                      <input className="input-field" value={aiSettings.patientModel} onChange={(e) => setAiSettings({ ...aiSettings, patientModel: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('examinerModel')}</label>
+                      <input className="input-field" value={aiSettings.examinerModel} onChange={(e) => setAiSettings({ ...aiSettings, examinerModel: e.target.value })} />
                     </div>
                   </div>
-                ))
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('temperature')}</label>
+                      <input type="number" step="0.1" className="input-field" value={aiSettings.temperature} onChange={(e) => setAiSettings({ ...aiSettings, temperature: Number(e.target.value) || 0 })} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('maxTokens')}</label>
+                      <input type="number" className="input-field" value={aiSettings.maxTokens} onChange={(e) => setAiSettings({ ...aiSettings, maxTokens: Number(e.target.value) || 0 })} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('systemPromptArabic')}</label>
+                    <textarea className="input-field min-h-[110px]" value={aiSettings.systemPromptAr || ''} onChange={(e) => setAiSettings({ ...aiSettings, systemPromptAr: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('systemPromptEnglish')}</label>
+                    <textarea className="input-field min-h-[110px]" value={aiSettings.systemPromptEn || ''} onChange={(e) => setAiSettings({ ...aiSettings, systemPromptEn: e.target.value })} />
+                  </div>
+                  <button onClick={saveAISettings} className="btn-primary">{t('save')}</button>
+                </div>
               )}
             </div>
-
-            <div className="border-t border-slate-100 dark:border-slate-800 pt-4 space-y-3">
-              <p className="text-sm font-medium">{t('addKnowledge')}</p>
-              <input className="input-field" placeholder="Title (English)" value={knowledgeForm.titleEn} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, titleEn: e.target.value })} />
-              <input className="input-field" placeholder="العنوان (عربي)" value={knowledgeForm.titleAr} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, titleAr: e.target.value })} />
-              <select className="input-field" value={knowledgeForm.type} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, type: e.target.value })}>
-                <option value="QUESTION">Question</option>
-                <option value="TOPIC">Topic</option>
-                <option value="GUIDELINE">Guideline</option>
-                <option value="TEACHING">Teaching</option>
-              </select>
-              <textarea className="input-field min-h-[100px]" placeholder={t('knowledgeContent')} value={knowledgeForm.content} onChange={(e) => setKnowledgeForm({ ...knowledgeForm, content: e.target.value })} />
-              <button onClick={addKnowledge} className="btn-primary flex items-center gap-2"><Plus size={16} /> {t('add')}</button>
-            </div>
           </div>
+        </div>
         </div>
       )}
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -19,8 +19,16 @@ import { ThemeToggle } from '../ThemeToggle';
 import { LanguageToggle } from '../LanguageToggle';
 import { getPlanTierKey } from '../../lib/dailyQuotes';
 import api from '../../lib/api';
+import { debounce } from '../../lib/debounce';
+import { releaseStuckUiLayers } from '../../lib/uiCleanup';
 import { rankLabel } from '../../lib/clinicalRanks';
 import { QBANK } from '../../lib/qbankTheme';
+import {
+  dispatchEntitlementsChanged,
+  ENTITLEMENTS_CHANGED_EVENT,
+  readEntitlementsFromEvent,
+  type EntitlementsSnapshot,
+} from '../../lib/entitlementsEvents';
 import { QbankPortalHeader } from './qbank/QbankPortalHeader';
 import { QbankPortalSidebar } from './qbank/QbankPortalSidebar';
 import type { RankSnapshot } from './XpBreakdownSection';
@@ -90,18 +98,56 @@ function StudentPortalLayout() {
   const closeSidebar = () => setSidebarOpen(false);
   const openSidebar = () => setSidebarOpen(true);
 
-  useEffect(() => {
-    const load = () => {
-      api.get('/student/entitlements').then((r) => setEntitlements(r.data.entitlements)).catch(() => {});
-    };
-    load();
-    window.addEventListener('synoza:entitlements-changed', load);
-    return () => window.removeEventListener('synoza:entitlements-changed', load);
+  const entitlementsLoadRef = useRef(0);
+
+  const fetchEntitlements = useCallback(() => {
+    const requestId = ++entitlementsLoadRef.current;
+    api
+      .get('/student/entitlements')
+      .then((r) => {
+        if (requestId === entitlementsLoadRef.current) {
+          setEntitlements(r.data.entitlements);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  const debouncedFetchEntitlements = useMemo(
+    () => debounce(fetchEntitlements, 500),
+    [fetchEntitlements],
+  );
+
+  useEffect(() => {
+    const onEntitlementsChanged = (event: Event) => {
+      const detail = readEntitlementsFromEvent(event);
+      if (detail) {
+        setEntitlements(detail as Entitlements);
+        return;
+      }
+      debouncedFetchEntitlements();
+    };
+    fetchEntitlements();
+    window.addEventListener(ENTITLEMENTS_CHANGED_EVENT, onEntitlementsChanged);
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) debouncedFetchEntitlements();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') debouncedFetchEntitlements();
+    };
+    window.addEventListener('pageshow', onPageShow);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener(ENTITLEMENTS_CHANGED_EVENT, onEntitlementsChanged);
+      window.removeEventListener('pageshow', onPageShow);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [debouncedFetchEntitlements, fetchEntitlements]);
 
   useEffect(() => {
     closeSidebar();
-  }, [location.pathname]);
+    releaseStuckUiLayers();
+    debouncedFetchEntitlements();
+  }, [location.pathname, debouncedFetchEntitlements]);
 
   useEffect(() => {
     if (!sidebarOpen) {
@@ -115,9 +161,16 @@ function StudentPortalLayout() {
     };
   }, [sidebarOpen]);
 
+  useEffect(() => () => {
+    document.body.style.overflow = '';
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeSidebar();
+      if (event.key === 'Escape') {
+        closeSidebar();
+        releaseStuckUiLayers();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -139,32 +192,24 @@ function StudentPortalLayout() {
 
   if (isMcqSection) {
     return (
-      <div
-        className="h-[100dvh] min-h-screen flex overflow-hidden"
-        style={{ backgroundColor: QBANK.pageBg }}
-      >
-        {sidebarOpen && (
-          <button
-            type="button"
-            aria-label="Close menu"
-            className="fixed inset-0 bg-black/50 z-40 lg:hidden"
-            onClick={closeSidebar}
-          />
-        )}
-
-        <aside
-          id="student-sidebar"
-          className={[
-            'fixed lg:sticky top-0 start-0 z-50 flex flex-col shrink-0 h-full max-h-[100dvh] lg:h-screen w-[min(260px,88vw)]',
-            'transition-transform duration-300 ease-out lg:translate-x-0',
-            sidebarOpen
-              ? 'translate-x-0'
-              : 'max-lg:ltr:-translate-x-full max-lg:rtl:translate-x-full',
-            !sidebarOpen && 'max-lg:invisible max-lg:pointer-events-none',
-          ].join(' ')}
-        >
-          <QbankPortalSidebar onNavigate={closeSidebar} isAr={!!isAr} />
+      <div className="h-[100dvh] min-h-screen flex overflow-hidden bg-[#F8FAFC] dark:bg-[#060b14]">
+        <aside className="hidden lg:flex flex-col shrink-0 h-full max-h-[100dvh] w-[260px] z-30">
+          <QbankPortalSidebar isAr={!!isAr} />
         </aside>
+
+        {sidebarOpen && (
+          <>
+            <button
+              type="button"
+              aria-label="Close menu"
+              className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+              onClick={closeSidebar}
+            />
+            <aside className="lg:hidden fixed top-0 start-0 z-50 flex flex-col h-full max-h-[100dvh] w-[min(260px,88vw)] shadow-xl">
+              <QbankPortalSidebar onNavigate={closeSidebar} isAr={!!isAr} />
+            </aside>
+          </>
+        )}
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0 h-full w-full">
           <QbankPortalHeader onOpenMenu={openSidebar} />
@@ -300,6 +345,11 @@ function StudentPortalLayout() {
                 {entitlements?.isFree && (
                   <p className="text-[10px] text-amber-700 dark:text-amber-300 leading-snug">
                     {t('portalFreePlanHint')}
+                  </p>
+                )}
+                {!entitlements?.isFree && (
+                  <p className="text-[10px] text-slate-400 dark:text-slate-300 leading-snug">
+                    {t('portalPaidPlanHint')}
                   </p>
                 )}
                 <p className="text-[10px] text-slate-400 dark:text-slate-300">

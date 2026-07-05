@@ -14,6 +14,7 @@ import studentRoutes from './routes/student.js';
 import categoriesRoutes from './routes/categories.js';
 import siteRoutes from './routes/site.js';
 import transcribeRoutes from './routes/transcribe.js';
+import speechRoutes from './routes/speech.js';
 import paymentsRoutes from './routes/payments.js';
 import { isSmtpConfigured, verifySmtpConnection } from './services/emailService.js';
 import { getPaymentProvider, isPaymentEnabled } from './services/payment/paymentService.js';
@@ -70,6 +71,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/site', siteRoutes);
 app.use('/api/transcribe', transcribeRoutes);
+app.use('/api/speech', speechRoutes);
 app.use('/api/payments', paymentsRoutes);
 
 const clientPublicExam = path.join(__dirname, '../../client/public/exam');

@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import type { Case, Language } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { getCategoryKnowledgeContext } from './knowledgeService.js';
+import { toEgyptianColloquial } from './arabicColloquial.js';
 import { fixArabicSpeechTranscript } from './arabicSttFix.js';
 
 interface ChatMessage {
@@ -106,44 +107,80 @@ function hasPattern(text: string, pattern: RegExp): boolean {
   return pattern.test(text);
 }
 
-function buildPatientSystemPrompt(caseData: Case, language: Language, knowledgeContext: string): string {
+function buildPatientSystemPrompt(
+  caseData: Case,
+  language: Language,
+  knowledgeContext: string,
+  voiceTurn = false,
+  studentTurn = 0,
+): string {
+  const personality = caseData.patientPersonality || 'Cooperative Egyptian patient, anxious about symptoms';
+  const scenario = caseData.scenarioPrompt || 'Standard OSCE patient encounter';
+  const nameAr = patientNameInLang(caseData, true);
+
+  if (voiceTurn) {
+    const langNote =
+      language === 'EN'
+        ? 'Respond ONLY in English. One short sentence.'
+        : 'عامية مصرية طبيعية — جملة أو اتنين بس. ممنوع الفصحى والإنجليزي.';
+    return `Live OSCE voice call. You are ${caseData.patientName}, ${caseData.patientAge}y, ${caseData.patientGender}.
+Chief complaint: ${caseData.chiefComplaint}
+Personality: ${personality}
+${langNote}
+Rules: answer ONLY the last question; 1–2 sentences; never state diagnosis (${caseData.finalDiagnosis}); lay language only.`;
+  }
+
   const langNote =
     language === 'AR'
-      ? `Respond ONLY in Egyptian colloquial Arabic (عامية مصرية). Examples:
-- "أهلاً دكتور."
-- "اسمي طارق مصطفى."
-- "عندي ١٧ سنة."
-- "من ٦ شهور بحس بضيق نفس مع المجهود."
-Never use English. Never use formal فصحى. Never use medical English terms. Keep answers VERY short — one sentence.`
+      ? voiceTurn
+        ? `VOICE CALL — مريض مصري في مكالمة صوتية. افهم المعنى مش الكلمات الحرفية. عامية مصرية طبيعية، جملة أو اتنين. ممنوع الفصحى والإنجليزي.`
+        : `اكتب بعامية مصرية طبيعية زي مريض حقيقي قاعد قدام الدكتور في العيادة — مش روبوت ولا فصحى.
+أمثلة على الأسلوب المطلوب:
+- "صباح النور يا دكتور. والله يا دكتور أنا تعبان أوي، بقالي فترة مش قادر آخد نفسي كويس، وخصوصاً لما بتحرك أو أعمل مجهود."
+- "الله يسلمك يا دكتور، تسلم. والله أنا متبهدل ومش عارف أعيش حياتي زي الناس."
+- "اسمي ${nameAr}."
+- "من ٣ أسابيع بحس بضيق نفس مع المجهود، ورجليّا بتورم كمان."
+استخدم كلمات طبيعية: والله، أوي، يا دكتور، مش، عشان، كده.
+٢–٤ جمل لما تحكي عن أعراضك أو مشاعرك؛ جملة أو اتنين للأسئلة الواقعية (الاسم، السن، السكن).`
       : language === 'EN'
-        ? 'Respond ONLY in English. One short sentence unless necessary.'
-        : 'If the doctor writes in Arabic → Egyptian colloquial Arabic only, very brief. If English → English only, very brief.';
+        ? voiceTurn
+          ? 'Respond ONLY in English. One or two short sentences.'
+          : 'Respond ONLY in English. Sound like a real patient (2–4 sentences when describing symptoms).'
+        : 'Match the doctor language: Egyptian Arabic or English, natural spoken style.';
 
-  return `You are a simulated Egyptian patient in an OSCE clinical examination. Stay fully in character.
+  const phaseNote =
+    studentTurn === 0
+      ? `FIRST CONTACT: If the doctor greets or introduces themselves, reply warmly (صباح الخير/أهلاً يا دكتور) and briefly say you are not well and what is bothering you most — 2–3 natural sentences from the case background. Do not dump full history.`
+      : `ONGOING INTERVIEW: Answer the doctor's current question directly in natural spoken Arabic. You may use 2–4 sentences when describing symptoms, daily impact, or feelings. For simple facts (name, age, yes/no) keep it short but still natural.`;
 
-INTERNAL BACKGROUND (never volunteer — reveal ONLY the exact fact when directly asked):
-- Name: ${caseData.patientName}
-- Age: ${caseData.patientAge} | Gender: ${caseData.patientGender} | Nationality: ${caseData.patientNationality}
+  const voiceRules = voiceTurn
+    ? `VOICE RULES:
+- Very brief: 1–2 sentences max.
+- One topic per answer.`
+    : `CHAT RULES:
+- Sound human — vary tone with personality: ${personality}
+- When the doctor shows empathy (سلامة، ربنا يشفيك) → thank them warmly; you may add one sentence about how illness affects your life.
+- The doctor speaks natural Egyptian colloquial Arabic (عامية): understand "هيلو/أهلاً" as greeting, "عامل إيه/إزيك/ايه الأخبار" as asking how you feel, "اسمك ايه" as name, etc.
+- Only if the question is truly unclear (single word like "أيه" alone) → "مش فاهم قصدك يا دكتور، ممكن توضّح سؤالك؟"
+- Never ask the doctor questions back. Never state the diagnosis (${caseData.finalDiagnosis}).`;
+
+  return `You are a simulated Egyptian patient in an OSCE clinical examination. Stay fully in character as ${caseData.patientName}, ${caseData.patientAge} years old.
+
+CASE BACKGROUND (use when relevant to the question — do not recite everything at once):
 - Chief complaint: ${caseData.chiefComplaint}
 - Medical history: ${caseData.medicalHistory}
 - Medications: ${caseData.medicationHistory}
 - Surgical history: ${caseData.surgicalHistory}
 - Family history: ${caseData.familyHistory}
 - Social history: ${caseData.socialHistory}
-- Personality: ${caseData.patientPersonality || 'Cooperative but anxious about symptoms'}
-- Scenario: ${caseData.scenarioPrompt || 'Standard OSCE patient encounter'}
+- Personality: ${personality}
+- Scenario notes: ${scenario}
 
-STRICT RULES — violating these fails the simulation:
-1. NEVER reveal the diagnosis (${caseData.finalDiagnosis}) directly.
-2. Answer ONLY what was asked — nothing extra. One topic per answer.
-3. NEVER volunteer symptoms, name, age, history, medications, or complaints unprompted.
-4. Greeting only → "أهلاً دكتور." (Arabic) or "Hello doctor." (English) — nothing else.
-5. Doctor introduces themselves → brief polite greeting back only.
-6. Asked name → name only. Age → age only. Nationality → nationality only. Married → yes/no only.
-7. Symptoms/chief complaint → describe complaint briefly in lay terms only when asked about symptoms.
-8. Unclear or off-topic question → "مش فاهم، ممكن توضّح سؤالك؟" (Arabic) or ask to clarify (English).
-9. Lay language, not medical jargon.
-10. ${langNote}
+${phaseNote}
+
+${voiceRules}
+- Lay language only — no medical jargon or English disease terms.
+- ${langNote}
 ${knowledgeContext}`;
 }
 
@@ -256,9 +293,36 @@ async function getAISettings() {
   return {
     ...settings,
     provider: process.env.AI_PROVIDER || settings.provider,
-    patientModel: process.env.OPENAI_PATIENT_MODEL || process.env.OPENAI_MODEL || settings.patientModel || defaultModel,
+    patientModel:
+      process.env.OPENAI_PATIENT_MODEL ||
+      settings.patientModel ||
+      'gpt-4o-mini',
     examinerModel: process.env.OPENAI_EXAMINER_MODEL || process.env.OPENAI_MODEL || settings.examinerModel || defaultModel,
   };
+}
+
+let aiSettingsCache: { value: Awaited<ReturnType<typeof getAISettings>>; expiresAt: number } | null = null;
+
+export function clearAISettingsCache() {
+  aiSettingsCache = null;
+}
+
+async function getAISettingsCached() {
+  const now = Date.now();
+  if (aiSettingsCache && aiSettingsCache.expiresAt > now) {
+    return aiSettingsCache.value;
+  }
+  const value = await getAISettings();
+  aiSettingsCache = { value, expiresAt: now + 60_000 };
+  return value;
+}
+
+function adminSystemPromptSuffix(
+  settings: Awaited<ReturnType<typeof getAISettings>>,
+  lang: 'AR' | 'EN',
+): string {
+  const custom = lang === 'AR' ? settings.systemPromptAr : settings.systemPromptEn;
+  return custom?.trim() ? `\n\nADMIN SYSTEM PROMPT:\n${custom.trim()}` : '';
 }
 
 function usesMaxCompletionTokens(model: string): boolean {
@@ -276,16 +340,28 @@ async function callOpenAI(messages: ChatMessage[], model: string, temperature: n
   if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
 
   const openai = new OpenAI({ apiKey });
-  const response = await openai.chat.completions.create({
-    model,
-    messages,
-    ...(supportsCustomTemperature(model) ? { temperature } : {}),
-    ...(usesMaxCompletionTokens(model)
-      ? { max_completion_tokens: maxTokens }
-      : { max_tokens: maxTokens }),
-  });
+  const fallbackModel = process.env.OPENAI_FALLBACK_MODEL || 'gpt-5-mini';
 
-  return response.choices[0]?.message?.content || '';
+  const run = (activeModel: string) =>
+    openai.chat.completions.create({
+      model: activeModel,
+      messages,
+      ...(supportsCustomTemperature(activeModel) ? { temperature } : {}),
+      ...(usesMaxCompletionTokens(activeModel)
+        ? { max_completion_tokens: maxTokens }
+        : { max_tokens: maxTokens }),
+    });
+
+  try {
+    const response = await run(model);
+    return response.choices[0]?.message?.content || '';
+  } catch (error) {
+    if (model !== fallbackModel && /realtime|gpt-5/i.test(model)) {
+      const response = await run(fallbackModel);
+      return response.choices[0]?.message?.content || '';
+    }
+    throw error;
+  }
 }
 
 function logAiFallback(context: string, error: unknown) {
@@ -314,7 +390,7 @@ function resolvePatientLanguage(language: Language, userMessage: string): boolea
   return /[\u0600-\u06FF]/.test(userMessage);
 }
 
-function effectivePatientLanguage(language: Language, _userMessage: string): Language {
+function effectivePatientLanguage(language: Language, _userMessage: string): 'AR' | 'EN' {
   if (language === 'EN') return 'EN';
   return 'AR';
 }
@@ -325,9 +401,14 @@ function resolveExaminerLanguage(sessionLang: Language, studentMessage: string):
   return /[\u0600-\u06FF]/.test(studentMessage) ? 'AR' : 'AR';
 }
 
+/** Physical examination viva — examiner always speaks English. */
+function examinationExaminerLanguage(): 'EN' {
+  return 'EN';
+}
+
 function examinerLangRule(lang: 'AR' | 'EN'): string {
   return lang === 'AR'
-    ? 'ردّ بس بالعامية المصرية الطبية (جمل قصيرة 2–4). ممنوع الإنجليزي إلا لمصطلحات طبية لاتينية ضرورية بين قوسين.'
+    ? 'ردّ فقط بالعامية المصرية الطبية الطبيعية، مش فصحى. جمل قصيرة 2–4. ممنوع الإنجليزي إلا لمصطلحات طبية لاتينية ضرورية بين قوسين.'
     : 'Respond ONLY in English (2–4 sentences).';
 }
 
@@ -349,33 +430,72 @@ function finalizePatientReply(
   response: string,
   lang: Language,
   history: { role: string; content: string }[] = [],
+  voiceTurn = false,
 ): string {
-  if (lang === 'EN') return truncatePatientAnswer(response.trim());
+  const maxSentences = voiceTurn ? 2 : 5;
+  if (lang === 'EN') return truncatePatientAnswer(response.trim(), maxSentences);
 
-  let text = truncatePatientAnswer(response.trim());
+  let text = truncatePatientAnswer(response.trim(), maxSentences);
 
-  if (isMostlyEnglish(text) || containsEnglishMedicalLeak(text)) {
+  if (!voiceTurn && (isMostlyEnglish(text) || containsEnglishMedicalLeak(text))) {
     const fallback = getDeterministicPatientResponse(caseData, userMessage, 'AR', history);
     if (fallback) return fallback;
+    if (asksWellbeing(userMessage)) return patientWellbeingReply(caseData, true, false);
     if (asksAboutSymptoms(userMessage)) return patientComplaintPhrase(caseData, true);
     if (asksName(userMessage)) return `اسمي ${patientNameInLang(caseData, true)}.`;
+    if (isGreetingOnly(userMessage) || isDoctorIntroduction(userMessage)) {
+      return patientOpeningReply(caseData, true);
+    }
     return 'مش فاهم، ممكن توضّح سؤالك؟';
   }
 
   text = enforcePatientLanguage(text, true);
-  return text;
+  if (caseData.patientName && text.includes(caseData.patientName)) {
+    text = text.replaceAll(caseData.patientName, patientNameInLang(caseData, true));
+  }
+  return toEgyptianColloquial(text);
+}
+
+function finalizeExaminerReply(text: string, lang: 'AR' | 'EN'): string {
+  const trimmed = text.trim();
+  if (!trimmed || lang === 'EN') return trimmed;
+  return toEgyptianColloquial(trimmed);
 }
 
 export function normalizeStudentMessage(message: string, sessionLang: Language): string {
   const trimmed = message.trim();
   if (sessionLang === 'EN') return trimmed;
-  return fixArabicSpeechTranscript(trimmed, true);
+  const sttFixed = fixArabicSpeechTranscript(trimmed, true);
+  return normalizeEgyptianColloquialInput(sttFixed);
+}
+
+function normalizeEgyptianColloquialInput(text: string): string {
+  const t = text.trim().replace(/\s+/g, ' ');
+  if (!t) return t;
+
+  const fixes: Array<[RegExp, string]> = [
+    [/^(هيلو|هالو|حيلو|هلو|هلا)\s*(يا\s*)?(دكتور)?[!.?؟]*$/i, 'اهلا دكتور'],
+    [/^(هاي|hi|hello|hey)\s*(يا\s*)?(دكتور|doctor)?[!.?؟]*$/i, 'اهلا دكتور'],
+    [/^(عامل|عاملة)\s*(ايه|إيه|أي|eh|eih)\s*(يا\s*)?(دكتور)?[!.?؟]*$/i, 'عامل إيه'],
+    [/^(ازيك|إزيك|ازي|إزي)\s*(يا\s*)?(دكتور)?[!.?؟]*$/i, 'إزيك'],
+    [/^(ايه|إيه|اي)\s*(الاخبار|الأخبار|اخبارك|أخبارك)\s*(يا\s*)?(دكتور)?[!.?؟]*$/i, 'إيه الأخبار'],
+  ];
+
+  for (const [pattern, replacement] of fixes) {
+    if (pattern.test(t)) return replacement;
+  }
+
+  return t;
 }
 
 function patientNameInLang(caseData: Case, isArabic: boolean): string {
   if (!isArabic) return caseData.patientName;
   const lower = caseData.patientName.toLowerCase();
   if (lower.includes('tarek')) return 'طارق مصطفى الحداد';
+  if (lower.includes('samira')) return 'سميرة عبد الرحمن';
+  if (lower.includes('ahmed')) return 'أحمد';
+  if (lower.includes('fatma') || lower.includes('fatima')) return 'فاطمة';
+  if (lower.includes('mohamed') || lower.includes('mohammed')) return 'محمد';
   return caseData.patientName.split(' ').slice(0, 2).join(' ');
 }
 
@@ -384,15 +504,139 @@ function patientComplaintPhrase(caseData: Case, isArabic: boolean): string {
 
   const c = caseData.chiefComplaint.toLowerCase();
   const months = c.match(/(\d+)\s*months?/);
-  const duration = months ? `من ${months[1]} شهور` : 'من فترة';
+  const weeks = c.match(/(\d+)\s*-?\s*weeks?/);
+  const duration = months
+    ? `من ${months[1]} شهور`
+    : weeks
+      ? `من ${weeks[1]} أسابيع`
+      : /أسبوع|اسبوع|week/i.test(c)
+        ? 'من أسبوعين'
+        : 'من فترة';
 
-  if (/dyspnea|breath|shortness|exertional/i.test(c)) {
+  if (/dyspnea|breath|shortness|exertional|ضيق|تنفس|نفس/i.test(c)) {
     return `${duration} بحس بضيق نفس مع المجهود.`;
   }
-  if (/chest|pain|tight/i.test(c)) {
+  if (/chest|pain|tight|صدر|ألم|الم/i.test(c)) {
     return `${duration} عندي ألم/تقل في الصدر.`;
   }
+  if (/[\u0600-\u06FF]/.test(caseData.chiefComplaint)) {
+    return `${duration} ${caseData.chiefComplaint.split('.')[0].trim()}.`;
+  }
   return `${duration} عندي شكوى بقت معايا.`;
+}
+
+function isVagueStudentMessage(text: string): boolean {
+  const t = text.trim();
+  return /^(أ?ييه|ايه|إيه|اي|eh|eih|أيه)\s*[؟?.!]*$/i.test(t) || t.length < 3;
+}
+
+function isEmpathyOrBlessing(text: string): boolean {
+  const t = text.trim();
+  return /الف\s*(مليون\s*)?سلام|مليون\s*سلام|سلام[ةه]\s*(عليك|عليكي)?|سلامتك|ربنا\s*يخليك|ربنا\s*يشفيك|الله\s*يسلمك|get\s*well|bless\s*you/i.test(
+    t,
+  );
+}
+
+function isGreetingOnly(text: string): boolean {
+  const t = text
+    .trim()
+    .replace(/[!.?؟،,]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/أهلاً|أهلا|اهلاً/gi, 'اهلا')
+    .trim();
+  if (!t || t.length > 80) return false;
+
+  if (
+    /^(السلام عليكم|سلام عليكم|صباح الخير|مساء الخير|good morning|good afternoon|good evening)(\s+(يا\s*)?دكتور)?$/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+
+  const core = t.replace(/\s*(يا\s+)?دكتور\s*$/i, '').trim() || t;
+  const words = core.split(' ').filter(Boolean);
+  const wordGreeting =
+    /^(أ?هلا|اهلا|مرحبا?|مرحب|سلام|السلام|هاي|hi|hello|hey|عليكم|هيلو|هالو|حيلو|هلو|هلا)$/i;
+  return words.length > 0 && words.length <= 5 && words.every((w) => wordGreeting.test(w));
+}
+
+function quickSocialPatientReply(
+  caseData: Case,
+  userMessage: string,
+  lang: Language,
+  history: { role: string; content: string }[],
+  voiceTurn: boolean,
+): string | null {
+  const isArabic = resolvePatientLanguage(lang, userMessage);
+  const studentTurn = history.filter((m) => m.role === 'STUDENT').length;
+
+  if (isEmpathyOrBlessing(userMessage)) {
+    return patientEmpathyReply(caseData, isArabic);
+  }
+
+  if (isGreetingOnly(userMessage) || isDoctorIntroduction(userMessage)) {
+    if (studentTurn === 0) {
+      return voiceTurn
+        ? patientWellbeingReply(caseData, isArabic, true)
+        : patientOpeningReply(caseData, isArabic);
+    }
+    return isArabic ? 'أهلاً يا دكتور.' : 'Hello doctor.';
+  }
+
+  if (asksWellbeing(userMessage)) {
+    return patientWellbeingReply(caseData, isArabic, voiceTurn);
+  }
+
+  return null;
+}
+
+function patientRichComplaint(caseData: Case, isArabic: boolean): string {
+  if (!isArabic) return patientComplaintPhrase(caseData, false);
+
+  const lower = caseData.patientName.toLowerCase();
+  const c = caseData.chiefComplaint.toLowerCase();
+
+  if (lower.includes('samira') || /swell|ankle|orthopnea|3 weeks/i.test(c)) {
+    return 'والله يا دكتور أنا تعبانة أوي، بقالي ٣ أسابيع مش قادرة أتنفس كويس، وخصوصاً لما بتحرك شوية أو بنام. رجليّا بتورم كمان ومش عارفة أنام بالليل كويس.';
+  }
+  if (lower.includes('tarek') || /painter|exertional|2 weeks/i.test(c)) {
+    return 'والله يا دكتور أنا تعبان أوي، بقالي فترة مش قادر آخد نفسي كويس، وخصوصاً لما ببدأ أتحرك أو أعمل مجهود في الشغل. الموضوع ده تعبني جداً ومخلي حياتي صعبة.';
+  }
+
+  const brief = patientComplaintPhrase(caseData, true);
+  return `والله يا دكتور مش في أحسن حالي. ${brief} الموضوع بقى يتعبني في يومي.`;
+}
+
+function patientWellbeingReply(caseData: Case, isArabic: boolean, voiceTurn: boolean): string {
+  if (!isArabic) return voiceTurn ? 'Not great, doctor.' : 'Honestly doctor, I have not been feeling well lately.';
+  if (voiceTurn) return 'مش في أحسن حالي دكتور.';
+  const hint = patientComplaintPhrase(caseData, true);
+  return `والله يا دكتور مش في أحسن حالي، تعبان${caseData.patientGender.toLowerCase().startsWith('f') ? 'ة' : ''} أوي. ${hint}`;
+}
+
+function patientOpeningReply(caseData: Case, isArabic: boolean): string {
+  if (!isArabic) return `Hello doctor. I have not been feeling well — ${patientComplaintPhrase(caseData, false)}`;
+  const lower = caseData.patientName.toLowerCase();
+  if (lower.includes('tarek')) {
+    return 'صباح النور يا دكتور. والله يا دكتور أنا تعبان أوي، بقالي فترة مش قادر آخد نفسي كويس، وخصوصاً لما ببدأ أتحرك أو أعمل مجهود في الشغل. الموضوع ده تعبني جداً ومخلي حياتي صعبة.';
+  }
+  if (lower.includes('samira')) {
+    return 'أهلاً يا دكتور. والله أنا تعبانة أوي، بقالي ٣ أسابيع مش قادرة أتنفس كويس، وخصوصاً لما بتحرك أو بنام. رجليّا بتورم كمان.';
+  }
+  return `أهلاً يا دكتور. ${patientRichComplaint(caseData, true)}`;
+}
+
+function patientEmpathyReply(caseData: Case, isArabic: boolean): string {
+  if (!isArabic) return 'Thank you, doctor. I really appreciate it.';
+  const lower = caseData.patientName.toLowerCase();
+  if (lower.includes('tarek')) {
+    return 'الله يسلمك يا دكتور، تسلم. والله يا ابني أنا متبهدل، مش عارف أعيش حياتي زي باقي الناس، الشغل في الدهانات بياخد مجهود وأنا مش قادر آخد نفسي وأنا واقف على السلم أو بصبغ، وبضطر أقف أستريح كتير.';
+  }
+  if (lower.includes('samira')) {
+    return 'الله يسلمك يا دكتور، تسلم. والله أنا تعبانة ومش قادرة أعمل حاجة في البيت، كل شوية لازم أقعد أستريح عشان مش قادرة أكمل نفسي.';
+  }
+  return `الله يسلمك يا دكتور، تسلم. ${patientRichComplaint(caseData, true)}`;
 }
 
 function truncatePatientAnswer(text: string, maxSentences = 2): string {
@@ -415,13 +659,6 @@ function enforcePatientLanguage(text: string, isArabic: boolean): string {
   return trimmed;
 }
 
-function isGreetingOnly(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  return /^(hi+|hello+|hey+|good\s+(morning|afternoon|evening)|السلام\s*عليكم|السلام|سلام\s*عليكم|سلام|مرحب|أهلا|اهلا|هاي|صباح\s*الخير|مساء\s*الخير)[!.?\s]*$/i.test(
-    t,
-  );
-}
-
 function isDoctorIntroduction(text: string): boolean {
   return /^(good\s+(morning|afternoon|evening)|nice to meet|pleased to meet|i'?m\s+(dr|doctor)|my name is.*(dr|doctor)|أنا\s+(د|دكتور)|اسمي\s+(د|دكتور)|تشرفنا|نورت)/i.test(
     text.trim(),
@@ -429,17 +666,20 @@ function isDoctorIntroduction(text: string): boolean {
 }
 
 function asksAboutSymptoms(text: string): boolean {
+  if (isVagueStudentMessage(text)) return false;
   if (
     asksName(text) ||
     asksAge(text) ||
+    asksWellbeing(text) ||
     asksNationality(text) ||
     asksMaritalStatus(text) ||
     asksGender(text) ||
-    isGreetingOnly(text)
+    isGreetingOnly(text) ||
+    isEmpathyOrBlessing(text)
   ) {
     return false;
   }
-  return /why|what brought|what brings|present|complain|symptom|problem|chief|feel|wrong|happening|issue|breath|dyspnea|swell|pain|chest|tell me about|describe|history of|ليه|سبب|شكو|شكوى|شكواك|عرض|وجع|ألم|الم|ضيق|تنفس|تورم|حاس|حاسس|بتعاني|تعاني من|مشكل|إيه اللي|إيه المشكلة|إيه مشكل|إيه جابك|جابك هنا|جيت ليه|ليه جيت|عندك إيه|عندك ايه|إيه اللي عندك|ما الذي|what.*wrong|what.*problem|what.*matter/i.test(
+  return /why|what brought|what brings|present|complain|symptom|problem|chief|feel|wrong|happening|issue|breath|dyspnea|swell|pain|chest|tell me about|describe|history of|ليه|سبب|شكو|شكوى|شكواك|شكوتك|شكوايتك|بتشتكي|بتشكو|تشتكي|اشتكي|اشتكيت|بتشكو|عرض|وجع|ألم|الم|ضيق|تنفس|تورم|حاس|حاسس|بتعاني|تعاني من|مشكل|إيه اللي|إيه الحاجة|الحاجة اللي|إيه المشكلة|إيه مشكل|إيه جابك|جابك هنا|جيت ليه|ليه جيت|وديجتي|ودجتي|وش جيت|عندك إيه|عندك ايه|إيه اللي عندك|ما الذي|شكو.*من|بتشتكي\s*من|تشتكي\s*من|what.*wrong|what.*problem|what.*matter|what.*complain/i.test(
     text,
   );
 }
@@ -451,7 +691,52 @@ function asksName(text: string): boolean {
 }
 
 function asksAge(text: string): boolean {
-  return /age|old are you|how old|years old|سن|عمر|كم عمر|سنك|كام سنة/i.test(text);
+  return /(?:how\s*old|years?\s*old|your\s*age)|(?:عمرك|سنك|(?:كم|كام)\s*عمر|(?:كم|كام)\s*سنة|(?:كم|كام)\s*سن|عندك\s*(?:كم|كام)\s*سنة|عندك\s*(?:كم|كام)\s*سن)/i.test(
+    text,
+  );
+}
+
+function asksPriorDoctorVisit(text: string): boolean {
+  return /روحت.*دكتور|رحت.*دكتور|زرت.*دكتور|دكتور قبل|مستشفى قبل|seen a doctor|doctor before|visited.*doctor|hospital before|previous doctor/i.test(
+    text,
+  );
+}
+
+function asksResidence(text: string): boolean {
+  return /ساكن فين|ساكنة فين|عايش فين|عايشة فين|ساكن في|منين|من فين|where.*live|where do you live|your address|بتسكن/i.test(
+    text,
+  );
+}
+
+function patientPriorDoctorPhrase(caseData: Case, isArabic: boolean): string {
+  const history = caseData.medicalHistory;
+  if (/tonsillitis|التهاب لوز/i.test(history)) {
+    return isArabic
+      ? 'آه، رحت دكتور ومستشفى قبل كده لالتهاب اللوز.'
+      : 'Yes, I saw doctors and went to hospital for tonsillitis before.';
+  }
+  if (/denies|never|no prior/i.test(history.toLowerCase())) {
+    return isArabic ? 'لا، مروحتش دكتور قبل كده.' : 'No, I have not seen a doctor before for this.';
+  }
+  return isArabic ? 'آه، رحت دكتور قبل كده.' : 'Yes, I have seen a doctor before.';
+}
+
+function patientResidencePhrase(caseData: Case, isArabic: boolean): string {
+  const social = caseData.socialHistory;
+  if (isArabic) {
+    if (/shobra|شبرا/i.test(social)) return 'من شبرا الخيمة.';
+    const fromMatch = social.match(/from\s+([^,]+)/i);
+    if (fromMatch) return `من ${fromMatch[1].trim()}.`;
+    return 'من القاهرة.';
+  }
+  const fromMatch = social.match(/from\s+([^,]+)/i);
+  return fromMatch ? `I am from ${fromMatch[1].trim()}.` : social.split('.')[0].trim();
+}
+
+function asksWellbeing(text: string): boolean {
+  return /how are you|how r u|what'?s up|عامل\s*(إيه|ايه|أي|eh|eih)?|عاملة\s*(إيه|ايه|أي|eh|eih)?|إزيك|ازيك|إزي|ازي|كيف حال|حالك|عامل إيه|عاملة إيه|إيه الأخبار|ايه الاخبار|ايه الأخبار|الأخبار|أخبارك|اخبارك|إيه أخبارك|ايه اخبارك|إيه الحال|ايه الحال|إنت عامل|انت عامل|إنتي عاملة|انتي عاملة|عامله\s*ايه|عامله\s*إيه/i.test(
+    text,
+  );
 }
 
 function asksNationality(text: string): boolean {
@@ -468,10 +753,139 @@ function asksGender(text: string): boolean {
   return /\b(male|female|gender)\b|ذكر|أنثى|ولد|بنت/i.test(text);
 }
 
+type PatientQuestionIntent =
+  | 'greeting'
+  | 'empathy'
+  | 'symptoms'
+  | 'name'
+  | 'age'
+  | 'residence'
+  | 'nationality'
+  | 'marital'
+  | 'gender'
+  | 'priorDoctor'
+  | 'wellbeing'
+  | 'allergy'
+  | 'medication'
+  | 'familyHistory';
+
+/** Split merged STT phrases so the last question wins (e.g. greeting + wellbeing + name). */
+function messageQuestionParts(message: string): string[] {
+  const trimmed = message.trim();
+  const punctParts = trimmed
+    .split(/[؟?،,]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 1);
+  if (punctParts.length > 1) return punctParts;
+
+  const tailPatterns = [
+    /(?:اسمك\s*إ?يه|اسمك\s*ايه|اسم حضرتك|what is your name)\s*$/i,
+    /(?:عندك\s*(?:كم|كام)\s*سنة|عمرك\s*(?:كم|كام)|how\s*old)\s*$/i,
+    /(?:ساكن فين|ساكنة فين|عايش فين|where do you live)\s*$/i,
+    /(?:روحت.*دكتور|زرت.*دكتور|seen a doctor)\s*$/i,
+    /(?:إيه الأخبار|ايه الاخبار|إيه أخبارك|ايه اخبارك|إزيك|ازيك|عامل إيه|how are you)\s*$/i,
+  ];
+
+  for (const pattern of tailPatterns) {
+    const match = trimmed.match(pattern);
+    if (match?.index !== undefined && match.index > 0) {
+      const tail = trimmed.slice(match.index).trim();
+      const head = trimmed.slice(0, match.index).trim();
+      const parts = [head, tail].filter((p) => p.length > 1);
+      if (parts.length > 1) return parts;
+    }
+  }
+
+  return [trimmed];
+}
+
+function intentForQuestionPart(part: string): PatientQuestionIntent | null {
+  if (isEmpathyOrBlessing(part)) return 'empathy';
+  if (asksAboutSymptoms(part)) return 'symptoms';
+  if (asksName(part)) return 'name';
+  if (asksAge(part)) return 'age';
+  if (asksResidence(part)) return 'residence';
+  if (asksPriorDoctorVisit(part)) return 'priorDoctor';
+  if (asksNationality(part)) return 'nationality';
+  if (asksMaritalStatus(part)) return 'marital';
+  if (asksGender(part)) return 'gender';
+  if (asksWellbeing(part)) return 'wellbeing';
+  if (isGreetingOnly(part) || isDoctorIntroduction(part)) return 'greeting';
+  return null;
+}
+
+function resolvePrimaryPatientQuestionIntent(message: string): PatientQuestionIntent | null {
+  const parts = messageQuestionParts(message);
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const intent = intentForQuestionPart(parts[i]);
+    if (intent) return intent;
+  }
+  return intentForQuestionPart(message);
+}
+
 function asksFamilyHistory(text: string): boolean {
   return /(family history|family.*(history|disease|problem)|تاريخ.*(عائلي|عيلة)|العيلة|عيلتك|أهل.*(مرض|زي|نفس)|history of.*family)/i.test(
     text,
   );
+}
+
+function deterministicReplyForIntent(
+  caseData: Case,
+  intent: PatientQuestionIntent,
+  isArabic: boolean,
+  voiceTurn = true,
+): string | null {
+  const name = caseData.patientName;
+  const complaint = voiceTurn
+    ? patientComplaintPhrase(caseData, isArabic)
+    : patientRichComplaint(caseData, isArabic);
+
+  switch (intent) {
+    case 'greeting':
+      return voiceTurn
+        ? isArabic
+          ? 'أهلاً دكتور.'
+          : 'Hello doctor.'
+        : patientOpeningReply(caseData, isArabic);
+    case 'empathy':
+      return patientEmpathyReply(caseData, isArabic);
+    case 'wellbeing':
+      return patientWellbeingReply(caseData, isArabic, voiceTurn);
+    case 'age':
+      return isArabic
+        ? `عندي ${caseData.patientAge} سنة.`
+        : `I am ${caseData.patientAge} years old.`;
+    case 'name':
+      return isArabic ? `اسمي ${patientNameInLang(caseData, true)}.` : `My name is ${name}.`;
+    case 'nationality': {
+      const nat = caseData.patientNationality;
+      if (isArabic) return /egypt/i.test(nat) ? 'مصري.' : `أنا ${nat}.`;
+      return `I am ${nat}.`;
+    }
+    case 'marital': {
+      const social = caseData.socialHistory.toLowerCase();
+      const married = /married|wife|husband|زوج|متجوز/i.test(social);
+      return isArabic
+        ? married
+          ? 'آه، متجوز.'
+          : 'لا، مش متجوز.'
+        : married
+          ? 'Yes, I am married.'
+          : 'No, I am not married.';
+    }
+    case 'gender': {
+      const g = caseData.patientGender.toLowerCase();
+      return isArabic ? (g.startsWith('m') ? 'ذكر.' : 'أنثى.') : caseData.patientGender;
+    }
+    case 'priorDoctor':
+      return patientPriorDoctorPhrase(caseData, isArabic);
+    case 'residence':
+      return patientResidencePhrase(caseData, isArabic);
+    case 'symptoms':
+      return complaint;
+    default:
+      return null;
+  }
 }
 
 function sanitizePatientResponse(
@@ -479,73 +893,38 @@ function sanitizePatientResponse(
   userMessage: string,
   response: string,
   language: Language,
+  voiceTurn = false,
 ): string {
   const isArabic = resolvePatientLanguage(language, userMessage);
-  const text = userMessage.trim().toLowerCase();
   const trimmed = response.trim();
   if (!trimmed) return trimmed;
 
-  if (isGreetingOnly(userMessage) || isDoctorIntroduction(userMessage)) {
-    return isArabic ? 'أهلاً دكتور.' : 'Hello doctor.';
-  }
-
-  if (asksName(userMessage)) {
-    return isArabic ? `اسمي ${patientNameInLang(caseData, true)}.` : `My name is ${caseData.patientName}.`;
-  }
-
-  if (asksAge(userMessage)) {
-    return isArabic
-      ? `عندي ${caseData.patientAge} سنة.`
-      : `I am ${caseData.patientAge} years old.`;
-  }
-
-  if (asksNationality(userMessage)) {
-    const nat = caseData.patientNationality;
-    if (isArabic) {
-      return /egypt/i.test(nat) ? 'مصري.' : `أنا ${nat}.`;
+  if (voiceTurn) {
+    let text = enforcePatientLanguage(truncatePatientAnswer(trimmed, 2), isArabic);
+    if (caseData.patientName && text.includes(caseData.patientName)) {
+      text = text.replaceAll(caseData.patientName, patientNameInLang(caseData, true));
     }
-    return `I am ${nat}.`;
+    return toEgyptianColloquial(text);
   }
 
-  if (asksMaritalStatus(userMessage)) {
-    const social = caseData.socialHistory.toLowerCase();
-    const married = /married|wife|husband|زوج|متجوز/i.test(social);
-    return isArabic
-      ? married
-        ? 'آه، متجوز.'
-        : 'لا، مش متجوز.'
-      : married
-        ? 'Yes, I am married.'
-        : 'No, I am not married.';
+  let text = enforcePatientLanguage(truncatePatientAnswer(trimmed, 5), isArabic);
+  if (caseData.patientName && text.includes(caseData.patientName)) {
+    text = text.replaceAll(caseData.patientName, patientNameInLang(caseData, true));
   }
 
-  if (asksGender(userMessage)) {
-    const g = caseData.patientGender.toLowerCase();
-    return isArabic
-      ? g.startsWith('m')
-        ? 'ذكر.'
-        : 'أنثى.'
-      : caseData.patientGender;
-  }
-
-  if (!asksAboutSymptoms(userMessage)) {
-    const complaintSnippet = caseData.chiefComplaint.toLowerCase().slice(0, 40);
-    const responseLower = trimmed.toLowerCase();
-    const dumpsComplaint =
-      complaintSnippet.length > 10 && responseLower.includes(complaintSnippet.slice(0, 20));
-    const dumpsNameAndMore =
-      trimmed.includes(caseData.patientName) &&
-      (dumpsComplaint || /shortness|breath|swell|swelling|dyspnea|تنفس|تورم|ضيق/i.test(trimmed));
-
-    if (dumpsNameAndMore || dumpsComplaint) {
-      if (asksName(userMessage)) {
-        return isArabic ? `اسمي ${patientNameInLang(caseData, true)}.` : `My name is ${caseData.patientName}.`;
-      }
-      return isArabic ? 'أهلاً دكتور.' : 'Hello doctor.';
+  const intent = resolvePrimaryPatientQuestionIntent(userMessage);
+  if (
+    (intent === 'greeting' || isGreetingOnly(userMessage)) &&
+    !asksAboutSymptoms(userMessage)
+  ) {
+    const complaintSnippet = caseData.chiefComplaint.toLowerCase().slice(0, 24);
+    const responseLower = text.toLowerCase();
+    if (complaintSnippet.length > 8 && responseLower.includes(complaintSnippet.slice(0, 12))) {
+      return toEgyptianColloquial(patientOpeningReply(caseData, isArabic));
     }
   }
 
-  return enforcePatientLanguage(truncatePatientAnswer(trimmed), isArabic);
+  return toEgyptianColloquial(text);
 }
 
 function getDeterministicPatientResponse(
@@ -556,50 +935,15 @@ function getDeterministicPatientResponse(
 ): string | null {
   const isArabic = resolvePatientLanguage(language, userMessage);
   const text = userMessage.trim().toLowerCase();
-  const name = caseData.patientName;
-  const complaint = patientComplaintPhrase(caseData, isArabic);
+  const intent = resolvePrimaryPatientQuestionIntent(userMessage);
 
-  if (isGreetingOnly(userMessage) || isDoctorIntroduction(userMessage)) {
-    return isArabic ? 'أهلاً دكتور.' : 'Hello doctor.';
+  if (intent) {
+    const intentReply = deterministicReplyForIntent(caseData, intent, isArabic, true);
+    if (intentReply) return intentReply;
   }
 
-  if (asksName(userMessage)) {
-    return isArabic ? `اسمي ${patientNameInLang(caseData, true)}.` : `My name is ${name}.`;
-  }
-
-  if (/how are you|how r u|عامل|إزيك|ازيك|كيف حال|حالك|عامل إيه/i.test(text)) {
-    return isArabic ? 'مش في أحسن حالي.' : 'Not great, doctor.';
-  }
-
-  if (asksAge(userMessage)) {
-    return isArabic
-      ? `عندي ${caseData.patientAge} سنة.`
-      : `I am ${caseData.patientAge} years old.`;
-  }
-
-  if (asksNationality(userMessage)) {
-    const nat = caseData.patientNationality;
-    if (isArabic) {
-      return /egypt/i.test(nat) ? 'مصري.' : `أنا ${nat}.`;
-    }
-    return `I am ${nat}.`;
-  }
-
-  if (asksMaritalStatus(userMessage)) {
-    const social = caseData.socialHistory.toLowerCase();
-    const married = /married|wife|husband|زوج|متجوز/i.test(social);
-    return isArabic
-      ? married
-        ? 'آه، متجوز.'
-        : 'لا، مش متجوز.'
-      : married
-        ? 'Yes, I am married.'
-        : 'No, I am not married.';
-  }
-
-  if (asksGender(userMessage)) {
-    const g = caseData.patientGender.toLowerCase();
-    return isArabic ? (g.startsWith('m') ? 'ذكر.' : 'أنثى.') : caseData.patientGender;
+  if (isEmpathyOrBlessing(userMessage)) {
+    return patientEmpathyReply(caseData, isArabic);
   }
 
   if (/allerg|حساس|حساسية/i.test(text)) {
@@ -624,7 +968,7 @@ function getDeterministicPatientResponse(
   }
 
   if (asksAboutSymptoms(text)) {
-    return `${complaint}`;
+    return patientRichComplaint(caseData, isArabic);
   }
 
   return null;
@@ -634,20 +978,44 @@ function mockPatientResponse(
   caseData: Case,
   userMessage: string,
   language: Language,
-  history: { role: string; content: string }[] = []
+  history: { role: string; content: string }[] = [],
 ): string {
+  const isArabic = resolvePatientLanguage(language, userMessage);
+  const studentTurn = history.filter((m) => m.role === 'STUDENT').length;
+
+  if (isEmpathyOrBlessing(userMessage)) {
+    return patientEmpathyReply(caseData, isArabic);
+  }
+
+  if (isGreetingOnly(userMessage) || isDoctorIntroduction(userMessage)) {
+    if (studentTurn === 0) return patientOpeningReply(caseData, isArabic);
+    return isArabic ? 'أهلاً يا دكتور.' : 'Hello doctor.';
+  }
+
+  const intent = resolvePrimaryPatientQuestionIntent(userMessage);
+
+  if (intent === 'wellbeing') {
+    return patientWellbeingReply(caseData, isArabic, false);
+  }
+  if (intent === 'symptoms' || asksAboutSymptoms(userMessage)) {
+    return patientRichComplaint(caseData, isArabic);
+  }
+  if (intent === 'name') {
+    return isArabic
+      ? `اسمي ${patientNameInLang(caseData, true)}.`
+      : `My name is ${caseData.patientName}.`;
+  }
+
   const deterministic = getDeterministicPatientResponse(caseData, userMessage, language, history);
   if (deterministic !== null) return deterministic;
 
-  const isArabic = resolvePatientLanguage(language, userMessage);
-  if (asksAboutSymptoms(userMessage)) {
-    return patientComplaintPhrase(caseData, isArabic);
+  if (isVagueStudentMessage(userMessage)) {
+    return isArabic ? 'مش فاهم قصدك يا دكتور، ممكن توضّح سؤالك؟' : 'Could you clarify your question, doctor?';
   }
 
-  const studentTurn = history.filter((m) => m.role === 'STUDENT').length;
   const fallbacks = isArabic
     ? [
-        'ممكن توضح سؤالك أكتر؟',
+        'ممكن توضّح سؤالك أكتر يا دكتور؟',
         'مش فاهم قصدك، ممكن تسأل بطريقة أوضح؟',
         'أنا هنا — اسألني اللي محتاج تعرفه.',
       ]
@@ -1070,20 +1438,123 @@ export async function getExaminerEvaluation(
   return mockResult;
 }
 
+export function buildRealtimePatientInstructions(caseData: Case, sessionLanguage: string): string {
+  const lang: Language = sessionLanguage === 'EN' ? 'EN' : 'AR';
+  if (lang === 'EN') {
+    return `You are ${caseData.patientName}, a ${caseData.patientAge}-year-old PATIENT in an OSCE voice call. You are NOT the doctor. You NEVER interview or examine the doctor.
+
+Background (only if asked about that specific topic):
+- Chief complaint: ${caseData.chiefComplaint}
+- History: ${caseData.medicalHistory}
+
+STRICT RULES:
+1. Wait for the doctor's question, then answer in ONE short sentence (two max).
+2. NEVER ask the doctor any question. Forbidden: "can you tell me", "does it increase when", "what happens when you", "do you have".
+3. Greeting or "how are you" ONLY → "Not great, doctor." or "Hello doctor." — NO symptoms, NO history.
+4. Do not volunteer symptoms, age, name, or complaints unless directly asked about that topic.
+5. Never reveal the diagnosis (${caseData.finalDiagnosis}).`;
+  }
+
+  return `أنت ${caseData.patientName}، مريض/ة مصري/ة عمرك ${caseData.patientAge} سنة. أنت المريض فقط — مش الدكتور ومش الممتحن ومش بتعمل مقابلة طبية.
+
+الخلفية (ممنوع تذكرها إلا لو الدكتور سأل عن نفس الموضوع بالتحديد):
+- الشكوى: ${caseData.chiefComplaint}
+- التاريخ: ${caseData.medicalHistory}
+
+قواعد صارمة للمكالمة الصوتية:
+1. استنى سؤال الدكتور، وبعدين أجب بجملة واحدة أو اتنين بالعامية المصرية فقط.
+2. ممنوع تسأل الدكتور أي سؤال. ممنوع تماماً: "ممكن تحكيلي"، "قولي إيه"، "هل عندك"، "لما تتحرك"، "فهمني أكتر"، "توضح".
+3. تحية أو "إزيك" أو "إيه الأخبار" أو "عامل إيه" → رد بس: "مش في أحسن حالي دكتور." أو "أهلاً دكتور." — ممنوع تذكر أعراض أو شكوى أو مدة المرض.
+4. ممنوع تتكلم من نفسك أو تعرض حالتك أو تسأل الدكتور عن أعراضه — أنت المريض بس.
+5. جاوب على السؤال اللي اتسأل بس — مش أكتر.
+6. ممنوع الفصحى والإنجليزي. ممنوع تقول التشخيص (${caseData.finalDiagnosis}).`;
+}
+
+function patientActingAsDoctor(text: string): boolean {
+  return /ممكن تحكيلي|قولي إيه|قولّي إيه|قولي بالظبط|تحكيلي|هل عندك|عندك كحة|لما تتحرك|لما تتعب|tell me if|can you tell|what happens when|do you have|when you move/i.test(
+    text,
+  );
+}
+
+function stripDoctorQuestionsFromPatient(text: string): string {
+  const withoutQuestions = text
+    .split(/[؟?]/)
+    .map((part) => part.trim())
+    .filter((part) => part && !patientActingAsDoctor(part))
+    .join('. ')
+    .trim();
+  return withoutQuestions || text.split(/[؟?]/)[0]?.trim() || text;
+}
+
+/** Post-process OpenAI Realtime patient audio transcript using the same rules as text chat. */
+export function sanitizeRealtimePatientTranscript(
+  caseData: Case,
+  studentMessage: string,
+  patientTranscript: string,
+  sessionLanguage: string,
+): string {
+  const lang: Language = sessionLanguage === 'EN' ? 'EN' : 'AR';
+  const deterministic = getDeterministicPatientResponse(caseData, studentMessage, lang, []);
+  if (deterministic !== null) {
+    return deterministic;
+  }
+
+  let text = sanitizePatientResponse(caseData, studentMessage, patientTranscript, lang, true);
+
+  if (patientActingAsDoctor(text)) {
+    if (asksAboutSymptoms(studentMessage)) {
+      text = stripDoctorQuestionsFromPatient(text);
+    } else {
+      text = lang === 'AR' ? 'مش فاهم قصدك دكتور.' : "I don't understand, doctor.";
+    }
+  }
+
+  if (!asksAboutSymptoms(studentMessage) && !asksName(studentMessage) && !asksAge(studentMessage)) {
+    const complaintHint = caseData.chiefComplaint.toLowerCase().slice(0, 24);
+    const responseLower = text.toLowerCase();
+    if (
+      complaintHint.length > 8 &&
+      responseLower.includes(complaintHint.slice(0, 12)) &&
+      !asksWellbeing(studentMessage) &&
+      !asksPriorDoctorVisit(studentMessage) &&
+      !asksResidence(studentMessage)
+    ) {
+      text = lang === 'AR' ? 'أهلاً دكتور.' : 'Hello doctor.';
+    }
+  }
+
+  const trimmed = text.trim();
+  if (!trimmed) {
+    const retry = getDeterministicPatientResponse(caseData, studentMessage, lang, []);
+    if (retry) return retry;
+    return lang === 'AR' ? 'مش فاهم، ممكن توضّح سؤالك؟' : 'Could you clarify your question?';
+  }
+  return trimmed;
+}
+
 export async function getPatientResponse(
   caseData: Case,
   history: { role: string; content: string }[],
   userMessage: string,
-  language: Language
+  language: Language,
+  options?: { voiceTurn?: boolean },
 ): Promise<string> {
   const normalizedMessage = normalizeStudentMessage(userMessage, language);
   const lang = effectivePatientLanguage(language, normalizedMessage);
-  const deterministic = getDeterministicPatientResponse(caseData, normalizedMessage, lang, history);
-  if (deterministic !== null) {
-    return finalizePatientReply(caseData, normalizedMessage, deterministic, lang, history);
+  const voiceTurn = !!options?.voiceTurn;
+  const studentTurn = history.filter((m) => m.role === 'STUDENT').length;
+
+  const social = quickSocialPatientReply(caseData, normalizedMessage, lang, history, voiceTurn);
+  if (social) {
+    return finalizePatientReply(caseData, normalizedMessage, social, lang, history, voiceTurn);
   }
 
-  const settings = await getAISettings();
+  const deterministic = getDeterministicPatientResponse(caseData, normalizedMessage, lang, history);
+  if (deterministic !== null) {
+    return finalizePatientReply(caseData, normalizedMessage, deterministic, lang, history, voiceTurn);
+  }
+
+  const settings = voiceTurn ? await getAISettingsCached() : await getAISettings();
   const provider = process.env.AI_PROVIDER || settings.provider;
 
   if (provider === 'mock' || provider === 'demo') {
@@ -1093,30 +1564,219 @@ export async function getPatientResponse(
       mockPatientResponse(caseData, normalizedMessage, lang, history),
       lang,
       history,
+      voiceTurn,
     );
   }
 
-  const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
-  const systemPrompt = buildPatientSystemPrompt(caseData, lang, knowledgeContext);
+  const knowledgeContext = voiceTurn
+    ? ''
+    : await getCategoryKnowledgeContext(caseData.categoryId);
+  const promptHistory = voiceTurn ? history.slice(-12) : history;
+  const systemPrompt = buildPatientSystemPrompt(
+    caseData,
+    lang,
+    knowledgeContext,
+    voiceTurn,
+    studentTurn,
+  ) + adminSystemPromptSuffix(settings, lang);
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
-    ...history.map((m) => ({
+    ...promptHistory.map((m) => ({
       role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',
       content: m.content,
     })),
     { role: 'user', content: normalizedMessage },
   ];
 
+  const voiceModel =
+    process.env.OPENAI_VOICE_MODEL ||
+    process.env.OPENAI_PATIENT_MODEL ||
+    'gpt-4o-mini';
+  const activeModel = voiceTurn ? voiceModel : settings.patientModel;
+  const maxTokens = voiceTurn ? 48 : Math.min(settings.maxTokens, 220);
+  const temperature = voiceTurn ? 0.35 : Math.min(Math.max(settings.temperature, 0.45), 0.65);
+
   const raw = await callOpenAISafe(
     messages,
-    settings.patientModel,
-    Math.min(settings.temperature, 0.3),
-    Math.min(settings.maxTokens, 80),
-    () => mockPatientResponse(caseData, normalizedMessage, lang, history)
+    activeModel,
+    temperature,
+    maxTokens,
+    () =>
+      voiceTurn
+        ? 'مش فاهم، ممكن توضّح سؤالك؟'
+        : mockPatientResponse(caseData, normalizedMessage, lang, history),
   );
 
-  const sanitized = sanitizePatientResponse(caseData, normalizedMessage, raw, lang);
-  return finalizePatientReply(caseData, normalizedMessage, sanitized, lang, history);
+  const sanitized = sanitizePatientResponse(
+    caseData,
+    normalizedMessage,
+    raw,
+    lang,
+    voiceTurn,
+  );
+  const finalized = finalizePatientReply(
+    caseData,
+    normalizedMessage,
+    sanitized,
+    lang,
+    history,
+    voiceTurn,
+  );
+  const trimmed = finalized.trim();
+  if (!trimmed) {
+    return lang === 'AR' ? 'مش فاهم، ممكن توضّح سؤالك؟' : 'Could you clarify your question?';
+  }
+  return trimmed;
+}
+
+export interface VivaAnswerEvaluation {
+  advance: boolean;
+  feedback: string;
+}
+
+const VIVA_EVAL_STOP_WORDS = new Set([
+  'what',
+  'the',
+  'how',
+  'does',
+  'would',
+  'which',
+  'that',
+  'this',
+  'with',
+  'from',
+  'your',
+  'you',
+  'are',
+  'for',
+  'and',
+  'why',
+  'when',
+  'where',
+  'about',
+  'help',
+  'role',
+  'purpose',
+  'features',
+  'clinical',
+  'patient',
+  'examination',
+  'history',
+  'after',
+  'into',
+  'they',
+  'their',
+  'have',
+  'has',
+  'been',
+  'being',
+]);
+
+function vivaQuestionKeywords(question: string): string[] {
+  return question
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length >= 4 && !VIVA_EVAL_STOP_WORDS.has(word));
+}
+
+function mockEvaluateHistoryVivaAnswer(
+  vivaQuestion: string,
+  studentAnswer: string,
+): VivaAnswerEvaluation {
+  const answer = studentAnswer.trim();
+  const words = answer.split(/\s+/).filter(Boolean);
+  if (words.length < 3) {
+    return {
+      advance: false,
+      feedback:
+        'That is quite brief. Think about the key clinical point in the question and try again.',
+    };
+  }
+
+  const keywords = vivaQuestionKeywords(vivaQuestion);
+  const lower = answer.toLowerCase();
+  const hits = keywords.filter((keyword) => lower.includes(keyword));
+  if (hits.length >= 1 || words.length >= 14) {
+    return { advance: true, feedback: 'Good.' };
+  }
+
+  return {
+    advance: false,
+    feedback:
+      'Not quite — your answer does not address the main concept. Give a focused clinical response and try again.',
+  };
+}
+
+function parseVivaAnswerEvaluation(
+  raw: string,
+  fallback: () => VivaAnswerEvaluation,
+): VivaAnswerEvaluation {
+  try {
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start < 0 || end <= start) return fallback();
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as {
+      advance?: unknown;
+      feedback?: unknown;
+    };
+    if (typeof parsed.advance !== 'boolean') return fallback();
+    const feedback = typeof parsed.feedback === 'string' ? parsed.feedback.trim() : '';
+    if (!feedback) return fallback();
+    if (/question\s+\d+\s+of\s+\d+/i.test(feedback)) return fallback();
+    return { advance: parsed.advance, feedback };
+  } catch {
+    return fallback();
+  }
+}
+
+/** Score a single history-station viva answer; advance only when correct enough or student gave up. */
+export async function evaluateHistoryVivaAnswer(
+  caseData: Case,
+  vivaQuestion: string,
+  questionNumber: number,
+  studentAnswer: string,
+): Promise<VivaAnswerEvaluation> {
+  const settings = await getAISettings();
+  const provider = process.env.AI_PROVIDER || settings.provider;
+  const fallback = () => mockEvaluateHistoryVivaAnswer(vivaQuestion, studentAnswer);
+
+  if (provider === 'mock' || provider === 'demo') {
+    return fallback();
+  }
+
+  const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
+  const messages: ChatMessage[] = [
+    {
+      role: 'system',
+      content: `You are a senior OSCE examiner marking one history viva answer.
+
+CASE: ${caseData.titleEn}
+DIAGNOSIS (reference only — do not reveal to student): ${caseData.finalDiagnosis}
+
+RULES:
+1. Respond in English only in the feedback field (2-4 sentences).
+2. advance=true ONLY if the answer is substantially correct OR good enough for an undergraduate OSCE pass (partial credit OK).
+3. advance=false if wrong, off-topic, or too vague (fewer than ~5 meaningful words).
+4. When advance=false: give a brief hint without the full model answer. Encourage retry on the SAME question. Do NOT ask the next question.
+5. When advance=true: brief acknowledgement only (e.g. "Good.", "Correct.", "Fair enough.") — never include the next question text.
+6. Return ONLY valid JSON: {"advance":true|false,"feedback":"..."}${knowledgeContext}`,
+    },
+    {
+      role: 'user',
+      content: `Question ${questionNumber} of 5: ${vivaQuestion}\n\nStudent answer: ${studentAnswer}`,
+    },
+  ];
+
+  const raw = await callOpenAISafe(
+    messages,
+    settings.examinerModel,
+    0.25,
+    220,
+    () => JSON.stringify(fallback()),
+  );
+
+  return parseVivaAnswerEvaluation(raw, fallback);
 }
 
 export async function getExaminerVivaResponse(
@@ -1131,16 +1791,19 @@ export async function getExaminerVivaResponse(
   const caseTitle = lang === 'AR' ? caseData.titleAr || caseData.titleEn : caseData.titleEn;
 
   if (provider === 'mock' || provider === 'demo') {
-    return lang === 'AR'
+    return finalizeExaminerReply(
+      lang === 'AR'
       ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
-      : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`;
+      : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`,
+      lang,
+    );
   }
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content: `You are an Egyptian OSCE examiner conducting a viva for case: ${caseTitle}. Diagnosis: ${caseData.finalDiagnosis}. Ask follow-up questions and provide brief constructive feedback. Do not reveal full answers immediately. ${examinerLangRule(lang)}${knowledgeContext}`,
+      content: `You are an Egyptian OSCE examiner conducting a viva for case: ${caseTitle}. Diagnosis: ${caseData.finalDiagnosis}. Ask follow-up questions and provide brief constructive feedback. Do not reveal full answers immediately. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang)}`,
     },
     ...history.map((m) => ({
       role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',
@@ -1149,7 +1812,7 @@ export async function getExaminerVivaResponse(
     { role: 'user', content: question },
   ];
 
-  return callOpenAISafe(
+  const reply = await callOpenAISafe(
     messages,
     settings.examinerModel,
     settings.temperature,
@@ -1159,6 +1822,7 @@ export async function getExaminerVivaResponse(
         ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
         : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`,
   );
+  return finalizeExaminerReply(reply, lang);
 }
 
 const MANEUVER_LABELS: Record<string, { en: string; ar: string }> = {
@@ -1177,13 +1841,9 @@ function maneuverLabel(maneuverId: string, isArabic: boolean) {
 export function getManeuverOpeningMessage(
   caseData: Case,
   maneuverId: string,
-  language: Language,
+  _language: Language,
 ): string {
-  const lang = resolveExaminerLanguage(language, '');
-  const name = maneuverLabel(maneuverId, lang === 'AR');
-  if (lang === 'AR') {
-    return `أنا بقيّم خطوة ${name} في الفحص السريري. بصّ كويس على الصورة أو الفيديو ووصّف ملاحظاتك بشكل منظم — أي scars أو تشوهات أو علامات ظاهرة.`;
-  }
+  const name = maneuverLabel(maneuverId, false);
   return `I am evaluating your clinical ${name}. Take a close look at the clinical presentation and images provided. Describe your findings systematically and explain what you would look for during ${name}, including any scars, deformities, or visible abnormalities.`;
 }
 
@@ -1192,18 +1852,16 @@ export async function getManeuverExaminerResponse(
   maneuverId: string,
   question: string,
   history: { role: string; content: string }[],
-  language: Language,
+  _language: Language,
 ): Promise<string> {
-  const lang = resolveExaminerLanguage(language, question);
+  const lang = examinationExaminerLanguage();
   const settings = await getAISettings();
   const provider = process.env.AI_PROVIDER || settings.provider;
-  const name = maneuverLabel(maneuverId, lang === 'AR');
-  const caseTitle = lang === 'AR' ? caseData.titleAr || caseData.titleEn : caseData.titleEn;
+  const name = maneuverLabel(maneuverId, false);
+  const caseTitle = caseData.titleEn;
 
   if (provider === 'mock' || provider === 'demo') {
-    return lang === 'AR'
-      ? `محاولة حلوة في ${name}. فكّر في التشخيصات التفريقية والخطوة الجاية في الفحص.`
-      : `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`;
+    return `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`;
   }
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
@@ -1211,21 +1869,7 @@ export async function getManeuverExaminerResponse(
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content:
-        lang === 'AR'
-          ? `أنت ممتحن OSCE مصري كبير بيقيّم خطوة "${name}" في الفحص السريري.
-
-الحالة: ${caseTitle}
-التشخيص (مخفي عن الطالب): ${caseData.finalDiagnosis}
-بيانات الفحص: ${caseData.physicalExam}
-
-القواعد:
-1. قيّم إجابة الطالب في ${name} بس.
-2. اسأل سؤال متابعة واحد مركّز أو ادّي ملاحظة بنّاءة مختصرة.
-3. ما تكشفش التشخيص الكامل فوراً.
-4. اسأل عن التقنية والنتائج المتوقعة والتفكير السريري.
-5. ${examinerLangRule(lang)}${knowledgeContext}`
-          : `You are a senior OSCE clinical examiner conducting an oral viva for the "${name}" step of the physical examination.
+      content: `You are a senior OSCE clinical examiner conducting an oral viva for the "${name}" step of the physical examination.
 
 CASE: ${caseTitle}
 DIAGNOSIS (hidden from student): ${caseData.finalDiagnosis}
@@ -1250,9 +1894,6 @@ RULES:
     settings.examinerModel,
     settings.temperature,
     Math.min(settings.maxTokens, 150),
-    () =>
-      lang === 'AR'
-        ? `محاولة حلوة في ${name}. فكّر في التشخيصات التفريقية والخطوة الجاية في الفحص.`
-        : `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`,
+    () => `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`,
   );
 }

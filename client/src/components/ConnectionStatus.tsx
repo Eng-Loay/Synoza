@@ -1,48 +1,61 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Wifi, WifiOff, ServerCrash } from 'lucide-react';
 import { pingServer } from '../lib/api';
+import { debounce } from '../lib/debounce';
+
 type Status = 'online' | 'unstable' | 'server-offline' | 'internet-offline';
 
 export function ConnectionStatus() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<Status>('online');
   const [latency, setLatency] = useState(0);
+  const checkingRef = useRef(false);
 
   const check = useCallback(async () => {
-    if (!navigator.onLine) {
-      setStatus('internet-offline');
-      setLatency(-1);
-      return;
-    }
+    if (checkingRef.current) return;
+    checkingRef.current = true;
+    try {
+      if (!navigator.onLine) {
+        setStatus('internet-offline');
+        setLatency(-1);
+        return;
+      }
 
-    const result = await pingServer();
-    if (!result.online) {
-      setStatus('server-offline');
-      setLatency(-1);
-    } else if (result.latencyMs > 500) {
-      setStatus('unstable');
-      setLatency(result.latencyMs);
-    } else {
-      setStatus('online');
-      setLatency(result.latencyMs);
+      const result = await pingServer();
+      if (!result.online) {
+        setStatus('server-offline');
+        setLatency(-1);
+      } else if (result.latencyMs > 500) {
+        setStatus('unstable');
+        setLatency(result.latencyMs);
+      } else {
+        setStatus('online');
+        setLatency(result.latencyMs);
+      }
+    } finally {
+      checkingRef.current = false;
     }
   }, []);
 
+  const debouncedCheck = useRef(debounce(() => void check(), 2000)).current;
+
   useEffect(() => {
-    check();
-    const intervalMs = status === 'server-offline' || status === 'internet-offline' ? 4000 : 15000;
-    const interval = setInterval(check, intervalMs);
-    window.addEventListener('online', check);
-    window.addEventListener('offline', check);
-    window.addEventListener('focus', check);
+    void check();
+    const intervalId = window.setInterval(() => void check(), 20_000);
+    const onConnectivity = () => debouncedCheck();
+
+    window.addEventListener('online', onConnectivity);
+    window.addEventListener('offline', onConnectivity);
+    window.addEventListener('focus', debouncedCheck);
+
     return () => {
-      clearInterval(interval);
-      window.removeEventListener('online', check);
-      window.removeEventListener('offline', check);
-      window.removeEventListener('focus', check);
+      window.clearInterval(intervalId);
+      window.removeEventListener('online', onConnectivity);
+      window.removeEventListener('offline', onConnectivity);
+      window.removeEventListener('focus', debouncedCheck);
     };
-  }, [check, status]);
+  }, [check, debouncedCheck]);
 
   const statusConfig = {
     online: {
@@ -60,7 +73,7 @@ export function ConnectionStatus() {
     'server-offline': {
       color: 'bg-amber-500',
       text: t('connectionServerOffline'),
-      title: t('serverOfflineHint'),
+      title: t('connectionServerOffline'),
       Icon: ServerCrash,
     },
     'internet-offline': {

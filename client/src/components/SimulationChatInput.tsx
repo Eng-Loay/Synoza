@@ -43,7 +43,7 @@ export function SimulationChatInput({
   return (
     <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
       {chatError && <p className="text-xs text-red-500 mb-2">{chatError}</p>}
-      {micError && <p className="text-xs text-red-500 mb-2">{micError}</p>}
+      {micError && !isLiveCall && <p className="text-xs text-red-500 mb-2">{micError}</p>}
       {isProcessing && (
         <p className="text-xs text-primary mb-2 animate-pulse">{micProcessingLabel ?? '…'}</p>
       )}

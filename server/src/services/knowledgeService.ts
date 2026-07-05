@@ -7,13 +7,16 @@ export async function getCategoryKnowledgeContext(categoryId: string | null | un
   let currentId: string | null = categoryId;
 
   while (currentId) {
-    categoryIds.push(currentId);
-    const cat: { parentId: string | null } | null = await prisma.knowledgeCategory.findUnique({
+    const cat: { parentId: string | null; isActive: boolean } | null = await prisma.knowledgeCategory.findUnique({
       where: { id: currentId },
-      select: { parentId: true },
+      select: { parentId: true, isActive: true },
     });
-    currentId = cat?.parentId ?? null;
+    if (!cat) break;
+    if (cat.isActive) categoryIds.push(currentId);
+    currentId = cat.parentId ?? null;
   }
+
+  if (categoryIds.length === 0) return '';
 
   const items = await prisma.knowledgeItem.findMany({
     where: { categoryId: { in: categoryIds }, isActive: true },

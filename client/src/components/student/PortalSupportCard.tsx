@@ -1,7 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { Headphones, ArrowRight } from 'lucide-react';
 import { buildSupportWhatsAppUrl } from '../../lib/supportContacts';
-import { WhatsAppIcon } from '../icons/WhatsAppIcon';
 
 interface PortalSupportCardProps {
   isAr?: boolean;
@@ -32,10 +31,10 @@ export function PortalSupportCard({ isAr = false, topic = 'general', compact = f
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 mt-2.5 text-sm font-semibold text-teal-700 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 transition-colors group"
           >
-            <span className="w-7 h-7 rounded-full bg-[#25D366] text-white flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-              <WhatsAppIcon size={14} className="text-white" />
+            <span className="w-7 h-7 rounded-full bg-teal-600/10 dark:bg-teal-500/15 text-teal-700 dark:text-teal-400 flex items-center justify-center shrink-0 group-hover:bg-teal-600/15 transition-colors">
+              <Headphones size={14} />
             </span>
-            <span>{t('portalContactWhatsApp')}</span>
+            <span>{t('portalContactSupport')}</span>
             <ArrowRight size={14} className="opacity-70 group-hover:translate-x-0.5 transition-transform" />
           </a>
         </div>

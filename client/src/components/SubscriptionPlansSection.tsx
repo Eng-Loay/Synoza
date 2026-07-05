@@ -4,6 +4,7 @@ import { Check, Crown, Loader2, Phone, Play, Sparkles, Zap } from 'lucide-react'
 import { useTranslation } from 'react-i18next';
 import { IconBox } from './IconBox';
 import api from '../lib/api';
+import { dispatchEntitlementsChanged } from '../lib/entitlementsEvents';
 
 export interface PlanOption {
   id: string;
@@ -199,7 +200,12 @@ export function SubscriptionPlansSection({ entitlements, plans, isAr }: Subscrip
     setStartingCaseId(caseId);
     try {
       const res = await api.post('/sessions/start', { caseId, language: 'AR' });
-      navigate(`/simulation/${res.data.session.id}`);
+      if (res.data.entitlements) {
+        dispatchEntitlementsChanged(res.data.entitlements);
+      } else {
+        dispatchEntitlementsChanged();
+      }
+      navigate(`/simulation/${res.data.session.id}`, { state: { fromCaseStart: true } });
     } catch {
       /* handled on simulation route */
     } finally {

@@ -14,6 +14,11 @@ import {
   shouldConfirmCaseStart,
   type PendingCaseStart,
 } from '../lib/startCaseConfirm';
+import {
+  dispatchEntitlementsChanged,
+  ENTITLEMENTS_CHANGED_EVENT,
+  readEntitlementsFromEvent,
+} from '../lib/entitlementsEvents';
 
 interface Case {
   id: string;
@@ -164,10 +169,40 @@ export default function StudentDashboard() {
   const randomErrorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    api.get('/categories').then((r) => setRootCategories(r.data.categories));
-    api.get('/student/entitlements').then((r) => {
-      setEntitlements(r.data.entitlements);
-    });
+    const loadEntitlements = () => {
+      api.get('/student/entitlements').then((r) => {
+        setEntitlements(r.data.entitlements);
+      });
+    };
+    const onEntitlementsChanged = (event: Event) => {
+      const detail = readEntitlementsFromEvent(event);
+      if (detail) {
+        setEntitlements(detail as Entitlements);
+        return;
+      }
+      loadEntitlements();
+    };
+    loadEntitlements();
+    window.addEventListener(ENTITLEMENTS_CHANGED_EVENT, onEntitlementsChanged);
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) loadEntitlements();
+    };
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      window.removeEventListener(ENTITLEMENTS_CHANGED_EVENT, onEntitlementsChanged);
+      window.removeEventListener('pageshow', onPageShow);
+    };
+  }, []);
+
+  useEffect(() => {
+    api
+      .get('/categories')
+      .then((r) => {
+        setRootCategories(r.data.categories ?? []);
+      })
+      .catch(() => {
+        setRootCategories([]);
+      });
   }, []);
 
   const selectedBoard = useMemo(
@@ -203,7 +238,6 @@ export default function StudentDashboard() {
   }, [rootCategories, selectedBoardId]);
 
   useEffect(() => {
-    if (!activeCategoryId && !search.trim()) return;
     setLoading(true);
     api
       .get('/cases', {
@@ -212,7 +246,8 @@ export default function StudentDashboard() {
           ...(activeCategoryId && !search.trim() ? { categoryId: activeCategoryId } : {}),
         },
       })
-      .then((r) => setCases(r.data.cases))
+      .then((r) => setCases(r.data.cases ?? []))
+      .catch(() => setCases([]))
       .finally(() => setLoading(false));
   }, [search, activeCategoryId]);
 
@@ -243,7 +278,13 @@ export default function StudentDashboard() {
 
   const launchSession = async (caseId: string) => {
     const res = await api.post('/sessions/start', { caseId, language: 'AR' });
-    navigate(`/simulation/${res.data.session.id}`);
+    if (res.data.entitlements) {
+      setEntitlements(res.data.entitlements);
+      dispatchEntitlementsChanged(res.data.entitlements);
+    } else {
+      dispatchEntitlementsChanged();
+    }
+    navigate(`/simulation/${res.data.session.id}`, { state: { fromCaseStart: true } });
   };
 
   const startStation = async (caseId: string) => {
@@ -294,6 +335,7 @@ export default function StudentDashboard() {
   };
 
   const requestCaseStart = (pending: PendingCaseStart) => {
+    if (!entitlements) return;
     if (shouldConfirmCaseStart(entitlements, pending)) {
       setPendingStart(pending);
       setConfirmOpen(true);
@@ -305,7 +347,7 @@ export default function StudentDashboard() {
   const getCaseAttempts = (caseId: string) => entitlements?.attemptsByCase[caseId] ?? 0;
 
   const canStartCase = (c: Case) => {
-    if (!entitlements) return true;
+    if (!entitlements) return false;
     if (entitlements.isFree) {
       if (!c.isFreeTier) return false;
       return getCaseAttempts(c.id) < entitlements.freeAttemptsPerCase;
@@ -452,7 +494,7 @@ export default function StudentDashboard() {
               ) : (
                 <article
                   key={c.id}
-                  className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/90 overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col"
+                  className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/90 overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col h-full"
                 >
                   <div className="h-44 bg-slate-100 dark:bg-slate-900 relative overflow-hidden">
                     <CaseCoverImage examImages={c.examImages} title={isAr ? c.titleAr : c.titleEn} />
@@ -469,8 +511,8 @@ export default function StudentDashboard() {
                     </div>
                   </div>
 
-                  <div className="p-5 flex-1 flex flex-col gap-4">
-                    <div>
+                  <div className="p-5 flex-1 flex flex-col gap-4 min-h-0">
+                    <div className="flex-1 min-h-0">
                       <p className="text-[10px] font-bold tracking-[0.12em] text-teal-600 dark:text-teal-400 uppercase">
                         {isAr ? c.specialty.nameAr : c.specialty.nameEn}
                       </p>
@@ -489,7 +531,7 @@ export default function StudentDashboard() {
                       type="button"
                       onClick={() => requestCaseStart({ type: 'station', caseId: c.id })}
                       disabled={!canStartCase(c)}
-                      className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 ${
+                      className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 mt-auto shrink-0 ${
                         canStartCase(c)
                           ? 'bg-gradient-to-r from-slate-800 to-teal-800 text-white hover:opacity-95'
                           : 'bg-slate-100 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'

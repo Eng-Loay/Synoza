@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import axios from 'axios';
 import api, { refreshAuthToken } from '../lib/api';
+import { debounce } from '../lib/debounce';
 import {
   clearAuthSession,
   getStoredToken,
@@ -85,17 +86,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     void bootstrapSession();
 
-    const refreshOnFocus = () => {
+    const refreshOnFocus = debounce(() => {
       if (getStoredToken()) void refreshAuthToken();
-    };
-    window.addEventListener('focus', refreshOnFocus);
-    document.addEventListener('visibilitychange', () => {
+    }, 5000);
+
+    const onVisibility = () => {
       if (document.visibilityState === 'visible') refreshOnFocus();
-    });
+    };
+
+    window.addEventListener('focus', refreshOnFocus);
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       cancelled = true;
       window.removeEventListener('focus', refreshOnFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 
