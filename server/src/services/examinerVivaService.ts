@@ -186,7 +186,7 @@ export async function respondToHistoryVivaAnswer(
         advance: true,
         feedback: "That's fine — it's good to acknowledge when you're unsure.",
       }
-    : await evaluateHistoryVivaAnswer(caseData, currentQuestion, questionNumber, studentAnswer);
+    : await evaluateHistoryVivaAnswer(caseData, currentQuestion, questionNumber, studentAnswer, sessionId);
 
   const feedback = evaluation.feedback.trim();
 

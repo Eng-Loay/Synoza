@@ -114,6 +114,7 @@ async function completeTextTurn(
           transcript,
           examinerHistory.map((m) => ({ role: m.role, content: m.content })),
           session.language,
+          session.id,
         )
       : isHistoryExaminerVivaStage(effectiveStage, input.maneuverId)
         ? await respondToHistoryVivaAnswer(
@@ -128,6 +129,7 @@ async function completeTextTurn(
             transcript,
             examinerHistory.map((m) => ({ role: m.role, content: m.content })),
             session.language,
+            session.id,
           );
     replyRole = MessageRole.EXAMINER;
   } else {
@@ -137,6 +139,7 @@ async function completeTextTurn(
 
     replyText = await getPatientResponse(session.case, stageHistory, transcript, sessionLang, {
       voiceTurn: true,
+      sessionId: session.id,
     });
     replyText = sanitizeRealtimePatientTranscript(
       session.case,

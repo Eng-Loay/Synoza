@@ -149,10 +149,79 @@ router.post('/difficulties', async (req, res) => {
 
 router.get('/cases', async (_req, res) => {
   const cases = await prisma.case.findMany({
-    include: { specialty: true, difficulty: true },
+    include: { specialty: true, difficulty: true, category: true },
     orderBy: { createdAt: 'desc' },
   });
   res.json({ cases });
+});
+
+router.get('/cases/:id', async (req, res) => {
+  const caseData = await prisma.case.findUnique({
+    where: { id: req.params.id },
+    include: { specialty: true, difficulty: true, category: true },
+  });
+  if (!caseData) return res.status(404).json({ error: 'Case not found' });
+  res.json({ case: caseData });
+});
+
+router.get('/users/:userId/activity', async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.userId },
+    select: {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      role: true,
+      university: true,
+      createdAt: true,
+    },
+  });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const [entitlements, subscription, sessions, caseAccess] = await Promise.all([
+    getUserEntitlements(user.id),
+    getActiveSubscription(user.id),
+    prisma.session.findMany({
+      where: { userId: user.id },
+      include: {
+        case: { select: { id: true, titleEn: true, titleAr: true } },
+        result: { select: { totalScore: true, createdAt: true } },
+        _count: { select: { messages: true } },
+      },
+      orderBy: { startedAt: 'desc' },
+      take: 100,
+    }),
+    prisma.caseAccess.findMany({
+      where: { userId: user.id },
+      include: { case: { select: { titleEn: true } } },
+      orderBy: { updatedAt: 'desc' },
+    }),
+  ]);
+
+  const totalAiTokens = sessions.reduce((sum, s) => sum + (s.aiTotalTokens ?? 0), 0);
+
+  res.json({
+    user,
+    entitlements,
+    subscription,
+    caseAccess,
+    totalAiTokens,
+    sessions: sessions.map((s) => ({
+      id: s.id,
+      status: s.status,
+      currentStage: s.currentStage,
+      startedAt: s.startedAt,
+      completedAt: s.completedAt,
+      durationSeconds: s.durationSeconds,
+      messageCount: s._count.messages,
+      aiPromptTokens: s.aiPromptTokens,
+      aiCompletionTokens: s.aiCompletionTokens,
+      aiTotalTokens: s.aiTotalTokens,
+      case: s.case,
+      score: s.result?.totalScore ?? null,
+    })),
+  });
 });
 
 router.get('/results', async (_req, res) => {

@@ -335,7 +335,30 @@ function supportsCustomTemperature(model: string): boolean {
   return !/^(gpt-5|o1|o3|o4)/.test(m);
 }
 
-async function callOpenAI(messages: ChatMessage[], model: string, temperature: number, maxTokens: number) {
+type OpenAIUsage = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+
+async function recordSessionAiUsage(sessionId: string, usage: OpenAIUsage | null | undefined) {
+  if (!usage?.total_tokens) return;
+  try {
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: {
+        aiPromptTokens: { increment: usage.prompt_tokens ?? 0 },
+        aiCompletionTokens: { increment: usage.completion_tokens ?? 0 },
+        aiTotalTokens: { increment: usage.total_tokens ?? 0 },
+      },
+    });
+  } catch {
+    /* session may have ended */
+  }
+}
+
+async function callOpenAI(
+  messages: ChatMessage[],
+  model: string,
+  temperature: number,
+  maxTokens: number,
+): Promise<{ content: string; usage: OpenAIUsage | null }> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
 
@@ -352,13 +375,28 @@ async function callOpenAI(messages: ChatMessage[], model: string, temperature: n
         : { max_tokens: maxTokens }),
     });
 
+  const toUsage = (u: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined) =>
+    u?.total_tokens
+      ? {
+          prompt_tokens: u.prompt_tokens ?? 0,
+          completion_tokens: u.completion_tokens ?? 0,
+          total_tokens: u.total_tokens ?? 0,
+        }
+      : null;
+
   try {
     const response = await run(model);
-    return response.choices[0]?.message?.content || '';
+    return {
+      content: response.choices[0]?.message?.content || '',
+      usage: toUsage(response.usage),
+    };
   } catch (error) {
     if (model !== fallbackModel && /realtime|gpt-5/i.test(model)) {
       const response = await run(fallbackModel);
-      return response.choices[0]?.message?.content || '';
+      return {
+        content: response.choices[0]?.message?.content || '',
+        usage: toUsage(response.usage),
+      };
     }
     throw error;
   }
@@ -374,10 +412,13 @@ async function callOpenAISafe(
   model: string,
   temperature: number,
   maxTokens: number,
-  fallback: () => string
+  fallback: () => string,
+  sessionId?: string,
 ): Promise<string> {
   try {
-    return await callOpenAI(messages, model, temperature, maxTokens);
+    const { content, usage } = await callOpenAI(messages, model, temperature, maxTokens);
+    if (sessionId) void recordSessionAiUsage(sessionId, usage);
+    return content;
   } catch (error) {
     logAiFallback('chat completion', error);
     return fallback();
@@ -1383,7 +1424,8 @@ export async function getExaminerEvaluation(
   caseData: Case,
   messages: SessionMessage[],
   lang: 'AR' | 'EN' = 'EN',
-  context: EvaluationSessionContext = {}
+  context: EvaluationSessionContext = {},
+  sessionId?: string,
 ): Promise<EvaluationResult> {
   const transcript = buildSessionTranscript(caseData, messages);
   const mockResult = mockExaminerEvaluation(caseData, messages, lang, context);
@@ -1412,7 +1454,8 @@ export async function getExaminerEvaluation(
     settings.examinerModel,
     0.3,
     4096,
-    () => JSON.stringify(mockResult)
+    () => JSON.stringify(mockResult),
+    sessionId,
   );
 
   try {
@@ -1537,11 +1580,12 @@ export async function getPatientResponse(
   history: { role: string; content: string }[],
   userMessage: string,
   language: Language,
-  options?: { voiceTurn?: boolean },
+  options?: { voiceTurn?: boolean; sessionId?: string },
 ): Promise<string> {
   const normalizedMessage = normalizeStudentMessage(userMessage, language);
   const lang = effectivePatientLanguage(language, normalizedMessage);
   const voiceTurn = !!options?.voiceTurn;
+  const sessionId = options?.sessionId;
   const studentTurn = history.filter((m) => m.role === 'STUDENT').length;
 
   const social = quickSocialPatientReply(caseData, normalizedMessage, lang, history, voiceTurn);
@@ -1605,6 +1649,7 @@ export async function getPatientResponse(
       voiceTurn
         ? 'مش فاهم، ممكن توضّح سؤالك؟'
         : mockPatientResponse(caseData, normalizedMessage, lang, history),
+    sessionId,
   );
 
   const sanitized = sanitizePatientResponse(
@@ -1736,6 +1781,7 @@ export async function evaluateHistoryVivaAnswer(
   vivaQuestion: string,
   questionNumber: number,
   studentAnswer: string,
+  sessionId?: string,
 ): Promise<VivaAnswerEvaluation> {
   const settings = await getAISettings();
   const provider = process.env.AI_PROVIDER || settings.provider;
@@ -1774,6 +1820,7 @@ RULES:
     0.25,
     220,
     () => JSON.stringify(fallback()),
+    sessionId,
   );
 
   return parseVivaAnswerEvaluation(raw, fallback);
@@ -1784,6 +1831,7 @@ export async function getExaminerVivaResponse(
   question: string,
   history: { role: string; content: string }[],
   language: Language = 'AR',
+  sessionId?: string,
 ): Promise<string> {
   const lang = resolveExaminerLanguage(language, question);
   const settings = await getAISettings();
@@ -1821,6 +1869,7 @@ export async function getExaminerVivaResponse(
       lang === 'AR'
         ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
         : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`,
+    sessionId,
   );
   return finalizeExaminerReply(reply, lang);
 }
@@ -1853,6 +1902,7 @@ export async function getManeuverExaminerResponse(
   question: string,
   history: { role: string; content: string }[],
   _language: Language,
+  sessionId?: string,
 ): Promise<string> {
   const lang = examinationExaminerLanguage();
   const settings = await getAISettings();
@@ -1895,5 +1945,6 @@ RULES:
     settings.temperature,
     Math.min(settings.maxTokens, 150),
     () => `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`,
+    sessionId,
   );
 }

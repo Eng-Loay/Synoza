@@ -10,6 +10,8 @@ import api, { pingServer } from '../lib/api';
 import { DashboardLayout } from '../components/DashboardLayout';
 import { AdminQbankTab } from '../components/admin/AdminQbankTab';
 import { AdminUserPlanModal } from '../components/admin/AdminUserPlanModal';
+import { AdminCaseEditor } from '../components/admin/AdminCaseEditor';
+import { AdminStudentDetailModal } from '../components/admin/AdminStudentDetailModal';
 import type { SiteSettings } from '../components/SiteFooter';
 
 type Tab = 'overview' | 'users' | 'cases' | 'results' | 'knowledge' | 'site' | 'qbank';
@@ -91,6 +93,8 @@ export default function AdminDashboard() {
   const [recentSessions, setRecentSessions] = useState<Record<string, unknown>[]>([]);
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [planModalUser, setPlanModalUser] = useState<AdminUserRow | null>(null);
+  const [studentDetailUser, setStudentDetailUser] = useState<AdminUserRow | null>(null);
+  const [caseEditorId, setCaseEditorId] = useState<string | null | false>(false);
   const [cases, setCases] = useState<Record<string, unknown>[]>([]);
   const [results, setResults] = useState<Record<string, unknown>[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
@@ -203,6 +207,10 @@ export default function AdminDashboard() {
 
   const refreshUsers = () => {
     void api.get('/admin/users').then((r) => setUsers(r.data.users as AdminUserRow[]));
+  };
+
+  const refreshCases = () => {
+    void api.get('/admin/cases').then((r) => setCases(r.data.cases));
   };
 
   const formatPlanEndDate = (value?: string | null) => {
@@ -464,6 +472,11 @@ export default function AdminDashboard() {
             onClose={() => setPlanModalUser(null)}
             onSaved={refreshUsers}
           />
+          <AdminStudentDetailModal
+            user={studentDetailUser ?? { id: '', email: '', firstName: '', lastName: '' }}
+            open={studentDetailUser !== null}
+            onClose={() => setStudentDetailUser(null)}
+          />
           <div className="card overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-white">{t('users')}</h2>
@@ -503,13 +516,22 @@ export default function AdminDashboard() {
                     </td>
                     <td>
                       {u.role === 'STUDENT' && (
-                        <button
-                          type="button"
-                          onClick={() => setPlanModalUser(u)}
-                          className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline"
-                        >
-                          {t('adminManagePlan')}
-                        </button>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setStudentDetailUser(u)}
+                            className="text-xs font-semibold text-sky-600 dark:text-sky-400 hover:underline"
+                          >
+                            {t('adminViewActivity')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPlanModalUser(u)}
+                            className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline"
+                          >
+                            {t('adminManagePlan')}
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -522,6 +544,21 @@ export default function AdminDashboard() {
       )}
 
       {tab === 'cases' && (
+        <>
+          <AdminCaseEditor
+            caseId={caseEditorId === false ? null : caseEditorId}
+            open={caseEditorId !== false}
+            onClose={() => setCaseEditorId(false)}
+            onSaved={refreshCases}
+          />
+          <div className="card p-4 mb-4 text-sm text-slate-600 dark:text-slate-300 bg-sky-50/80 dark:bg-sky-950/20 border border-sky-100 dark:border-sky-900">
+            {t('adminOsceUploadGuide')}
+          </div>
+          <div className="flex justify-end mb-3">
+            <button type="button" onClick={() => setCaseEditorId(null)} className="btn-primary flex items-center gap-2">
+              <Plus size={16} /> {t('adminAddCase')}
+            </button>
+          </div>
         <div className="grid gap-3">
           {cases.map((c) => (
             <div key={c.id as string} className="card card-interactive p-4 sm:p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
@@ -534,12 +571,22 @@ export default function AdminDashboard() {
                   <p className="text-sm text-slate-500">{c.patientName as string}</p>
                 </div>
               </div>
-              <span className={`badge ${c.isPublished ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
-                {c.isPublished ? 'Published' : 'Draft'}
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCaseEditorId(c.id as string)}
+                  className="text-xs font-semibold text-violet-600 hover:underline flex items-center gap-1"
+                >
+                  <Pencil size={14} /> {t('edit')}
+                </button>
+                <span className={`badge ${c.isPublished ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                  {c.isPublished ? 'Published' : 'Draft'}
+                </span>
+              </div>
             </div>
           ))}
         </div>
+        </>
       )}
 
       {tab === 'results' && (
@@ -793,7 +840,14 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {tab === 'qbank' && <AdminQbankTab />}
+      {tab === 'qbank' && (
+        <>
+          <div className="card p-4 mb-4 text-sm text-slate-600 dark:text-slate-300 bg-violet-50/80 dark:bg-violet-950/20 border border-violet-100 dark:border-violet-900">
+            {t('adminQbankUploadGuide')}
+          </div>
+          <AdminQbankTab />
+        </>
+      )}
 
       {tab === 'site' && (
         <div className="grid lg:grid-cols-2 gap-6">

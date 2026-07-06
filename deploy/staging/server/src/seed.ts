@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { ensurePartnerUniversities } from './data/defaultUniversities.js';
+import { seedQbankCatalog } from './data/seedQbank.js';
 
 const prisma = new PrismaClient();
 
@@ -473,6 +474,8 @@ Do NOT volunteer the diagnosis. Answer in Egyptian Arabic when student uses Arab
   }
 
   await ensurePartnerUniversities(prisma);
+
+  await seedQbankCatalog(prisma);
 
   await prisma.siteSettings.upsert({
     where: { id: 'default' },

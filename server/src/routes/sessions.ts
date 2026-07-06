@@ -388,6 +388,7 @@ router.post('/:id/chat', async (req, res) => {
       stageHistory,
       message,
       session.language === 'EN' ? 'EN' : 'AR',
+      { sessionId: session.id },
     );
 
     const patientMessage = await prisma.message.create({
@@ -470,6 +471,7 @@ router.post('/:id/examiner', async (req, res) => {
         message,
         examinerHistory.map((m) => ({ role: m.role, content: m.content })),
         session.language,
+        session.id,
       )
     : isHistoryExaminerVivaStage(effectiveStage, maneuverId)
       ? await respondToHistoryVivaAnswer(
@@ -484,6 +486,7 @@ router.post('/:id/examiner', async (req, res) => {
           message,
           examinerHistory.map((m) => ({ role: m.role, content: m.content })),
           session.language,
+          session.id,
         );
 
   const examinerMessage = await prisma.message.create({
@@ -557,7 +560,8 @@ router.post('/:id/complete', async (req, res) => {
     session.case,
     sessionMessages,
     evaluationLang,
-    { completedManeuvers }
+    { completedManeuvers },
+    session.id,
   );
 
   await prisma.session.update({
