@@ -17,6 +17,7 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  resetPassword: (token: string, password: string) => Promise<User>;
   register: (data: Record<string, string>) => Promise<{ email: string }>;
   verifyOtp: (email: string, code: string) => Promise<void>;
   logout: () => void;
@@ -118,6 +119,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const resetPassword = async (token: string, password: string) => {
+    const res = await api.post('/auth/reset-password', { token, password });
+    if (res.data.token && res.data.user) {
+      setAuthSession(res.data.token, res.data.user);
+      setToken(res.data.token);
+      setUser(res.data.user);
+      return res.data.user as User;
+    }
+    throw new Error('PASSWORD_RESET_LOGIN_UNAVAILABLE');
+  };
+
   const register = async (data: Record<string, string>) => {
     const res = await api.post('/auth/register', data);
     return { email: res.data.email as string };
@@ -137,7 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, verifyOtp, logout, updateUser }}>
+    <AuthContext.Provider value={{ user, token, loading, login, resetPassword, register, verifyOtp, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );

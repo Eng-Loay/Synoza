@@ -164,6 +164,89 @@ export function getOtpEmailSubject(lang: EmailLang = 'en'): string {
   return copy[lang].subject;
 }
 
+const resetCopy = {
+  en: {
+    subject: 'Reset your Synoza password',
+    title: 'Reset your password',
+    hello: (name: string) => `Hello ${name},`,
+    intro: 'We received a request to reset your Synoza password. Use the button below to choose a new password.',
+    cta: 'Reset password',
+    expires: 'This link expires in 1 hour.',
+    ignore: 'If you did not request a password reset, you can safely ignore this email.',
+    textIntro: 'Reset your Synoza password using this link:',
+    textIgnore: 'If you did not request this, ignore this email.',
+  },
+  ar: {
+    subject: 'إعادة تعيين كلمة مرور Synoza',
+    title: 'إعادة تعيين كلمة المرور',
+    hello: (name: string) => `مرحباً ${name}،`,
+    intro: 'تلقّينا طلباً لإعادة تعيين كلمة مرور حسابك على Synoza. استخدم الزر أدناه لاختيار كلمة مرور جديدة.',
+    cta: 'إعادة تعيين كلمة المرور',
+    expires: 'ينتهي هذا الرابط خلال ساعة واحدة.',
+    ignore: 'إذا لم تطلب إعادة تعيين كلمة المرور، يمكنك تجاهل هذا البريد بأمان.',
+    textIntro: 'أعد تعيين كلمة مرور Synoza عبر هذا الرابط:',
+    textIgnore: 'إذا لم تطلب ذلك، تجاهل هذا البريد.',
+  },
+} as const;
+
+export function buildPasswordResetEmailHtml(
+  firstName: string,
+  resetUrl: string,
+  lang: EmailLang = 'en',
+): string {
+  const t = resetCopy[lang];
+  const isAr = lang === 'ar';
+  const safeName = escapeHtml(firstName);
+  const safeUrl = escapeHtml(resetUrl);
+  const fontFamily = isAr
+    ? "'Tajawal','Segoe UI',Tahoma,Arial,sans-serif"
+    : "'Segoe UI',Roboto,Arial,sans-serif";
+  const align = isAr ? 'right' : 'left';
+  const dir = isAr ? 'rtl' : 'ltr';
+
+  return `<!DOCTYPE html>
+<html lang="${lang}" dir="${dir}">
+<head><meta charset="utf-8" /><title>${t.title}</title></head>
+<body style="margin:0;padding:24px;background:#f0f2f5;font-family:${fontFamily};text-align:${align};">
+  <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+    <table width="100%" style="max-width:520px;background:#fff;border-radius:16px;padding:32px;">
+      <tr><td>
+        <h1 style="margin:0 0 16px;font-size:22px;color:#0f172a;">${t.title}</h1>
+        <p style="margin:0 0 12px;color:#334155;">${t.hello(safeName)}</p>
+        <p style="margin:0 0 20px;color:#475569;line-height:1.6;">${t.intro}</p>
+        <p style="margin:0 0 24px;">
+          <a href="${safeUrl}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:12px 20px;border-radius:10px;font-weight:600;">${t.cta}</a>
+        </p>
+        <p style="margin:0 0 12px;color:#64748b;font-size:13px;">${t.expires}</p>
+        <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.5;">${t.ignore}</p>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`;
+}
+
+export function buildPasswordResetEmailText(
+  firstName: string,
+  resetUrl: string,
+  lang: EmailLang = 'en',
+): string {
+  const t = resetCopy[lang];
+  return `Synoza — ${t.title}
+
+${t.hello(firstName)}
+
+${t.textIntro}
+${resetUrl}
+
+${t.expires}
+
+${t.textIgnore}`;
+}
+
+export function getPasswordResetEmailSubject(lang: EmailLang = 'en'): string {
+  return resetCopy[lang].subject;
+}
+
 export function getEmailSiteUrl(): string {
   const clientUrl = process.env.CLIENT_URL || 'https://synoza.anmka.com';
   if (/localhost|127\.0\.0\.1/i.test(clientUrl)) {

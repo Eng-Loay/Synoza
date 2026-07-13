@@ -2,7 +2,10 @@ import nodemailer from 'nodemailer';
 import {
   buildOtpEmailHtml,
   buildOtpEmailText,
+  buildPasswordResetEmailHtml,
+  buildPasswordResetEmailText,
   getOtpEmailSubject,
+  getPasswordResetEmailSubject,
   getEmailSiteUrl,
   normalizeEmailLang,
   type EmailLang,
@@ -48,6 +51,26 @@ export async function sendOtpEmail(
     subject: getOtpEmailSubject(emailLang),
     text: buildOtpEmailText(firstName, code, siteUrl, emailLang),
     html: buildOtpEmailHtml(firstName, code, siteUrl, emailLang),
+  });
+}
+
+export async function sendPasswordResetEmail(
+  to: string,
+  firstName: string,
+  resetToken: string,
+  lang: EmailLang = 'en',
+) {
+  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER!;
+  const fromName = process.env.SMTP_FROM_NAME || 'Synoza';
+  const emailLang = normalizeEmailLang(lang);
+  const resetUrl = `${getEmailSiteUrl()}/reset-password?token=${encodeURIComponent(resetToken)}`;
+  const transporter = getTransporter();
+  await transporter.sendMail({
+    from: `"${fromName}" <${fromEmail}>`,
+    to,
+    subject: getPasswordResetEmailSubject(emailLang),
+    text: buildPasswordResetEmailText(firstName, resetUrl, emailLang),
+    html: buildPasswordResetEmailHtml(firstName, resetUrl, emailLang),
   });
 }
 

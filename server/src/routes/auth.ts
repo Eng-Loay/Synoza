@@ -6,7 +6,7 @@ import { body, validationResult } from 'express-validator';
 import { prisma } from '../lib/prisma.js';
 import { authenticate, verifyTokenForRefresh } from '../middleware/auth.js';
 import { issueAndSendOtp, verifyUserOtp } from '../services/otpService.js';
-import { isSmtpConfigured } from '../services/emailService.js';
+import { isSmtpConfigured, sendPasswordResetEmail } from '../services/emailService.js';
 import { normalizeEmailLang } from '../services/emailTemplates.js';
 
 const router = Router();
@@ -59,6 +59,11 @@ router.post(
     body('firstName').trim().notEmpty(),
     body('lastName').trim().notEmpty(),
     body('studentId').trim().notEmpty().isLength({ min: 3, max: 32 }),
+    body('phone')
+      .trim()
+      .customSanitizer((value) => String(value ?? '').replace(/\D/g, ''))
+      .matches(/^\d{11}$/)
+      .withMessage('Phone must be exactly 11 digits'),
   ],
   async (req: Request, res: Response) => {
     const errors = validationResult(req);
@@ -71,6 +76,7 @@ router.post(
     const { email, password, firstName, lastName, phone, university, studentId, lang } = req.body;
     const preferredLang = normalizeEmailLang(lang);
     const normalizedStudentId = String(studentId).trim();
+    const normalizedPhone = String(phone ?? '').replace(/\D/g, '');
 
     const studentIdTaken = await prisma.user.findUnique({ where: { studentId: normalizedStudentId } });
     if (studentIdTaken && studentIdTaken.email !== email) {
@@ -88,7 +94,7 @@ router.post(
           preferredLang,
           firstName,
           lastName,
-          phone,
+          phone: normalizedPhone,
           university,
           studentId: normalizedStudentId,
           passwordHash: await bcrypt.hash(password, 12),
@@ -117,7 +123,7 @@ router.post(
         passwordHash,
         firstName,
         lastName,
-        phone,
+        phone: normalizedPhone,
         university,
         studentId: normalizedStudentId,
         emailVerified: false,
@@ -229,6 +235,9 @@ router.post(
 );
 
 router.post('/forgot-password', [body('email').isEmail().normalizeEmail()], async (req: Request, res: Response) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
   const { email } = req.body;
   const user = await prisma.user.findUnique({ where: { email } });
 
@@ -239,7 +248,15 @@ router.post('/forgot-password', [body('email').isEmail().normalizeEmail()], asyn
       where: { id: user.id },
       data: { resetToken, resetExpires },
     });
-    if (process.env.NODE_ENV === 'development') {
+
+    if (isSmtpConfigured()) {
+      try {
+        await sendPasswordResetEmail(user.email, user.firstName, resetToken, normalizeEmailLang(user.preferredLang));
+      } catch (err) {
+        console.error('[auth/forgot-password] email failed:', err);
+        return res.status(503).json({ error: 'Failed to send reset email' });
+      }
+    } else if (process.env.NODE_ENV === 'development') {
       return res.json({ message: 'Reset token generated', resetToken });
     }
   }
@@ -251,6 +268,9 @@ router.post(
   '/reset-password',
   [body('token').notEmpty(), body('password').isLength({ min: 6 })],
   async (req: Request, res: Response) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
     const { token, password } = req.body;
     const user = await prisma.user.findFirst({
       where: { resetToken: token, resetExpires: { gt: new Date() } },
@@ -259,12 +279,21 @@ router.post(
     if (!user) return res.status(400).json({ error: 'Invalid or expired reset token' });
 
     const passwordHash = await bcrypt.hash(password, 12);
-    await prisma.user.update({
+    const updated = await prisma.user.update({
       where: { id: user.id },
       data: { passwordHash, resetToken: null, resetExpires: null },
     });
 
-    res.json({ message: 'Password reset successful' });
+    if (!updated.isActive || !updated.emailVerified) {
+      return res.json({ message: 'Password reset successful' });
+    }
+
+    void prisma.user.update({ where: { id: updated.id }, data: { lastSeenAt: new Date() } }).catch(() => {});
+    res.json({
+      message: 'Password reset successful',
+      token: signToken(updated),
+      user: publicUser(updated),
+    });
   }
 );
 

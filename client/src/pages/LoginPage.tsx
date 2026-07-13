@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 import { Mail, ArrowRight, ChevronLeft } from 'lucide-react';
@@ -15,11 +15,20 @@ export default function LoginPage() {
   const { t, i18n } = useTranslation();
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if ((location.state as { passwordReset?: boolean } | null)?.passwordReset) {
+      setInfo(t('passwordResetSuccess'));
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [location, navigate, t]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,6 +84,11 @@ export default function LoginPage() {
               </Link>
             </div>
 
+            {info && (
+              <div className="bg-teal-50 text-teal-800 p-3 rounded-xl mb-4 text-sm border border-teal-100">
+                {info}
+              </div>
+            )}
             {error && (
               <div className="bg-red-50 text-red-600 p-3 rounded-xl mb-4 text-sm border border-red-100">
                 {error}
@@ -104,7 +118,9 @@ export default function LoginPage() {
                   <label className="text-[10px] font-bold tracking-[0.14em] text-slate-400 uppercase">
                     {t('password')}
                   </label>
-                  <span className="text-xs text-teal-600">{t('forgotPassword')}</span>
+                  <Link to="/forgot-password" className="text-xs text-teal-600 hover:underline">
+                    {t('forgotPassword')}
+                  </Link>
                 </div>
                 <PasswordInput
                   label=""

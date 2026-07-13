@@ -48,15 +48,22 @@ export default function RegisterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const phoneDigits = form.phone.replace(/\D/g, '');
+    if (phoneDigits.length !== 11) {
+      setError(t('phoneInvalid'));
+      return;
+    }
     setLoading(true);
     try {
       const lang = i18n.language || getAppLang();
-      const { email } = await register({ ...form, lang });
+      const { email } = await register({ ...form, phone: phoneDigits, lang });
       navigate(verifyEmailPath(email, lang));
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response?.status === 409) {
         const msg = err.response.data?.error as string | undefined;
         setError(msg === 'Student ID already registered' ? t('studentIdAlreadyRegistered') : t('emailAlreadyRegistered'));
+      } else if (axios.isAxiosError(err) && err.response?.status === 400) {
+        setError(t('phoneInvalid'));
       } else if (axios.isAxiosError(err) && err.response?.status === 503) {
         const failedEmail = err.response.data?.email as string | undefined;
         if (failedEmail) {
@@ -125,7 +132,18 @@ export default function RegisterPage() {
               />
               <div>
                 <label className="block text-sm font-medium mb-1.5">{t('phone')}</label>
-                <input className="input-field" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="01024828652" />
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  className="input-field"
+                  value={form.phone}
+                  onChange={(e) => setForm({ ...form, phone: e.target.value.replace(/\D/g, '').slice(0, 11) })}
+                  placeholder="01024828652"
+                  required
+                  minLength={11}
+                  maxLength={11}
+                  pattern="\d{11}"
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1.5">{t('university')}</label>
