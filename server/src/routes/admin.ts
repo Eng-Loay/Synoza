@@ -2,69 +2,31 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../lib/prisma.js';
 import { authenticate, authorize } from '../middleware/auth.js';
-import { Role, type SubscriptionPlan } from '@prisma/client';
+import { Prisma, Role, type SubscriptionPlan } from '@prisma/client';
 import {
-  getPlanConfig,
+  getPlanDefinition,
   getUserEntitlements,
   getActiveSubscription,
   setUserSubscriptionPlan,
-  PLAN_CATALOG,
+  listPlanConfigs,
+  clearPlanCache,
+  ensurePlanConfigsSeeded,
 } from '../services/subscriptionService.js';
 import { clearAISettingsCache } from '../services/aiService.js';
+import {
+  getAiUsageSummary,
+  getCostRatesMap,
+  clearCostRatesCache,
+  ensureDefaultCostRates,
+} from '../services/aiUsageService.js';
+import { getRankProgress } from '../services/xpService.js';
 import adminQbankRoutes from './adminQbank.js';
+import adminCasesRoutes from './adminCases.js';
 
 const router = Router();
 
 router.use(authenticate);
 router.use(authorize(Role.ADMIN));
-
-router.get('/stats', async (_req, res) => {
-  const [users, cases, sessions, completedSessions, avgScore] = await Promise.all([
-    prisma.user.count(),
-    prisma.case.count(),
-    prisma.session.count(),
-    prisma.session.count({ where: { status: 'COMPLETED' } }),
-    prisma.result.aggregate({ _avg: { totalScore: true } }),
-  ]);
-
-  const recentSessions = await prisma.session.findMany({
-    take: 10,
-    orderBy: { startedAt: 'desc' },
-    include: {
-      user: { select: { firstName: true, lastName: true, email: true } },
-      case: { select: { titleEn: true } },
-    },
-  });
-
-  res.json({
-    stats: {
-      users,
-      cases,
-      sessions,
-      completedSessions,
-      averageScore: avgScore._avg.totalScore || 0,
-    },
-    recentSessions,
-  });
-});
-
-router.get('/users', async (_req, res) => {
-  const users = await prisma.user.findMany({
-    select: {
-      id: true,
-      email: true,
-      firstName: true,
-      lastName: true,
-      role: true,
-      isActive: true,
-      university: true,
-      createdAt: true,
-      subscriptions: { take: 1, orderBy: { createdAt: 'desc' } },
-    },
-    orderBy: { createdAt: 'desc' },
-  });
-  res.json({ users });
-});
 
 const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
   'FREE',
@@ -73,6 +35,354 @@ const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
   'PACKAGE_300',
   'INSTITUTION',
 ];
+
+function parseDateParam(value: unknown, fallback: Date): Date {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? fallback : d;
+}
+
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function endOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+
+function bucketKey(date: Date, granularity: 'day' | 'week' | 'month') {
+  const d = new Date(date);
+  if (granularity === 'month') {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+  if (granularity === 'week') {
+    const day = new Date(d);
+    day.setHours(0, 0, 0, 0);
+    day.setDate(day.getDate() - day.getDay());
+    return day.toISOString().slice(0, 10);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+router.get('/stats', async (req, res) => {
+  const now = new Date();
+  const defaultFrom = new Date(now);
+  defaultFrom.setDate(defaultFrom.getDate() - 30);
+  const from = startOfDay(parseDateParam(req.query.from, defaultFrom));
+  const to = endOfDay(parseDateParam(req.query.to, now));
+  const granularity =
+    req.query.granularity === 'week' || req.query.granularity === 'month'
+      ? req.query.granularity
+      : 'day';
+
+  const range = { gte: from, lte: to };
+
+  const [
+    usersTotal,
+    cases,
+    sessionsInRange,
+    completedInRange,
+    newUsersInRange,
+    avgScoreInRange,
+    revenueAgg,
+    allTimeSessions,
+    allTimeCompleted,
+    allTimeAvg,
+    recentSessions,
+    sessionsForSeries,
+    usersForSeries,
+    paymentsForSeries,
+  ] = await Promise.all([
+    prisma.user.count(),
+    prisma.case.count(),
+    prisma.session.count({ where: { startedAt: range } }),
+    prisma.session.count({ where: { status: 'COMPLETED', startedAt: range } }),
+    prisma.user.count({ where: { createdAt: range } }),
+    prisma.result.aggregate({
+      where: { createdAt: range },
+      _avg: { totalScore: true },
+    }),
+    prisma.paymentOrder.aggregate({
+      where: { status: 'PAID', paidAt: range },
+      _sum: { amountEgp: true },
+    }),
+    prisma.session.count(),
+    prisma.session.count({ where: { status: 'COMPLETED' } }),
+    prisma.result.aggregate({ _avg: { totalScore: true } }),
+    prisma.session.findMany({
+      take: 10,
+      where: { startedAt: range },
+      orderBy: { startedAt: 'desc' },
+      include: {
+        user: { select: { firstName: true, lastName: true, email: true } },
+        case: { select: { titleEn: true } },
+      },
+    }),
+    prisma.session.findMany({
+      where: { startedAt: range },
+      select: { startedAt: true, status: true },
+    }),
+    prisma.user.findMany({
+      where: { createdAt: range },
+      select: { createdAt: true },
+    }),
+    prisma.paymentOrder.findMany({
+      where: { status: 'PAID', paidAt: range },
+      select: { paidAt: true, amountEgp: true },
+    }),
+  ]);
+
+  const seriesMap: Record<
+    string,
+    { date: string; sessions: number; completedSessions: number; newUsers: number; revenueEgp: number }
+  > = {};
+
+  const ensureBucket = (key: string) => {
+    if (!seriesMap[key]) {
+      seriesMap[key] = {
+        date: key,
+        sessions: 0,
+        completedSessions: 0,
+        newUsers: 0,
+        revenueEgp: 0,
+      };
+    }
+    return seriesMap[key];
+  };
+
+  for (const s of sessionsForSeries) {
+    const b = ensureBucket(bucketKey(s.startedAt, granularity));
+    b.sessions += 1;
+    if (s.status === 'COMPLETED') b.completedSessions += 1;
+  }
+  for (const u of usersForSeries) {
+    ensureBucket(bucketKey(u.createdAt, granularity)).newUsers += 1;
+  }
+  for (const p of paymentsForSeries) {
+    if (!p.paidAt) continue;
+    ensureBucket(bucketKey(p.paidAt, granularity)).revenueEgp += p.amountEgp;
+  }
+
+  res.json({
+    from: from.toISOString(),
+    to: to.toISOString(),
+    granularity,
+    stats: {
+      users: usersTotal,
+      cases,
+      sessions: sessionsInRange,
+      completedSessions: completedInRange,
+      newUsers: newUsersInRange,
+      averageScore: avgScoreInRange._avg.totalScore || 0,
+      revenueEgp: revenueAgg._sum.amountEgp || 0,
+      allTimeSessions,
+      allTimeCompleted,
+      allTimeAverageScore: allTimeAvg._avg.totalScore || 0,
+    },
+    series: Object.values(seriesMap).sort((a, b) => a.date.localeCompare(b.date)),
+    recentSessions,
+  });
+});
+
+router.get('/users', async (req, res) => {
+  const university = typeof req.query.university === 'string' ? req.query.university.trim() : '';
+  const plan = typeof req.query.plan === 'string' ? req.query.plan.trim() : '';
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+  const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || '50'), 10) || 50));
+
+  const where: Prisma.UserWhereInput = {};
+  const and: Prisma.UserWhereInput[] = [];
+  if (university) and.push({ university });
+  if (q) {
+    and.push({
+      OR: [
+        { firstName: { contains: q } },
+        { lastName: { contains: q } },
+        { email: { contains: q } },
+        { phone: { contains: q } },
+      ],
+    });
+  }
+  if (plan && SUBSCRIPTION_PLANS.includes(plan as SubscriptionPlan)) {
+    if (plan === 'FREE') {
+      and.push({
+        OR: [
+          { subscriptions: { none: { status: 'ACTIVE' } } },
+          { subscriptions: { some: { status: 'ACTIVE', plan: 'FREE' } } },
+        ],
+      });
+    } else {
+      and.push({ subscriptions: { some: { status: 'ACTIVE', plan: plan as SubscriptionPlan } } });
+    }
+  }
+  if (and.length) where.AND = and;
+
+  const [total, users, universities] = await Promise.all([
+    prisma.user.count({ where }),
+    prisma.user.findMany({
+      where,
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        isActive: true,
+        university: true,
+        academicYear: true,
+        avatarUrl: true,
+        totalXp: true,
+        studentId: true,
+        lastSeenAt: true,
+        createdAt: true,
+        subscriptions: {
+          where: { status: 'ACTIVE' },
+          take: 1,
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.user.findMany({
+      where: { university: { not: null } },
+      select: { university: true },
+      distinct: ['university'],
+    }),
+  ]);
+
+  res.json({
+    users,
+    total,
+    page,
+    pageSize,
+    universities: universities
+      .map((u) => u.university)
+      .filter((v): v is string => !!v)
+      .sort(),
+  });
+});
+
+router.get('/users/:userId/profile', async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.userId },
+    select: {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      phone: true,
+      avatarUrl: true,
+      university: true,
+      academicYear: true,
+      studentId: true,
+      lastSeenAt: true,
+      totalXp: true,
+      role: true,
+      isActive: true,
+      createdAt: true,
+    },
+  });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const [entitlements, subscription, qbankModules, recentSessions, completedCount, results] =
+    await Promise.all([
+      getUserEntitlements(user.id),
+      getActiveSubscription(user.id),
+      prisma.qbankModuleEntitlement.findMany({
+        where: { userId: user.id },
+      }),
+      prisma.session.findMany({
+        where: { userId: user.id },
+        take: 10,
+        orderBy: { startedAt: 'desc' },
+        include: {
+          case: { select: { titleEn: true, titleAr: true } },
+          result: { select: { totalScore: true } },
+        },
+      }),
+      prisma.session.count({ where: { userId: user.id, status: 'COMPLETED' } }),
+      prisma.result.findMany({
+        where: { session: { userId: user.id } },
+        select: {
+          totalScore: true,
+          weaknesses: true,
+          clinicalErrors: true,
+          missedQuestions: true,
+        },
+      }),
+    ]);
+
+  const moduleIds = qbankModules.map((m) => m.moduleId);
+  const modules =
+    moduleIds.length > 0
+      ? await prisma.qbankModule.findMany({
+          where: { id: { in: moduleIds } },
+          select: { id: true, nameEn: true, nameAr: true },
+        })
+      : [];
+
+  const avgScore =
+    results.length > 0
+      ? results.reduce((sum, r) => sum + (r.totalScore || 0), 0) / results.length
+      : 0;
+
+  const phraseCounts = new Map<string, number>();
+  const addPhrases = (text: string) => {
+    for (const line of text.split(/\n+/)) {
+      const cleaned = line.replace(/^[-•*\d.)\s]+/, '').trim();
+      if (cleaned.length < 4) continue;
+      phraseCounts.set(cleaned, (phraseCounts.get(cleaned) || 0) + 1);
+    }
+  };
+  for (const r of results) {
+    addPhrases(r.weaknesses || '');
+    addPhrases(r.clinicalErrors || '');
+    addPhrases(r.missedQuestions || '');
+  }
+  const commonMistakes = [...phraseCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([phrase, count]) => ({ phrase, count }));
+
+  const planDef = await getPlanDefinition(subscription?.plan ?? 'FREE');
+
+  res.json({
+    user: {
+      ...user,
+      rankProgress: (() => {
+        const rp = getRankProgress(user.totalXp ?? 0);
+        return {
+          rank: rp.currentRank.nameEn,
+          nextRank: rp.nextRank?.nameEn,
+          progress: rp.progressPercent,
+        };
+      })(),
+    },
+    subscription: subscription
+      ? {
+          ...subscription,
+          planNameEn: planDef.labelEn,
+          planNameAr: planDef.labelAr,
+        }
+      : null,
+    entitlements,
+    qbankModules: modules,
+    activity: {
+      recentSessions,
+      completedCount,
+      averageScore: avgScore,
+    },
+    commonMistakes,
+  });
+});
 
 router.get('/users/:userId/entitlements', async (req, res) => {
   const user = await prisma.user.findUnique({
@@ -88,27 +398,38 @@ router.get('/users/:userId/entitlements', async (req, res) => {
 
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const [entitlements, subscription] = await Promise.all([
+  const [entitlements, subscription, plans] = await Promise.all([
     getUserEntitlements(user.id),
     getActiveSubscription(user.id),
+    listPlanConfigs(),
   ]);
 
   res.json({
     user,
     entitlements,
     subscription,
-    plans: SUBSCRIPTION_PLANS.map((id) => ({
-      id,
-      ...PLAN_CATALOG[id as keyof typeof PLAN_CATALOG],
+    plans: plans.map((p) => ({
+      id: p.id,
+      priceEgp: p.priceEgp,
+      casesQuota: p.casesQuota,
+      durationMonths: p.durationMonths,
+      labelEn: p.labelEn,
+      labelAr: p.labelAr,
     })),
   });
 });
 
 router.patch('/users/:id', async (req, res) => {
-  const { role, isActive } = req.body;
+  const { role, isActive, academicYear, university, phone } = req.body;
+  const data: Prisma.UserUpdateInput = {};
+  if (role !== undefined) data.role = role;
+  if (isActive !== undefined) data.isActive = isActive;
+  if (academicYear !== undefined) data.academicYear = academicYear || null;
+  if (university !== undefined) data.university = university || null;
+  if (phone !== undefined) data.phone = phone || null;
   const user = await prisma.user.update({
     where: { id: req.params.id },
-    data: { role, isActive },
+    data,
   });
   res.json({ user });
 });
@@ -120,6 +441,98 @@ router.post('/users', async (req, res) => {
     data: { email, passwordHash, firstName, lastName, role, university, emailVerified: true },
   });
   res.status(201).json({ user });
+});
+
+router.get('/plans', async (_req, res) => {
+  await ensurePlanConfigsSeeded();
+  const plans = await listPlanConfigs();
+  res.json({ plans });
+});
+
+router.put('/plans', async (req, res) => {
+  const items = Array.isArray(req.body?.plans) ? req.body.plans : [];
+  await ensurePlanConfigsSeeded();
+
+  for (const item of items) {
+    const plan = item.id || item.plan;
+    if (!plan || !SUBSCRIPTION_PLANS.includes(plan)) continue;
+    await prisma.planConfig.upsert({
+      where: { plan },
+      create: {
+        plan,
+        nameEn: String(item.nameEn || item.labelEn || plan),
+        nameAr: String(item.nameAr || item.labelAr || plan),
+        priceEgp: Number(item.priceEgp) || 0,
+        casesQuota: Number(item.casesQuota) || 0,
+        durationMonths: Number(item.durationMonths) || 0,
+        isActive: item.isActive !== false,
+        sortOrder: Number(item.sortOrder) || 0,
+      },
+      update: {
+        ...(item.nameEn !== undefined || item.labelEn !== undefined
+          ? { nameEn: String(item.nameEn || item.labelEn) }
+          : {}),
+        ...(item.nameAr !== undefined || item.labelAr !== undefined
+          ? { nameAr: String(item.nameAr || item.labelAr) }
+          : {}),
+        ...(item.priceEgp !== undefined ? { priceEgp: Number(item.priceEgp) || 0 } : {}),
+        ...(item.casesQuota !== undefined ? { casesQuota: Number(item.casesQuota) || 0 } : {}),
+        ...(item.durationMonths !== undefined
+          ? { durationMonths: Number(item.durationMonths) || 0 }
+          : {}),
+        ...(item.isActive !== undefined ? { isActive: Boolean(item.isActive) } : {}),
+        ...(item.sortOrder !== undefined ? { sortOrder: Number(item.sortOrder) || 0 } : {}),
+      },
+    });
+  }
+
+  clearPlanCache();
+  const plans = await listPlanConfigs();
+  res.json({ plans });
+});
+
+router.get('/ai-usage', async (req, res) => {
+  const now = new Date();
+  const defaultFrom = new Date(now);
+  defaultFrom.setDate(defaultFrom.getDate() - 30);
+  const from = startOfDay(parseDateParam(req.query.from, defaultFrom));
+  const to = endOfDay(parseDateParam(req.query.to, now));
+  const data = await getAiUsageSummary(from, to);
+  res.json({ from: from.toISOString(), to: to.toISOString(), ...data });
+});
+
+router.get('/ai-usage/rates', async (_req, res) => {
+  await ensureDefaultCostRates();
+  const map = await getCostRatesMap();
+  const rates = Object.entries(map)
+    .filter(([model]) => model !== 'default')
+    .map(([model, r]) => ({ model, ...r }));
+  res.json({ rates });
+});
+
+router.put('/ai-usage/rates', async (req, res) => {
+  const items = Array.isArray(req.body?.rates) ? req.body.rates : [];
+  for (const item of items) {
+    if (!item?.model) continue;
+    await prisma.aiCostRate.upsert({
+      where: { model: String(item.model) },
+      create: {
+        model: String(item.model),
+        inputPer1MUsd: Number(item.inputPer1MUsd) || 0,
+        outputPer1MUsd: Number(item.outputPer1MUsd) || 0,
+      },
+      update: {
+        inputPer1MUsd: Number(item.inputPer1MUsd) || 0,
+        outputPer1MUsd: Number(item.outputPer1MUsd) || 0,
+      },
+    });
+  }
+  clearCostRatesCache();
+  const map = await getCostRatesMap();
+  const rates = Object.entries(map)
+    .filter(([model]) => model !== 'default')
+    .map(([model, r]) => ({ model, ...r }));
+  res.json({ rates });
 });
 
 router.get('/specialties', async (_req, res) => {
@@ -147,14 +560,6 @@ router.post('/difficulties', async (req, res) => {
   res.status(201).json({ difficulty });
 });
 
-router.get('/cases', async (_req, res) => {
-  const cases = await prisma.case.findMany({
-    include: { specialty: true, difficulty: true },
-    orderBy: { createdAt: 'desc' },
-  });
-  res.json({ cases });
-});
-
 router.get('/results', async (_req, res) => {
   const results = await prisma.result.findMany({
     include: {
@@ -179,7 +584,39 @@ router.get('/ai-settings', async (_req, res) => {
 router.put('/ai-settings', async (req, res) => {
   let settings = await prisma.aISettings.findFirst();
   if (!settings) settings = await prisma.aISettings.create({ data: {} });
-  settings = await prisma.aISettings.update({ where: { id: settings.id }, data: req.body });
+  const {
+    provider,
+    patientModel,
+    examinerModel,
+    temperature,
+    maxTokens,
+    systemPromptAr,
+    systemPromptEn,
+    patientSystemPromptAr,
+    patientSystemPromptEn,
+    examinerSystemPromptAr,
+    examinerSystemPromptEn,
+    maxContextMessages,
+  } = req.body;
+  settings = await prisma.aISettings.update({
+    where: { id: settings.id },
+    data: {
+      ...(provider !== undefined ? { provider } : {}),
+      ...(patientModel !== undefined ? { patientModel } : {}),
+      ...(examinerModel !== undefined ? { examinerModel } : {}),
+      ...(temperature !== undefined ? { temperature: Number(temperature) } : {}),
+      ...(maxTokens !== undefined ? { maxTokens: Number(maxTokens) } : {}),
+      ...(systemPromptAr !== undefined ? { systemPromptAr } : {}),
+      ...(systemPromptEn !== undefined ? { systemPromptEn } : {}),
+      ...(patientSystemPromptAr !== undefined ? { patientSystemPromptAr } : {}),
+      ...(patientSystemPromptEn !== undefined ? { patientSystemPromptEn } : {}),
+      ...(examinerSystemPromptAr !== undefined ? { examinerSystemPromptAr } : {}),
+      ...(examinerSystemPromptEn !== undefined ? { examinerSystemPromptEn } : {}),
+      ...(maxContextMessages !== undefined
+        ? { maxContextMessages: Math.max(2, Math.min(100, Number(maxContextMessages) || 12)) }
+        : {}),
+    },
+  });
   clearAISettingsCache();
   res.json({ settings });
 });
@@ -207,7 +644,7 @@ router.patch('/subscriptions/:id', async (req, res) => {
   if (status !== undefined) data.status = status;
   if (endDate !== undefined) data.endDate = endDate;
   if (plan !== undefined) {
-    const config = getPlanConfig(plan);
+    const config = await getPlanDefinition(plan);
     data.plan = plan;
     data.casesQuota = config.casesQuota;
     data.priceEgp = config.priceEgp;
@@ -408,5 +845,6 @@ router.put('/site-settings', async (req, res) => {
 });
 
 router.use('/qbank', adminQbankRoutes);
+router.use('/cases', adminCasesRoutes);
 
 export default router;

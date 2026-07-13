@@ -115,7 +115,24 @@ function seededShuffle<T>(items: T[], seed: string): T[] {
   return arr;
 }
 
+function parseCaseExaminerQuestions(caseData: Case): string[] {
+  try {
+    const parsed = JSON.parse(caseData.examinerQuestions || '[]') as Array<{ question?: string } | string>;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((row) => (typeof row === 'string' ? row : String(row.question ?? '')).trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 export function pickVivaQuestionsForSession(sessionId: string, caseData: Case): string[] {
+  const custom = parseCaseExaminerQuestions(caseData);
+  if (custom.length > 0) {
+    const seed = `${sessionId}:${caseData.id}:${caseData.titleEn}:custom`;
+    return seededShuffle(custom, seed).slice(0, VIVA_QUESTIONS_PER_SESSION);
+  }
   const pool = QUESTION_POOLS[casePoolKey(caseData)] ?? QUESTION_POOLS.default;
   const seed = `${sessionId}:${caseData.id}:${caseData.titleEn}`;
   return seededShuffle(pool, seed).slice(0, VIVA_QUESTIONS_PER_SESSION);

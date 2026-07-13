@@ -388,6 +388,7 @@ router.post('/:id/chat', async (req, res) => {
       stageHistory,
       message,
       session.language === 'EN' ? 'EN' : 'AR',
+      { userId: req.user!.id, sessionId: session.id },
     );
 
     const patientMessage = await prisma.message.create({
@@ -470,6 +471,7 @@ router.post('/:id/examiner', async (req, res) => {
         message,
         examinerHistory.map((m) => ({ role: m.role, content: m.content })),
         session.language,
+        { userId: req.user!.id, sessionId: session.id },
       )
     : isHistoryExaminerVivaStage(effectiveStage, maneuverId)
       ? await respondToHistoryVivaAnswer(
@@ -484,6 +486,7 @@ router.post('/:id/examiner', async (req, res) => {
           message,
           examinerHistory.map((m) => ({ role: m.role, content: m.content })),
           session.language,
+          { userId: req.user!.id, sessionId: session.id },
         );
 
   const examinerMessage = await prisma.message.create({
@@ -529,10 +532,27 @@ router.post('/:id/complete', async (req, res) => {
   const timedOut =
     req.body?.timedOut === true || durationSeconds >= STATION_DURATION_SECONDS;
 
-  if (session.messages.length === 0 && !timedOut) {
-    return res.status(400).json({ error: 'No messages in session to evaluate' });
+  // If the session was already completed, return the existing result instead of erroring.
+  if (session.status === 'COMPLETED') {
+    const existingResult = await prisma.result.findUnique({ where: { sessionId: session.id } });
+    if (existingResult) {
+      const existingRank = existingResult.xpRankSnapshot
+        ? (JSON.parse(existingResult.xpRankSnapshot) as Awaited<ReturnType<typeof applySessionXp>>['rankProgress'])
+        : getRankProgress(
+            (
+              await prisma.user.findUnique({
+                where: { id: session.userId },
+                select: { totalXp: true },
+              })
+            )?.totalXp ?? 0,
+          );
+      return res.json({ result: existingResult, rankProgress: existingRank });
+    }
   }
 
+  // A finish request (manual or timed out) is always intentional. An empty transcript
+  // simply yields a low-participation evaluation rather than a hard error, so students
+  // are never trapped on the station screen.
   const sessionMessages = session.messages.map((m) => ({
     role: m.role,
     content: m.content,
@@ -557,7 +577,8 @@ router.post('/:id/complete', async (req, res) => {
     session.case,
     sessionMessages,
     evaluationLang,
-    { completedManeuvers }
+    { completedManeuvers },
+    { userId: req.user!.id, sessionId: session.id },
   );
 
   await prisma.session.update({

@@ -10,6 +10,7 @@ import {
   type QbankSavedModuleGroup,
 } from '../../lib/qbankSavedQuestions';
 import { QBANK } from '../../lib/qbankTheme';
+import { splitQuestionContent } from '../../lib/qbankQuestionContent';
 
 export default function StudentMcqSavedPage() {
   const { t, i18n } = useTranslation();
@@ -98,10 +99,13 @@ export default function StudentMcqSavedPage() {
               <ul className="divide-y divide-slate-100">
                 {group.questions.map((record) => (
                   <li key={record.key} className="px-5 py-4">
+                    {(() => {
+                      const display = splitQuestionContent(record.question.text, record.question.explanation);
+                      return (
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium text-slate-900 leading-relaxed">
-                          {record.question.text}
+                          {display.stem}
                         </p>
                         <p className="text-[11px] text-slate-400 mt-2">
                           {record.question.chapter} · {record.question.source}
@@ -154,6 +158,16 @@ export default function StudentMcqSavedPage() {
                                 </div>
                               );
                             })}
+                            {display.explanation?.trim() && (
+                              <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3">
+                                <p className="text-[11px] font-bold uppercase tracking-wide text-violet-700 mb-1">
+                                  {t('portalMcqExplanation')}
+                                </p>
+                                <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
+                                  {display.explanation}
+                                </p>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -166,6 +180,8 @@ export default function StudentMcqSavedPage() {
                         <Trash2 size={16} />
                       </button>
                     </div>
+                      );
+                    })()}
                   </li>
                 ))}
               </ul>

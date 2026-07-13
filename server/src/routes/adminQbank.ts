@@ -9,6 +9,11 @@ import {
   validateQuestionInput,
   grantModuleAccess,
 } from '../services/qbankService.js';
+import {
+  parseStructuredQbankImport,
+  sanitizeImportedReferenceName,
+  type StructuredQbankQuestion,
+} from '../lib/qbankStructuredImportParser.js';
 
 const router = Router();
 
@@ -58,27 +63,39 @@ function buildCsvContent(rows: string[][]): string {
 }
 
 async function buildImportTemplateCsv(): Promise<string> {
-  const [term, chapters, references] = await Promise.all([
-    prisma.qbankTerm.findFirst({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }),
-    prisma.qbankChapter.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' }, take: 2 }),
-    prisma.qbankReference.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' }, take: 2 }),
-  ]);
+  const defaults = {
+    termId: '401',
+    moduleId: 'med-1',
+    chapterNames: ['Esophagus', 'Stomach'],
+    referenceNames: ['Lang', 'Bailey & Love'],
+  };
 
-  const mod = term
-    ? await prisma.qbankModule.findFirst({
-        where: { termId: term.id, isActive: true },
-        orderBy: { sortOrder: 'asc' },
-      })
-    : null;
+  let termId = defaults.termId;
+  let moduleId = defaults.moduleId;
+  let chapterNames = defaults.chapterNames;
+  let referenceNames = defaults.referenceNames;
 
-  const termId = term?.id ?? '401';
-  const moduleId = mod?.id ?? 'med-1';
-  const chapterNames = chapters.length
-    ? chapters.map((c) => c.nameEn)
-    : ['Esophagus', 'Stomach'];
-  const referenceNames = references.length
-    ? references.map((r) => r.nameEn)
-    : ['Lang', 'Bailey & Love'];
+  try {
+    const [term, chapters, references] = await Promise.all([
+      prisma.qbankTerm.findFirst({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }),
+      prisma.qbankChapter.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' }, take: 2 }),
+      prisma.qbankReference.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' }, take: 2 }),
+    ]);
+
+    const mod = term
+      ? await prisma.qbankModule.findFirst({
+          where: { termId: term.id, isActive: true },
+          orderBy: { sortOrder: 'asc' },
+        })
+      : null;
+
+    if (term?.id) termId = term.id;
+    if (mod?.id) moduleId = mod.id;
+    if (chapters.length) chapterNames = chapters.map((c) => c.nameEn);
+    if (references.length) referenceNames = references.map((r) => r.nameEn);
+  } catch (error) {
+    console.warn('[qbank template] Using static defaults:', error);
+  }
 
   const rows: string[][] = [Array.from(CSV_COLUMNS)];
 
@@ -123,6 +140,141 @@ async function resolveReferenceId(name: string) {
     where: { nameEn: name.trim(), isActive: true },
   });
   return reference?.id ?? null;
+}
+
+async function ensureChapterId(
+  name: string,
+  cache?: Map<string, string>,
+): Promise<string> {
+  const trimmed = name.trim() || 'General';
+  const hit = cache?.get(`ch:${trimmed.toLowerCase()}`);
+  if (hit) return hit;
+  const existing = await prisma.qbankChapter.findFirst({ where: { nameEn: trimmed } });
+  if (existing) {
+    cache?.set(`ch:${trimmed.toLowerCase()}`, existing.id);
+    return existing.id;
+  }
+  const created = await prisma.qbankChapter.create({
+    data: { nameEn: trimmed, isActive: true },
+  });
+  cache?.set(`ch:${trimmed.toLowerCase()}`, created.id);
+  return created.id;
+}
+
+async function ensureReferenceId(
+  name: string,
+  cache?: Map<string, string>,
+): Promise<string> {
+  const trimmed = sanitizeImportedReferenceName(name);
+  const hit = cache?.get(`ref:${trimmed.toLowerCase()}`);
+  if (hit) return hit;
+  const existing = await prisma.qbankReference.findFirst({ where: { nameEn: trimmed } });
+  if (existing) {
+    cache?.set(`ref:${trimmed.toLowerCase()}`, existing.id);
+    return existing.id;
+  }
+  const created = await prisma.qbankReference.create({
+    data: { nameEn: trimmed, isActive: true },
+  });
+  cache?.set(`ref:${trimmed.toLowerCase()}`, created.id);
+  return created.id;
+}
+
+type StructuredImportRow = {
+  rowNum: number;
+  valid: boolean;
+  errors: string[];
+  data: {
+    moduleId: string;
+    chapterId: string;
+    referenceId: string;
+    text: string;
+    options: string[];
+    correctIndex: number;
+    explanation: string | null;
+    subjectTags: string[] | null;
+    isPublished: boolean;
+  } | null;
+  preview?: {
+    chapter: string;
+    reference: string;
+    text: string;
+    correctIndex: number;
+  };
+};
+
+async function validateStructuredQuestion(
+  question: StructuredQbankQuestion,
+  rowNum: number,
+  termId: string,
+  moduleId: string,
+  autoCreateLookups: boolean,
+  lookupCache?: Map<string, string>,
+): Promise<StructuredImportRow> {
+  const errors: string[] = [];
+
+  const mod = await prisma.qbankModule.findFirst({
+    where: { id: moduleId, termId, isActive: true },
+  });
+  if (!mod) errors.push(`Module ${moduleId} not found in term ${termId}`);
+
+  errors.push(
+    ...validateQuestionInput({
+      text: question.text,
+      options: question.options,
+      correctIndex: question.correctIndex,
+    }),
+  );
+
+  if (!question.chapter.trim()) errors.push('Chapter is required');
+
+  let chapterId: string | null = null;
+  let referenceId: string | null = null;
+
+  if (question.chapter.trim()) {
+    if (autoCreateLookups) {
+      chapterId = await ensureChapterId(question.chapter, lookupCache);
+    } else {
+      chapterId = await resolveChapterId(question.chapter);
+      if (!chapterId) errors.push(`Chapter "${question.chapter}" not found`);
+    }
+  }
+
+  const referenceName = sanitizeImportedReferenceName(question.source);
+  if (autoCreateLookups) {
+    referenceId = await ensureReferenceId(referenceName, lookupCache);
+  } else {
+    referenceId = await resolveReferenceId(referenceName);
+    if (!referenceId) errors.push(`Reference "${referenceName}" not found`);
+  }
+
+  const subjectTags = question.tags.length ? question.tags : null;
+
+  return {
+    rowNum,
+    valid: errors.length === 0 && !!mod && !!chapterId && !!referenceId,
+    errors,
+    data:
+      errors.length === 0 && mod && chapterId && referenceId
+        ? {
+            moduleId: mod.id,
+            chapterId,
+            referenceId,
+            text: question.text,
+            options: question.options,
+            correctIndex: question.correctIndex,
+            explanation: question.explanation?.trim() || null,
+            subjectTags,
+            isPublished: true,
+          }
+        : null,
+    preview: {
+      chapter: question.chapter,
+      reference: referenceName,
+      text: question.text.slice(0, 120) + (question.text.length > 120 ? '…' : ''),
+      correctIndex: question.correctIndex,
+    },
+  };
 }
 
 async function validateImportRow(row: CsvRow, rowNum: number) {
@@ -471,6 +623,7 @@ router.post('/questions', async (req, res) => {
     text,
     options,
     correctIndex,
+    explanation,
     subjectTags,
     isPublished = true,
     sortOrder = 0,
@@ -490,6 +643,7 @@ router.post('/questions', async (req, res) => {
       text: String(text).trim(),
       options: JSON.stringify(options),
       correctIndex: Number(correctIndex),
+      explanation: explanation != null ? String(explanation).trim() || null : null,
       subjectTags: subjectTags?.length ? JSON.stringify(subjectTags) : null,
       isPublished: !!isPublished,
       sortOrder: Number(sortOrder) || 0,
@@ -510,7 +664,7 @@ router.put('/questions/:id', async (req, res) => {
   const existing = await prisma.qbankQuestion.findUnique({ where: { id: req.params.id } });
   if (!existing) return res.status(404).json({ error: 'Question not found' });
 
-  const { moduleId, chapterId, referenceId, text, options, correctIndex, subjectTags, isPublished, sortOrder } =
+  const { moduleId, chapterId, referenceId, text, options, correctIndex, explanation, subjectTags, isPublished, sortOrder } =
     req.body;
 
   const nextOptions = options ?? parseOptions(existing.options);
@@ -531,6 +685,9 @@ router.put('/questions/:id', async (req, res) => {
       ...(text != null ? { text: String(text).trim() } : {}),
       ...(options != null ? { options: JSON.stringify(options) } : {}),
       ...(correctIndex != null ? { correctIndex: Number(correctIndex) } : {}),
+      ...(explanation !== undefined
+        ? { explanation: explanation != null ? String(explanation).trim() || null : null }
+        : {}),
       ...(subjectTags != null
         ? { subjectTags: subjectTags.length ? JSON.stringify(subjectTags) : null }
         : {}),
@@ -556,10 +713,15 @@ router.delete('/questions/:id', async (req, res) => {
 
 // --- Bulk import ---
 router.get('/questions/import/template', async (_req, res) => {
-  const csv = await buildImportTemplateCsv();
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="qbank-import-template.csv"');
-  res.send(csv);
+  try {
+    const csv = await buildImportTemplateCsv();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="qbank-import-template.csv"');
+    res.send(csv);
+  } catch (error) {
+    console.error('[qbank template]', error);
+    res.status(500).json({ error: 'Could not build import template' });
+  }
 });
 
 router.post('/questions/import/preview', async (req, res) => {
@@ -622,6 +784,115 @@ router.post('/questions/import/commit', async (req, res) => {
     inserted,
     skipped: results.length - validRows.length,
     invalid: results.filter((r) => !r.valid),
+  });
+});
+
+router.post('/questions/import/structured/preview', async (req, res) => {
+  const content = String(req.body?.content ?? '').trim();
+  const termId = String(req.body?.termId ?? '').trim();
+  const moduleId = String(req.body?.moduleId ?? '').trim();
+  const autoCreateLookups = req.body?.autoCreateLookups !== false;
+
+  if (!content) return res.status(400).json({ error: 'content is required' });
+  if (!termId || !moduleId) return res.status(400).json({ error: 'termId and moduleId are required' });
+
+  const { questions, errors: parseErrors } = parseStructuredQbankImport(content);
+  if (!questions.length && parseErrors.length) {
+    return res.status(400).json({ error: parseErrors.join(' ') });
+  }
+
+  const lookupCache = new Map<string, string>();
+  const results: StructuredImportRow[] = [];
+  for (let i = 0; i < questions.length; i += 1) {
+    results.push(
+      await validateStructuredQuestion(
+        questions[i],
+        i + 1,
+        termId,
+        moduleId,
+        autoCreateLookups,
+        lookupCache,
+      ),
+    );
+  }
+  const valid = results.filter((r) => r.valid);
+  const invalid = results.filter((r) => !r.valid);
+
+  res.json({
+    total: results.length,
+    validCount: valid.length,
+    invalidCount: invalid.length,
+    parseErrors,
+    invalid,
+    validPreview: valid.map((r) => r.preview),
+  });
+});
+
+router.post('/questions/import/structured/commit', async (req, res) => {
+  const content = String(req.body?.content ?? '').trim();
+  const termId = String(req.body?.termId ?? '').trim();
+  const moduleId = String(req.body?.moduleId ?? '').trim();
+  const autoCreateLookups = req.body?.autoCreateLookups !== false;
+
+  if (!content) return res.status(400).json({ error: 'content is required' });
+  if (!termId || !moduleId) return res.status(400).json({ error: 'termId and moduleId are required' });
+
+  const { questions, errors: parseErrors } = parseStructuredQbankImport(content);
+  if (!questions.length) {
+    return res.status(400).json({ error: parseErrors.join(' ') || 'No questions parsed' });
+  }
+
+  const lookupCache = new Map<string, string>();
+  const results: StructuredImportRow[] = [];
+  for (let i = 0; i < questions.length; i += 1) {
+    results.push(
+      await validateStructuredQuestion(
+        questions[i],
+        i + 1,
+        termId,
+        moduleId,
+        autoCreateLookups,
+        lookupCache,
+      ),
+    );
+  }
+  const validRows = results.filter((r) => r.valid && r.data);
+
+  let inserted = 0;
+  const insertedPreview: Array<{ text: string; chapter: string; reference: string }> = [];
+  for (const row of validRows) {
+    if (!row.data) continue;
+    await prisma.qbankQuestion.create({
+      data: {
+        moduleId: row.data.moduleId,
+        chapterId: row.data.chapterId,
+        referenceId: row.data.referenceId,
+        text: row.data.text,
+        options: JSON.stringify(row.data.options),
+        correctIndex: row.data.correctIndex,
+        explanation: row.data.explanation,
+        subjectTags: row.data.subjectTags?.length ? JSON.stringify(row.data.subjectTags) : null,
+        isPublished: row.data.isPublished,
+      },
+    });
+    inserted += 1;
+    if (row.preview) {
+      insertedPreview.push({
+        text: row.preview.text,
+        chapter: row.preview.chapter,
+        reference: row.preview.reference,
+      });
+    }
+  }
+
+  res.json({
+    inserted,
+    skipped: results.length - validRows.length,
+    parseErrors,
+    invalid: results.filter((r) => !r.valid),
+    insertedPreview,
+    moduleId,
+    termId,
   });
 });
 

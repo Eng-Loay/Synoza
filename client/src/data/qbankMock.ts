@@ -23,6 +23,7 @@ export type QbankQuestion = {
   text: string;
   options: string[];
   correctIndex?: number;
+  explanation?: string;
   chapter: string;
   source: string;
   chapterId?: string;

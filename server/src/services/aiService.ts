@@ -1,9 +1,11 @@
 import OpenAI from 'openai';
+import type { ChatCompletion } from 'openai/resources/chat/completions';
 import type { Case, Language } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { getCategoryKnowledgeContext } from './knowledgeService.js';
 import { toEgyptianColloquial } from './arabicColloquial.js';
 import { fixArabicSpeechTranscript } from './arabicSttFix.js';
+import { logAiUsage, type AiUsageMeta } from './aiUsageService.js';
 
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -290,6 +292,22 @@ async function getAISettings() {
       },
     });
   }
+
+  // One-time migrate legacy prompts → patient prompts
+  if (
+    (settings.systemPromptAr || settings.systemPromptEn) &&
+    !settings.patientSystemPromptAr &&
+    !settings.patientSystemPromptEn
+  ) {
+    settings = await prisma.aISettings.update({
+      where: { id: settings.id },
+      data: {
+        patientSystemPromptAr: settings.systemPromptAr,
+        patientSystemPromptEn: settings.systemPromptEn,
+      },
+    });
+  }
+
   return {
     ...settings,
     provider: process.env.AI_PROVIDER || settings.provider,
@@ -298,6 +316,7 @@ async function getAISettings() {
       settings.patientModel ||
       'gpt-4o-mini',
     examinerModel: process.env.OPENAI_EXAMINER_MODEL || process.env.OPENAI_MODEL || settings.examinerModel || defaultModel,
+    maxContextMessages: settings.maxContextMessages ?? 12,
   };
 }
 
@@ -320,9 +339,22 @@ async function getAISettingsCached() {
 function adminSystemPromptSuffix(
   settings: Awaited<ReturnType<typeof getAISettings>>,
   lang: 'AR' | 'EN',
+  role: 'patient' | 'examiner' = 'patient',
 ): string {
-  const custom = lang === 'AR' ? settings.systemPromptAr : settings.systemPromptEn;
+  let custom: string | null | undefined;
+  if (role === 'examiner') {
+    custom = lang === 'AR' ? settings.examinerSystemPromptAr : settings.examinerSystemPromptEn;
+  } else {
+    custom =
+      (lang === 'AR' ? settings.patientSystemPromptAr : settings.patientSystemPromptEn) ||
+      (lang === 'AR' ? settings.systemPromptAr : settings.systemPromptEn);
+  }
   return custom?.trim() ? `\n\nADMIN SYSTEM PROMPT:\n${custom.trim()}` : '';
+}
+
+function contextWindow(history: { role: string; content: string }[], maxMessages: number) {
+  const n = Math.max(2, Math.min(maxMessages || 12, 100));
+  return history.slice(-n);
 }
 
 function usesMaxCompletionTokens(model: string): boolean {
@@ -335,30 +367,78 @@ function supportsCustomTemperature(model: string): boolean {
   return !/^(gpt-5|o1|o3|o4)/.test(m);
 }
 
-async function callOpenAI(messages: ChatMessage[], model: string, temperature: number, maxTokens: number) {
+function effectiveCompletionBudget(model: string, maxTokens: number): number {
+  // Reasoning models (gpt-5, o-series) may consume the whole budget internally before visible text.
+  if (usesMaxCompletionTokens(model)) return Math.max(maxTokens, 512);
+  return maxTokens;
+}
+
+function extractCompletionText(response: ChatCompletion): string {
+  return response.choices[0]?.message?.content?.trim() || '';
+}
+
+async function callOpenAI(
+  messages: ChatMessage[],
+  model: string,
+  temperature: number,
+  maxTokens: number,
+  usageMeta?: AiUsageMeta,
+) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
 
   const openai = new OpenAI({ apiKey });
-  const fallbackModel = process.env.OPENAI_FALLBACK_MODEL || 'gpt-5-mini';
+  const fallbackModel = process.env.OPENAI_FALLBACK_MODEL || 'gpt-4o-mini';
 
-  const run = (activeModel: string) =>
+  const run = (activeModel: string, tokenBudget: number) =>
     openai.chat.completions.create({
       model: activeModel,
       messages,
       ...(supportsCustomTemperature(activeModel) ? { temperature } : {}),
       ...(usesMaxCompletionTokens(activeModel)
-        ? { max_completion_tokens: maxTokens }
-        : { max_tokens: maxTokens }),
+        ? { max_completion_tokens: effectiveCompletionBudget(activeModel, tokenBudget) }
+        : { max_tokens: tokenBudget }),
     });
 
+  const record = (activeModel: string, response: ChatCompletion, success: boolean, error?: string) => {
+    if (!usageMeta) return;
+    void logAiUsage({
+      feature: usageMeta.feature,
+      model: activeModel,
+      usage: response.usage,
+      userId: usageMeta.userId,
+      sessionId: usageMeta.sessionId,
+      success,
+      error,
+    });
+  };
+
   try {
-    const response = await run(model);
-    return response.choices[0]?.message?.content || '';
+    let response = (await run(model, maxTokens)) as ChatCompletion;
+    let text = extractCompletionText(response);
+    if (!text && model !== fallbackModel) {
+      response = (await run(fallbackModel, Math.max(maxTokens, 220))) as ChatCompletion;
+      text = extractCompletionText(response);
+      record(fallbackModel, response, !!text, text ? undefined : 'empty model response');
+    } else {
+      record(model, response, !!text, text ? undefined : 'empty model response');
+    }
+    return text;
   } catch (error) {
     if (model !== fallbackModel && /realtime|gpt-5/i.test(model)) {
-      const response = await run(fallbackModel);
-      return response.choices[0]?.message?.content || '';
+      const response = (await run(fallbackModel, Math.max(maxTokens, 220))) as ChatCompletion;
+      record(fallbackModel, response, true);
+      return extractCompletionText(response);
+    }
+    if (usageMeta) {
+      void logAiUsage({
+        feature: usageMeta.feature,
+        model,
+        userId: usageMeta.userId,
+        sessionId: usageMeta.sessionId,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     throw error;
   }
@@ -374,10 +454,16 @@ async function callOpenAISafe(
   model: string,
   temperature: number,
   maxTokens: number,
-  fallback: () => string
+  fallback: () => string,
+  usageMeta?: AiUsageMeta,
 ): Promise<string> {
   try {
-    return await callOpenAI(messages, model, temperature, maxTokens);
+    const text = (await callOpenAI(messages, model, temperature, maxTokens, usageMeta)).trim();
+    if (!text) {
+      logAiFallback('chat completion', new Error('empty model response'));
+      return fallback();
+    }
+    return text;
   } catch (error) {
     logAiFallback('chat completion', error);
     return fallback();
@@ -1028,6 +1114,64 @@ function mockPatientResponse(
   return fallbacks[studentTurn % fallbacks.length];
 }
 
+function buildZeroParticipationEvaluation(
+  caseData: Case,
+  messages: SessionMessage[],
+  lang: 'AR' | 'EN' = 'EN'
+): EvaluationResult {
+  const caseTitle = lang === 'AR' ? caseData.titleAr || caseData.titleEn : caseData.titleEn;
+  const reportTitle = pickLang('OSCE Evaluation Report', 'تقرير تقييم OSCE', lang);
+  const perfSummary = pickLang('Performance Summary', 'ملخص الأداء', lang);
+  const commLabel = pickLang('Communication', 'التواصل', lang);
+  const histLabel = pickLang('History Taking', 'أخذ التاريخ', lang);
+  const reasonLabel = pickLang('Clinical Reasoning', 'التفكير السريري', lang);
+  const orgLabel = pickLang('Organization', 'التنظيم', lang);
+  const closeLabel = pickLang('Closing', 'الختام', lang);
+  const overallLabel = pickLang('Overall Score', 'الدرجة الإجمالية', lang);
+  const caseLabel = pickLang('Case', 'الحالة', lang);
+  const noAttempt = pickLang(
+    'No attempt: the station was ended without any interaction with the patient or examiner.',
+    'لا توجد محاولة: تم إنهاء المحطة دون أي تفاعل مع المريض أو الممتحن.',
+    lang
+  );
+
+  return {
+    totalScore: 0,
+    communicationScore: 0,
+    historyTakingScore: 0,
+    clinicalReasonScore: 0,
+    organizationScore: 0,
+    closingScore: 0,
+    strengths: pickLang(
+      'None recorded — no part of the station was attempted.',
+      'لا يوجد — لم تتم محاولة أي جزء من المحطة.',
+      lang
+    ),
+    weaknesses: noAttempt,
+    missedQuestions: pickLang(
+      'The entire station was missed: history, examination, diagnosis, and management were not attempted.',
+      'فاتت المحطة بالكامل: لم تتم محاولة التاريخ أو الفحص أو التشخيص أو الإدارة.',
+      lang
+    ),
+    clinicalErrors: pickLang(
+      'Not applicable — no clinical actions were taken.',
+      'لا ينطبق — لم تُتخذ أي إجراءات سريرية.',
+      lang
+    ),
+    recommendations: pickLang(
+      'Attempt the station: introduce yourself, take a focused history, perform the examination, then give a diagnosis and management plan.',
+      'حاول إكمال المحطة: قدّم نفسك، خذ تاريخاً مركزاً، أجرِ الفحص، ثم قدّم التشخيص وخطة الإدارة.',
+      lang
+    ),
+    idealApproach: pickLang(
+      `Introduce yourself, confirm identity, explore ${caseData.chiefComplaint} using SOCRATES with exertional symptoms, ask about rheumatic fever and penicillin prophylaxis, complete examination with murmur description, then state ${caseData.finalDiagnosis} with echo referral and management plan.`,
+      `قدّم نفسك، تأكد من الهوية، استكشف ${caseData.chiefComplaint} بـ SOCRATES مع أعراض المجهود، اسأل عن الحمى الروماتيزمية والبروفيلاكس بالبنسلين، أكمل الفحص مع وصف الـ murmur، ثم اذكر ${caseData.finalDiagnosis} مع إحالة echo وخطة إدارة.`,
+      lang
+    ),
+    fullReport: `## ${reportTitle}\n\n**${caseLabel}:** ${caseTitle}\n**${overallLabel}:** 0/100\n\n> ${noAttempt}\n\n### ${perfSummary}\n- ${commLabel}: 0/100\n- ${histLabel}: 0/100\n- ${reasonLabel}: 0/100\n- ${orgLabel}: 0/100\n- ${closeLabel}: 0/100`,
+  };
+}
+
 function mockExaminerEvaluation(
   caseData: Case,
   messages: SessionMessage[],
@@ -1037,6 +1181,14 @@ function mockExaminerEvaluation(
   const studentMessages = messages.filter((m) => m.role === 'STUDENT');
   const studentText = studentMessages.map((m) => m.content).join(' ').toLowerCase();
   const studentWordCount = studentText.split(/\s+/).filter((w) => w.length > 1).length;
+  const completedManeuversEarly = context.completedManeuvers ?? [];
+
+  // No participation at all → a genuine zero. The student did nothing, so every
+  // dimension must score 0 rather than inheriting the base constants below.
+  if (studentWordCount === 0 && completedManeuversEarly.length === 0) {
+    return buildZeroParticipationEvaluation(caseData, messages, lang);
+  }
+
   const historyMsgCount = studentMessages.filter(
     (m) => m.stage === 'history' || m.stage === 'history:examiner'
   ).length;
@@ -1383,7 +1535,8 @@ export async function getExaminerEvaluation(
   caseData: Case,
   messages: SessionMessage[],
   lang: 'AR' | 'EN' = 'EN',
-  context: EvaluationSessionContext = {}
+  context: EvaluationSessionContext = {},
+  usageMeta?: Omit<AiUsageMeta, 'feature'>,
 ): Promise<EvaluationResult> {
   const transcript = buildSessionTranscript(caseData, messages);
   const mockResult = mockExaminerEvaluation(caseData, messages, lang, context);
@@ -1395,7 +1548,9 @@ export async function getExaminerEvaluation(
   }
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
-  const systemPrompt = buildExaminerEvaluationPrompt(caseData, knowledgeContext, lang);
+  const systemPrompt =
+    buildExaminerEvaluationPrompt(caseData, knowledgeContext, lang) +
+    adminSystemPromptSuffix(settings, lang, 'examiner');
   const chatMessages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
     {
@@ -1412,7 +1567,8 @@ export async function getExaminerEvaluation(
     settings.examinerModel,
     0.3,
     4096,
-    () => JSON.stringify(mockResult)
+    () => JSON.stringify(mockResult),
+    { feature: 'evaluation', userId: usageMeta?.userId, sessionId: usageMeta?.sessionId },
   );
 
   try {
@@ -1537,7 +1693,7 @@ export async function getPatientResponse(
   history: { role: string; content: string }[],
   userMessage: string,
   language: Language,
-  options?: { voiceTurn?: boolean },
+  options?: { voiceTurn?: boolean; userId?: string; sessionId?: string },
 ): Promise<string> {
   const normalizedMessage = normalizeStudentMessage(userMessage, language);
   const lang = effectivePatientLanguage(language, normalizedMessage);
@@ -1571,14 +1727,14 @@ export async function getPatientResponse(
   const knowledgeContext = voiceTurn
     ? ''
     : await getCategoryKnowledgeContext(caseData.categoryId);
-  const promptHistory = voiceTurn ? history.slice(-12) : history;
+  const promptHistory = contextWindow(history, settings.maxContextMessages);
   const systemPrompt = buildPatientSystemPrompt(
     caseData,
     lang,
     knowledgeContext,
     voiceTurn,
     studentTurn,
-  ) + adminSystemPromptSuffix(settings, lang);
+  ) + adminSystemPromptSuffix(settings, lang, 'patient');
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
     ...promptHistory.map((m) => ({
@@ -1605,6 +1761,11 @@ export async function getPatientResponse(
       voiceTurn
         ? 'مش فاهم، ممكن توضّح سؤالك؟'
         : mockPatientResponse(caseData, normalizedMessage, lang, history),
+    {
+      feature: voiceTurn ? 'realtime' : 'patient_chat',
+      userId: options?.userId,
+      sessionId: options?.sessionId,
+    },
   );
 
   const sanitized = sanitizePatientResponse(
@@ -1774,6 +1935,7 @@ RULES:
     0.25,
     220,
     () => JSON.stringify(fallback()),
+    { feature: 'examiner_viva' },
   );
 
   return parseVivaAnswerEvaluation(raw, fallback);
@@ -1784,6 +1946,7 @@ export async function getExaminerVivaResponse(
   question: string,
   history: { role: string; content: string }[],
   language: Language = 'AR',
+  usageMeta?: Omit<AiUsageMeta, 'feature'>,
 ): Promise<string> {
   const lang = resolveExaminerLanguage(language, question);
   const settings = await getAISettings();
@@ -1800,12 +1963,13 @@ export async function getExaminerVivaResponse(
   }
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
+  const promptHistory = contextWindow(history, settings.maxContextMessages);
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content: `You are an Egyptian OSCE examiner conducting a viva for case: ${caseTitle}. Diagnosis: ${caseData.finalDiagnosis}. Ask follow-up questions and provide brief constructive feedback. Do not reveal full answers immediately. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang)}`,
+      content: `You are an Egyptian OSCE examiner conducting a viva for case: ${caseTitle}. Diagnosis: ${caseData.finalDiagnosis}. Ask follow-up questions and provide brief constructive feedback. Do not reveal full answers immediately. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang, 'examiner')}`,
     },
-    ...history.map((m) => ({
+    ...promptHistory.map((m) => ({
       role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',
       content: m.content,
     })),
@@ -1821,8 +1985,12 @@ export async function getExaminerVivaResponse(
       lang === 'AR'
         ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
         : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`,
+    { feature: 'examiner_viva', userId: usageMeta?.userId, sessionId: usageMeta?.sessionId },
   );
-  return finalizeExaminerReply(reply, lang);
+  const finalized = finalizeExaminerReply(reply, lang);
+  return finalized.trim() || (lang === 'AR'
+    ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
+    : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`);
 }
 
 const MANEUVER_LABELS: Record<string, { en: string; ar: string }> = {
@@ -1853,6 +2021,7 @@ export async function getManeuverExaminerResponse(
   question: string,
   history: { role: string; content: string }[],
   _language: Language,
+  usageMeta?: Omit<AiUsageMeta, 'feature'>,
 ): Promise<string> {
   const lang = examinationExaminerLanguage();
   const settings = await getAISettings();
@@ -1865,6 +2034,7 @@ export async function getManeuverExaminerResponse(
   }
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
+  const promptHistory = contextWindow(history, settings.maxContextMessages);
 
   const messages: ChatMessage[] = [
     {
@@ -1880,20 +2050,23 @@ RULES:
 2. Ask one focused follow-up question OR give brief constructive feedback (2-4 sentences).
 3. Do NOT reveal the full diagnosis immediately.
 4. Probe technique, expected findings, and clinical reasoning.
-5. ${examinerLangRule(lang)}${knowledgeContext}`,
+5. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang, 'examiner')}`,
     },
-    ...history.map((m) => ({
+    ...promptHistory.map((m) => ({
       role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',
       content: m.content,
     })),
     { role: 'user', content: question },
   ];
 
-  return callOpenAISafe(
+  const reply = await callOpenAISafe(
     messages,
     settings.examinerModel,
     settings.temperature,
     Math.min(settings.maxTokens, 150),
     () => `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`,
+    { feature: 'examiner_viva', userId: usageMeta?.userId, sessionId: usageMeta?.sessionId },
   );
+  const finalized = finalizeExaminerReply(reply, lang);
+  return finalized.trim() || `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`;
 }

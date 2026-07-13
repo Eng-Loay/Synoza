@@ -108,6 +108,8 @@ model User {
   emailVerified Boolean        @default(false)
   preferredLang String         @default("en")
   totalXp       Float          @default(0)
+  academicYear  String?
+  lastSeenAt    DateTime?
   otpCode       String?
   otpExpires    DateTime?
   resetToken    String?
@@ -120,6 +122,7 @@ model User {
   auditLogs     AuditLog[]
   paymentOrders      PaymentOrder[]
   qbankModuleAccess  QbankModuleEntitlement[]
+  aiUsageLogs        AiUsageLog[]
 }
 
 model Specialty {
@@ -168,6 +171,7 @@ model Case {
   teachingPoints      String
   evaluationRubric    String
   vitalSigns          String
+  examinerQuestions   String          @default("[]")
   patientPersonality  String?
   scenarioPrompt      String
   isPublished         Boolean         @default(true)
@@ -358,6 +362,7 @@ model QbankQuestion {
   text         String
   options      String
   correctIndex Int
+  explanation  String?
   subjectTags  String?
   isPublished  Boolean        @default(true)
   sortOrder    Int            @default(0)
@@ -372,15 +377,61 @@ model QbankQuestion {
 }
 
 model AISettings {
-  id              String   @id @default(cuid())
-  provider        String   @default("mock")
-  patientModel    String   @default("gpt-realtime-mini")
-  examinerModel   String   @default("gpt-realtime-mini")
-  temperature     Float    @default(0.7)
-  maxTokens       Int      @default(1024)
-  systemPromptAr  String?
-  systemPromptEn  String?
-  updatedAt       DateTime @updatedAt
+  id                     String   @id @default(cuid())
+  provider               String   @default("mock")
+  patientModel           String   @default("gpt-realtime-mini")
+  examinerModel          String   @default("gpt-realtime-mini")
+  temperature            Float    @default(0.7)
+  maxTokens              Int      @default(1024)
+  systemPromptAr         String?
+  systemPromptEn         String?
+  patientSystemPromptAr  String?
+  patientSystemPromptEn  String?
+  examinerSystemPromptAr String?
+  examinerSystemPromptEn String?
+  maxContextMessages     Int      @default(12)
+  updatedAt              DateTime @updatedAt
+}
+
+model AiUsageLog {
+  id               String   @id @default(cuid())
+  createdAt        DateTime @default(now())
+  userId           String?
+  sessionId        String?
+  feature          String
+  model            String
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  estimatedCostUsd Float    @default(0)
+  success          Boolean  @default(true)
+  error            String?
+  user             User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([feature, createdAt])
+  @@index([userId, createdAt])
+}
+
+model PlanConfig {
+  id             String           @id @default(cuid())
+  plan           SubscriptionPlan @unique
+  nameEn         String
+  nameAr         String
+  priceEgp       Float
+  casesQuota     Int
+  durationMonths Int
+  isActive       Boolean          @default(true)
+  sortOrder      Int              @default(0)
+  updatedAt      DateTime         @updatedAt
+}
+
+model AiCostRate {
+  id               String   @id @default(cuid())
+  model            String   @unique
+  inputPer1MUsd    Float
+  outputPer1MUsd   Float
+  updatedAt        DateTime @updatedAt
 }
 
 model AuditLog {

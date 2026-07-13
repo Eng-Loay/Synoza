@@ -64,10 +64,21 @@ export default function StudentMcqExamSetupPage() {
         setSetupMeta(setupRes.data);
         setTermTitle(termRes.data.term?.titleEn ?? termId);
         const chapterNames = setupRes.data.chapters.map((c: SetupChapter) => c.nameEn);
-        const refNames = setupRes.data.references.slice(0, 4).map((r: SetupReference) => r.nameEn);
+        const refsWithQuestions = new Set(
+          (setupRes.data.pairCounts as SetupMeta['pairCounts'])
+            .filter((p) => p.count > 0)
+            .map((p) => p.reference),
+        );
+        const refNames = setupRes.data.references
+          .map((r: SetupReference) => r.nameEn)
+          .filter((name: string) => refsWithQuestions.has(name));
         setSelectedChapters(chapterNames);
-        setSelectedRefs(refNames);
+        setSelectedRefs(refNames.length ? refNames : setupRes.data.references.map((r: SetupReference) => r.nameEn));
         setSelectedSubjects(setupRes.data.module.subjects.slice(0, 2));
+        // Default to entire module when no subject tags are configured
+        if (!setupRes.data.module.subjects?.length) {
+          setScope('entire');
+        }
       } catch {
         navigate(`/student/mcq/${termId}`, { replace: true });
         return;
