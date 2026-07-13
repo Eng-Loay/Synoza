@@ -13,13 +13,104 @@ export const PLAN_CATALOG = {
 
 export type PlanCatalogKey = keyof typeof PLAN_CATALOG;
 
+export type PlanDefinition = {
+  priceEgp: number;
+  casesQuota: number;
+  durationMonths: number;
+  labelEn: string;
+  labelAr: string;
+  isActive?: boolean;
+  sortOrder?: number;
+};
+
+let planCache: Record<string, PlanDefinition> | null = null;
+let planCacheExpiresAt = 0;
+
 export function isPaidPlan(plan: SubscriptionPlan): boolean {
   return plan === 'PACKAGE_50' || plan === 'PACKAGE_150' || plan === 'PACKAGE_300' || plan === 'INSTITUTION';
 }
 
-export function getPlanConfig(plan: SubscriptionPlan) {
+export async function ensurePlanConfigsSeeded() {
+  const count = await prisma.planConfig.count();
+  if (count > 0) return;
+  let sortOrder = 0;
+  for (const [plan, cfg] of Object.entries(PLAN_CATALOG)) {
+    await prisma.planConfig.create({
+      data: {
+        plan: plan as SubscriptionPlan,
+        nameEn: cfg.labelEn,
+        nameAr: cfg.labelAr,
+        priceEgp: cfg.priceEgp,
+        casesQuota: cfg.casesQuota,
+        durationMonths: cfg.durationMonths,
+        isActive: true,
+        sortOrder: sortOrder++,
+      },
+    });
+  }
+}
+
+export async function refreshPlanCache() {
+  await ensurePlanConfigsSeeded();
+  const rows = await prisma.planConfig.findMany({ orderBy: { sortOrder: 'asc' } });
+  const map: Record<string, PlanDefinition> = {};
+  for (const row of rows) {
+    map[row.plan] = {
+      priceEgp: row.priceEgp,
+      casesQuota: row.casesQuota,
+      durationMonths: row.durationMonths,
+      labelEn: row.nameEn,
+      labelAr: row.nameAr,
+      isActive: row.isActive,
+      sortOrder: row.sortOrder,
+    };
+  }
+  for (const [key, cfg] of Object.entries(PLAN_CATALOG)) {
+    if (!map[key]) {
+      map[key] = { ...cfg, isActive: true };
+    }
+  }
+  planCache = map;
+  planCacheExpiresAt = Date.now() + 60_000;
+  return map;
+}
+
+export function clearPlanCache() {
+  planCache = null;
+  planCacheExpiresAt = 0;
+}
+
+export function getPlanConfig(plan: SubscriptionPlan): PlanDefinition {
   const key = plan in PLAN_CATALOG ? (plan as PlanCatalogKey) : 'FREE';
+  if (planCache?.[key]) return planCache[key];
   return PLAN_CATALOG[key];
+}
+
+export async function getPlanDefinition(plan: SubscriptionPlan): Promise<PlanDefinition> {
+  if (!planCache || Date.now() > planCacheExpiresAt) {
+    await refreshPlanCache();
+  }
+  return getPlanConfig(plan);
+}
+
+export async function listPlanConfigs(activeOnly = false) {
+  const map = await refreshPlanCache();
+  return (Object.keys(PLAN_CATALOG) as PlanCatalogKey[])
+    .map((id) => {
+      const cfg = map[id] || PLAN_CATALOG[id];
+      return {
+        id,
+        priceEgp: cfg.priceEgp,
+        casesQuota: cfg.casesQuota,
+        durationMonths: cfg.durationMonths,
+        labelEn: cfg.labelEn,
+        labelAr: cfg.labelAr,
+        isActive: cfg.isActive !== false,
+        sortOrder: cfg.sortOrder ?? 0,
+      };
+    })
+    .filter((p) => !activeOnly || p.isActive)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
 function addMonths(from: Date, months: number): Date {
@@ -34,7 +125,7 @@ async function resolvePlanEndDate(
   if (!subscription || !isPaidPlan(subscription.plan)) return null;
   if (subscription.endDate) return subscription.endDate;
 
-  const config = getPlanConfig(subscription.plan);
+  const config = await getPlanDefinition(subscription.plan);
   const months = config.durationMonths || 12;
   const computed = addMonths(subscription.startDate, months);
   await prisma.subscription.update({
@@ -73,7 +164,7 @@ async function getUsedCaseCredits(userId: string, since?: Date | null) {
 export async function getUserEntitlements(userId: string) {
   const subscription = await getActiveSubscription(userId);
   const plan = subscription?.plan ?? 'FREE';
-  const config = getPlanConfig(plan);
+  const config = await getPlanDefinition(plan);
   const isFree = !isPaidPlan(plan);
   const periodStart = !isFree && subscription?.startDate ? subscription.startDate : null;
   const casesUnlocked = await getUsedCaseCredits(userId, periodStart);
@@ -110,7 +201,7 @@ export async function getUserEntitlements(userId: string) {
     priceEgp: subscription?.priceEgp ?? config.priceEgp,
     planEndDate: planEndDate?.toISOString() ?? null,
     planStartDate: subscription?.startDate?.toISOString() ?? null,
-    planDurationMonths: isFree ? 0 : getPlanConfig(plan).durationMonths,
+    planDurationMonths: isFree ? 0 : config.durationMonths,
     attemptsByCase,
   };
 }
@@ -118,7 +209,7 @@ export async function getUserEntitlements(userId: string) {
 export async function checkCanStartCase(userId: string, caseId: string) {
   const subscription = await getActiveSubscription(userId);
   const plan = subscription?.plan ?? 'FREE';
-  const config = getPlanConfig(plan);
+  const config = await getPlanDefinition(plan);
 
   if (!isPaidPlan(plan)) {
     const caseData = await prisma.case.findUnique({
@@ -215,7 +306,7 @@ export async function activatePlan(
     throw new Error('INVALID_PLAN');
   }
 
-  const config = getPlanConfig(plan);
+  const config = await getPlanDefinition(plan);
   if (!config.casesQuota) {
     throw new Error('INVALID_PLAN');
   }

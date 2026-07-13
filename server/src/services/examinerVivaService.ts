@@ -1,54 +1,54 @@
-import type { Case } from '@prisma/client';
-import { evaluateHistoryVivaAnswer } from './aiService.js';
+import type { Case } from "@prisma/client";
+import { evaluateHistoryVivaAnswer } from "./aiService.js";
 
-export const HISTORY_EXAMINER_STAGE = 'history:examiner';
+export const HISTORY_EXAMINER_STAGE = "history:examiner";
 export const VIVA_QUESTIONS_PER_SESSION = 5;
 
 const VIVA_CLOSING =
-  'Thank you. That completes the examiner viva for this station. You may continue with the rest of the OSCE.';
+  "Thank you. That completes the examiner viva for this station. You may continue with the rest of the OSCE.";
 
 const QUESTION_POOLS: Record<string, string[]> = {
   heartFailure: [
-    'What are the key clinical features that suggest acute decompensated heart failure in this patient?',
-    'How would you differentiate cardiac dyspnea from primary respiratory causes at the bedside?',
-    'Which physical signs would you look for to assess volume overload?',
-    'What is the role of BNP or NT-proBNP in evaluating breathlessness?',
-    'Which medications improve long-term mortality in heart failure with reduced ejection fraction?',
-    'How would you assess volume status before starting diuretics?',
-    'What findings on chest examination would support pulmonary congestion?',
-    'What red flags would make you admit this patient urgently?',
-    'How does orthopnea help you in your differential diagnosis?',
-    'What lifestyle and self-care advice is important in chronic heart failure?',
-    'Which investigations would you order first in suspected ADHF?',
-    'How would ankle swelling guide your history and examination?',
+    "What are the key clinical features that suggest acute decompensated heart failure in this patient?",
+    "How would you differentiate cardiac dyspnea from primary respiratory causes at the bedside?",
+    "Which physical signs would you look for to assess volume overload?",
+    "What is the role of BNP or NT-proBNP in evaluating breathlessness?",
+    "Which medications improve long-term mortality in heart failure with reduced ejection fraction?",
+    "How would you assess volume status before starting diuretics?",
+    "What findings on chest examination would support pulmonary congestion?",
+    "What red flags would make you admit this patient urgently?",
+    "How does orthopnea help you in your differential diagnosis?",
+    "What lifestyle and self-care advice is important in chronic heart failure?",
+    "Which investigations would you order first in suspected ADHF?",
+    "How would ankle swelling guide your history and examination?",
   ],
   valvular: [
-    'What features in the history suggest underlying valvular heart disease?',
-    'How does severe aortic stenosis typically present clinically?',
-    'What murmur characteristics help you distinguish aortic stenosis from mitral regurgitation?',
-    'Why is rheumatic fever history important in a young patient with dyspnea?',
-    'What is the purpose of penicillin prophylaxis after rheumatic fever?',
-    'What symptoms suggest low cardiac output in valvular disease?',
-    'How would you investigate a new systolic murmur in a young adult?',
-    'What does a narrow pulse pressure suggest on examination?',
-    'When would you refer a patient with valvular disease for surgery?',
-    'What are the risks of exertion in severe aortic stenosis?',
-    'How would paroxysmal nocturnal dyspnea change your assessment?',
-    'What does a displaced heaving apex suggest?',
+    "What features in the history suggest underlying valvular heart disease?",
+    "How does severe aortic stenosis typically present clinically?",
+    "What murmur characteristics help you distinguish aortic stenosis from mitral regurgitation?",
+    "Why is rheumatic fever history important in a young patient with dyspnea?",
+    "What is the purpose of penicillin prophylaxis after rheumatic fever?",
+    "What symptoms suggest low cardiac output in valvular disease?",
+    "How would you investigate a new systolic murmur in a young adult?",
+    "What does a narrow pulse pressure suggest on examination?",
+    "When would you refer a patient with valvular disease for surgery?",
+    "What are the risks of exertion in severe aortic stenosis?",
+    "How would paroxysmal nocturnal dyspnea change your assessment?",
+    "What does a displaced heaving apex suggest?",
   ],
   default: [
-    'What is your leading differential diagnosis based on the history so far?',
-    'Which features in the history are most concerning and why?',
-    'What key points would you cover in a systems review for this presentation?',
-    'How would you prioritize your investigations for this case?',
-    'What red flags would change your management urgently?',
-    'How would you explain your initial management plan to the patient?',
-    'What further history would help narrow the differential?',
-    'Which physical examination findings would you expect in this case?',
-    'How would you document your clinical reasoning for the examiner?',
-    'What safety-net advice would you give before discharge?',
-    'Which comorbidities would most affect your treatment choices?',
-    'What is the most important question you still need to ask this patient?',
+    "What is your leading differential diagnosis based on the history so far?",
+    "Which features in the history are most concerning and why?",
+    "What key points would you cover in a systems review for this presentation?",
+    "How would you prioritize your investigations for this case?",
+    "What red flags would change your management urgently?",
+    "How would you explain your initial management plan to the patient?",
+    "What further history would help narrow the differential?",
+    "Which physical examination findings would you expect in this case?",
+    "How would you document your clinical reasoning for the examiner?",
+    "What safety-net advice would you give before discharge?",
+    "Which comorbidities would most affect your treatment choices?",
+    "What is the most important question you still need to ask this patient?",
   ],
 };
 
@@ -76,23 +76,23 @@ function casePoolKey(caseData: Case): string {
   const title = caseData.titleEn.toLowerCase();
   const diagnosis = caseData.finalDiagnosis.toLowerCase();
   if (
-    title.includes('heart failure') ||
-    title.includes('dilated') ||
-    diagnosis.includes('heart failure')
+    title.includes("heart failure") ||
+    title.includes("dilated") ||
+    diagnosis.includes("heart failure")
   ) {
-    return 'heartFailure';
+    return "heartFailure";
   }
   if (
-    title.includes('rheumatic') ||
-    title.includes('valvular') ||
-    title.includes('aortic') ||
-    title.includes('mitral') ||
-    diagnosis.includes('stenosis') ||
-    diagnosis.includes('regurgitation')
+    title.includes("rheumatic") ||
+    title.includes("valvular") ||
+    title.includes("aortic") ||
+    title.includes("mitral") ||
+    diagnosis.includes("stenosis") ||
+    diagnosis.includes("regurgitation")
   ) {
-    return 'valvular';
+    return "valvular";
   }
-  return 'default';
+  return "default";
 }
 
 function hashSeed(seed: string): number {
@@ -115,13 +115,40 @@ function seededShuffle<T>(items: T[], seed: string): T[] {
   return arr;
 }
 
-export function pickVivaQuestionsForSession(sessionId: string, caseData: Case): string[] {
+function parseCaseExaminerQuestions(caseData: Case): string[] {
+  try {
+    const parsed = JSON.parse(caseData.examinerQuestions || "[]") as Array<
+      { question?: string } | string
+    >;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((row) =>
+        (typeof row === "string" ? row : String(row.question ?? "")).trim(),
+      )
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export function pickVivaQuestionsForSession(
+  sessionId: string,
+  caseData: Case,
+): string[] {
+  const custom = parseCaseExaminerQuestions(caseData);
+  if (custom.length > 0) {
+    const seed = `${sessionId}:${caseData.id}:${caseData.titleEn}:custom`;
+    return seededShuffle(custom, seed).slice(0, VIVA_QUESTIONS_PER_SESSION);
+  }
   const pool = QUESTION_POOLS[casePoolKey(caseData)] ?? QUESTION_POOLS.default;
   const seed = `${sessionId}:${caseData.id}:${caseData.titleEn}`;
   return seededShuffle(pool, seed).slice(0, VIVA_QUESTIONS_PER_SESSION);
 }
 
-export function isHistoryExaminerVivaStage(stage: string, maneuverId?: string): boolean {
+export function isHistoryExaminerVivaStage(
+  stage: string,
+  maneuverId?: string,
+): boolean {
   return !maneuverId && stage === HISTORY_EXAMINER_STAGE;
 }
 
@@ -138,7 +165,7 @@ export function getCurrentVivaQuestionNumber(
 ): number {
   let max = 0;
   for (const message of messages) {
-    if (message.stage !== stage || message.role !== 'EXAMINER') continue;
+    if (message.stage !== stage || message.role !== "EXAMINER") continue;
     const n = parseVivaQuestionNumber(message.content);
     if (n && n > max) max = n;
   }
@@ -156,11 +183,17 @@ export function isExaminerVivaComplete(
   stage: string,
 ): boolean {
   return messages.some(
-    (m) => m.stage === stage && m.role === 'EXAMINER' && m.content.includes(VIVA_CLOSING),
+    (m) =>
+      m.stage === stage &&
+      m.role === "EXAMINER" &&
+      m.content.includes(VIVA_CLOSING),
   );
 }
 
-export function buildExaminerVivaOpening(sessionId: string, caseData: Case): string {
+export function buildExaminerVivaOpening(
+  sessionId: string,
+  caseData: Case,
+): string {
   const [first] = pickVivaQuestionsForSession(sessionId, caseData);
   return `Good morning. I will ask you five short viva questions for this station. Question 1 of ${VIVA_QUESTIONS_PER_SESSION}: ${first}`;
 }
@@ -186,7 +219,12 @@ export async function respondToHistoryVivaAnswer(
         advance: true,
         feedback: "That's fine — it's good to acknowledge when you're unsure.",
       }
-    : await evaluateHistoryVivaAnswer(caseData, currentQuestion, questionNumber, studentAnswer, sessionId);
+    : await evaluateHistoryVivaAnswer(
+        caseData,
+        currentQuestion,
+        questionNumber,
+        studentAnswer,
+      );
 
   const feedback = evaluation.feedback.trim();
 

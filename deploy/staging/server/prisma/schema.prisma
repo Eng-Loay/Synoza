@@ -108,6 +108,8 @@ model User {
   emailVerified Boolean        @default(false)
   preferredLang String         @default("en")
   totalXp       Float          @default(0)
+  academicYear  String?
+  lastSeenAt    DateTime?
   otpCode       String?
   otpExpires    DateTime?
   resetToken    String?
@@ -120,6 +122,7 @@ model User {
   auditLogs     AuditLog[]
   paymentOrders      PaymentOrder[]
   qbankModuleAccess  QbankModuleEntitlement[]
+  aiUsageLogs        AiUsageLog[]
 }
 
 model Specialty {
@@ -168,6 +171,7 @@ model Case {
   teachingPoints      String            @db.Text
   evaluationRubric    String            @db.Text
   vitalSigns          String            @db.Text
+  examinerQuestions   String            @default("[]") @db.LongText
   patientPersonality  String?           @db.Text
   scenarioPrompt      String            @db.Text
   isPublished         Boolean           @default(true)
@@ -299,16 +303,138 @@ model QbankModuleEntitlement {
   @@index([userId, termId])
 }
 
+model QbankTerm {
+  id        String        @id
+  titleEn   String
+  titleAr   String
+  sortOrder Int           @default(0)
+  isActive  Boolean       @default(true)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  modules   QbankModule[]
+}
+
+model QbankModule {
+  id          String          @id
+  termId      String
+  nameEn      String
+  nameAr      String
+  specialtyEn String
+  specialtyAr String
+  subjects    String          @default("[]") @db.Text
+  free        Boolean         @default(false)
+  bundled     Boolean         @default(false)
+  priceEgp    Int             @default(50)
+  sortOrder   Int             @default(0)
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  term        QbankTerm       @relation(fields: [termId], references: [id], onDelete: Cascade)
+  questions   QbankQuestion[]
+
+  @@index([termId, isActive])
+}
+
+model QbankChapter {
+  id        String          @id @default(cuid())
+  nameEn    String          @unique
+  nameAr    String?
+  sortOrder Int             @default(0)
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  questions QbankQuestion[]
+}
+
+model QbankReference {
+  id        String          @id @default(cuid())
+  nameEn    String          @unique
+  nameAr    String?
+  sortOrder Int             @default(0)
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  questions QbankQuestion[]
+}
+
+model QbankQuestion {
+  id           String         @id @default(cuid())
+  moduleId     String
+  chapterId    String
+  referenceId  String
+  text         String         @db.Text
+  options      String         @db.Text
+  correctIndex Int
+  explanation  String?        @db.Text
+  subjectTags  String?        @db.Text
+  isPublished  Boolean        @default(true)
+  sortOrder    Int            @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  module       QbankModule    @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  chapter      QbankChapter   @relation(fields: [chapterId], references: [id])
+  reference    QbankReference @relation(fields: [referenceId], references: [id])
+
+  @@index([moduleId, isPublished])
+  @@index([chapterId, referenceId])
+}
+
 model AISettings {
-  id              String   @id @default(cuid())
-  provider        String   @default("mock")
-  patientModel    String   @default("gpt-realtime-mini")
-  examinerModel   String   @default("gpt-realtime-mini")
-  temperature     Float    @default(0.7)
-  maxTokens       Int      @default(1024)
-  systemPromptAr  String?  @db.Text
-  systemPromptEn  String?  @db.Text
-  updatedAt       DateTime @updatedAt
+  id                     String   @id @default(cuid())
+  provider               String   @default("mock")
+  patientModel           String   @default("gpt-realtime-mini")
+  examinerModel          String   @default("gpt-realtime-mini")
+  temperature            Float    @default(0.7)
+  maxTokens              Int      @default(1024)
+  systemPromptAr         String?  @db.Text
+  systemPromptEn         String?  @db.Text
+  patientSystemPromptAr  String?  @db.Text
+  patientSystemPromptEn  String?  @db.Text
+  examinerSystemPromptAr String?  @db.Text
+  examinerSystemPromptEn String?  @db.Text
+  maxContextMessages     Int      @default(12)
+  updatedAt              DateTime @updatedAt
+}
+
+model AiUsageLog {
+  id               String   @id @default(cuid())
+  createdAt        DateTime @default(now())
+  userId           String?
+  sessionId        String?
+  feature          String
+  model            String
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  estimatedCostUsd Float    @default(0)
+  success          Boolean  @default(true)
+  error            String?  @db.Text
+  user             User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([feature, createdAt])
+  @@index([userId, createdAt])
+}
+
+model PlanConfig {
+  id             String           @id @default(cuid())
+  plan           SubscriptionPlan @unique
+  nameEn         String
+  nameAr         String
+  priceEgp       Float
+  casesQuota     Int
+  durationMonths Int
+  isActive       Boolean          @default(true)
+  sortOrder      Int              @default(0)
+  updatedAt      DateTime         @updatedAt
+}
+
+model AiCostRate {
+  id               String   @id @default(cuid())
+  model            String   @unique
+  inputPer1MUsd    Float
+  outputPer1MUsd   Float
+  updatedAt        DateTime @updatedAt
 }
 
 model AuditLog {

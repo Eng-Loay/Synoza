@@ -223,6 +223,7 @@ router.post(
     }
 
     const token = signToken(user);
+    void prisma.user.update({ where: { id: user.id }, data: { lastSeenAt: new Date() } }).catch(() => {});
     res.json({ token, user: publicUser(user) });
   }
 );
@@ -310,11 +311,12 @@ router.post('/refresh', async (req: Request, res: Response) => {
   if (!user || !user.isActive || !user.emailVerified) {
     return res.status(401).json({ error: 'Session expired' });
   }
+  void prisma.user.update({ where: { id: user.id }, data: { lastSeenAt: new Date() } }).catch(() => {});
   res.json({ token: signToken(user) });
 });
 
 router.put('/profile', authenticate, async (req: Request, res: Response) => {
-  const { firstName, lastName, phone, university, avatarUrl } = req.body;
+  const { firstName, lastName, phone, university, avatarUrl, academicYear } = req.body;
 
   if (avatarUrl != null && avatarUrl !== '' && !isValidAvatarUrl(avatarUrl)) {
     return res.status(400).json({ error: 'Invalid profile photo' });
@@ -328,6 +330,7 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
       phone,
       university,
       avatarUrl: avatarUrl === '' ? null : avatarUrl,
+      ...(academicYear !== undefined ? { academicYear: academicYear || null } : {}),
     },
     select: {
       id: true,
@@ -336,6 +339,7 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
       lastName: true,
       phone: true,
       university: true,
+      academicYear: true,
       studentId: true,
       avatarUrl: true,
       role: true,

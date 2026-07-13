@@ -17,6 +17,7 @@ import {
   scoreExamResult,
   type QbankExamResult,
 } from '../../data/qbankMock';
+import { splitQuestionContent } from '../../lib/qbankQuestionContent';
 
 function formatDuration(ms: number) {
   const totalSec = Math.floor(ms / 1000);
@@ -266,7 +267,9 @@ export default function StudentMcqExamReportPage() {
         </div>
 
         <div className="space-y-4">
-          {reviewQuestions.map(({ index, question, selectedIndex, isCorrect, isUnanswered }) => (
+          {reviewQuestions.map(({ index, question, selectedIndex, isCorrect, isUnanswered }) => {
+            const display = splitQuestionContent(question.text, question.explanation);
+            return (
             <article
               key={`${question.id}-${index}`}
               className="rounded-2xl border border-slate-200 dark:border-slate-700 p-4 sm:p-5"
@@ -277,7 +280,7 @@ export default function StudentMcqExamReportPage() {
                     {t('portalMcqQuestionOf', { current: index + 1, total: result.questions.length })}
                   </p>
                   <h3 className="text-sm sm:text-base font-semibold text-slate-900 dark:text-white mt-1">
-                    {question.text}
+                    {display.stem}
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
                     {question.chapter} · {question.source}
@@ -334,8 +337,20 @@ export default function StudentMcqExamReportPage() {
                   );
                 })}
               </div>
+
+              {display.explanation?.trim() && (
+                <div className="mt-4 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/30 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300 mb-2">
+                    {t('portalMcqExplanation')}
+                  </p>
+                  <p className="text-sm text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed">
+                    {display.explanation}
+                  </p>
+                </div>
+              )}
             </article>
-          ))}
+            );
+          })}
         </div>
       </section>
 

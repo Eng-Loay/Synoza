@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from 'react';
 import { Send } from 'lucide-react';
 import { VoiceMicButton } from './VoiceMicButton';
 
@@ -20,6 +21,8 @@ interface SimulationChatInputProps {
   isLiveCall?: boolean;
 }
 
+const MAX_TEXTAREA_HEIGHT = 160;
+
 export function SimulationChatInput({
   input,
   setInput,
@@ -39,6 +42,14 @@ export function SimulationChatInput({
   isLiveCall,
 }: SimulationChatInputProps) {
   const locked = disabled || sending || isProcessing;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+  }, [input]);
 
   return (
     <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
@@ -51,13 +62,20 @@ export function SimulationChatInput({
         <p className="text-xs text-primary mb-2">{micListeningLabel}</p>
       )}
 
-      <div className="flex gap-2 items-center">
-        <input
-          className="input-field flex-1 min-w-0"
+      <div className="flex gap-2 items-end">
+        <textarea
+          ref={textareaRef}
+          rows={1}
+          className="input-field flex-1 min-w-0 resize-none overflow-y-auto leading-5 max-h-40"
           placeholder={placeholder}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && onSend()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              onSend();
+            }
+          }}
           disabled={locked || isLiveCall}
         />
         <VoiceMicButton

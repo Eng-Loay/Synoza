@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { splitQuestionContent } from '../../lib/qbankQuestionContent';
 import {
   ChevronRight,
   Flag,
@@ -215,6 +216,7 @@ export default function StudentMcqExamPage() {
   const progressPct = questions.length ? Math.round(((current + 1) / questions.length) * 100) : 0;
   const q = questions[current];
   const ans = answers[current] ?? { selected: null, marked: false, skipped: false };
+  const display = q ? splitQuestionContent(q.text, q.explanation) : { stem: '', explanation: undefined };
 
   const stats = useMemo(() => {
     let answered = 0;
@@ -328,7 +330,7 @@ export default function StudentMcqExamPage() {
           </div>
 
           <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/90 p-6 shadow-sm">
-            <p className="text-base sm:text-lg font-medium text-slate-900 dark:text-white leading-relaxed mb-6">{q.text}</p>
+            <p className="text-base sm:text-lg font-medium text-slate-900 dark:text-white leading-relaxed mb-6">{display.stem}</p>
             <div className="space-y-3">
               {q.options.map((opt, idx) => {
                 const selected = ans.selected === idx;
@@ -360,6 +362,17 @@ export default function StudentMcqExamPage() {
                 );
               })}
             </div>
+
+            {ans.revealed && display.explanation?.trim() && (
+              <div className="mt-5 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/30 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300 mb-2">
+                  {t('portalMcqExplanation')}
+                </p>
+                <p className="text-sm text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed">
+                  {display.explanation}
+                </p>
+              </div>
+            )}
 
             <div className="flex flex-wrap items-center justify-between gap-3 mt-6 pt-4 border-t border-slate-100 dark:border-slate-700">
               <div className="flex flex-wrap items-center gap-4">

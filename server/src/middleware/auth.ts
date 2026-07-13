@@ -60,6 +60,9 @@ export function authenticate(req: Request, res: Response, next: NextFunction) {
   }
 
   req.user = payload;
+  void import('../services/lastSeenService.js').then(({ touchLastSeen }) => {
+    touchLastSeen(payload.id);
+  });
   next();
 }
 

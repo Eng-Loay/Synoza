@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma.js';
+import { splitQuestionContent } from '../lib/qbankQuestionContent.js';
 
 export type QbankModuleView = {
   id: string;
@@ -25,6 +26,7 @@ export type QbankQuestionView = {
   text: string;
   options: string[];
   correctIndex?: number;
+  explanation?: string;
   chapter: string;
   source: string;
   chapterId: string;
@@ -176,20 +178,28 @@ export async function getModuleSetupMeta(termId: string, moduleId: string) {
   });
   if (!mod) return null;
 
-  const [chapters, references, pairCounts] = await Promise.all([
-    prisma.qbankChapter.findMany({
-      where: { isActive: true },
-      orderBy: { sortOrder: 'asc' },
-    }),
-    prisma.qbankReference.findMany({
-      where: { isActive: true },
-      orderBy: { sortOrder: 'asc' },
-    }),
-    prisma.qbankQuestion.groupBy({
-      by: ['chapterId', 'referenceId'],
-      where: { moduleId, isPublished: true },
-      _count: { id: true },
-    }),
+  const pairCounts = await prisma.qbankQuestion.groupBy({
+    by: ['chapterId', 'referenceId'],
+    where: { moduleId, isPublished: true },
+    _count: { id: true },
+  });
+
+  const chapterIds = [...new Set(pairCounts.map((r) => r.chapterId))];
+  const referenceIds = [...new Set(pairCounts.map((r) => r.referenceId))];
+
+  const [chapters, references] = await Promise.all([
+    chapterIds.length
+      ? prisma.qbankChapter.findMany({
+          where: { id: { in: chapterIds }, isActive: true },
+          orderBy: { sortOrder: 'asc' },
+        })
+      : Promise.resolve([]),
+    referenceIds.length
+      ? prisma.qbankReference.findMany({
+          where: { id: { in: referenceIds }, isActive: true },
+          orderBy: { sortOrder: 'asc' },
+        })
+      : Promise.resolve([]),
   ]);
 
   const countMap = new Map<string, number>();
@@ -297,16 +307,24 @@ export async function fetchExamQuestions(
 
   const selected = shuffle(filtered).slice(0, limit);
 
-  return selected.map((q) => ({
-    id: q.id,
-    text: q.text,
-    options: parseOptions(q.options),
-    ...(filters.includeAnswers ? { correctIndex: q.correctIndex } : {}),
-    chapter: q.chapter.nameEn,
-    source: q.reference.nameEn,
-    chapterId: q.chapterId,
-    referenceId: q.referenceId,
-  }));
+  return selected.map((q) => {
+    const split = splitQuestionContent(q.text, q.explanation);
+    return {
+      id: q.id,
+      text: split.stem,
+      options: parseOptions(q.options),
+      ...(filters.includeAnswers
+        ? {
+            correctIndex: q.correctIndex,
+            explanation: split.explanation,
+          }
+        : {}),
+      chapter: q.chapter.nameEn,
+      source: q.reference.nameEn,
+      chapterId: q.chapterId,
+      referenceId: q.referenceId,
+    };
+  });
 }
 
 export function validateQuestionInput(input: {

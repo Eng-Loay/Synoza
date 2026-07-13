@@ -4,7 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import {
   getUserEntitlements,
   pickRandomEligibleCase,
-  PLAN_CATALOG,
+  listPlanConfigs,
 } from '../services/subscriptionService.js';
 import { getPaymentPublicConfig } from '../services/payment/paymentService.js';
 import { getRankProgress } from '../services/xpService.js';
@@ -16,19 +16,25 @@ router.use(authenticate);
 
 router.get('/entitlements', async (req, res) => {
   const userId = req.user!.id;
-  const [entitlements, user] = await Promise.all([
+  const [entitlements, user, plans] = await Promise.all([
     getUserEntitlements(userId),
     prisma.user.findUnique({ where: { id: userId }, select: { totalXp: true } }),
+    listPlanConfigs(true),
   ]);
   const rankProgress = getRankProgress(user?.totalXp ?? 0);
   res.json({
     entitlements: { ...entitlements, totalXp: user?.totalXp ?? 0, rankProgress },
     payment: getPaymentPublicConfig(),
-    plans: [
-      { id: 'PACKAGE_50', ...PLAN_CATALOG.PACKAGE_50 },
-      { id: 'PACKAGE_150', ...PLAN_CATALOG.PACKAGE_150 },
-      { id: 'PACKAGE_300', ...PLAN_CATALOG.PACKAGE_300 },
-    ],
+    plans: plans
+      .filter((p) => p.id === 'PACKAGE_50' || p.id === 'PACKAGE_150' || p.id === 'PACKAGE_300')
+      .map((p) => ({
+        id: p.id,
+        priceEgp: p.priceEgp,
+        casesQuota: p.casesQuota,
+        durationMonths: p.durationMonths,
+        labelEn: p.labelEn,
+        labelAr: p.labelAr,
+      })),
   });
 });
 

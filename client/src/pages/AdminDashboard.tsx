@@ -5,16 +5,19 @@ import {
   Users, FileText, BarChart3, ClipboardList,
   TrendingUp, Activity, CheckCircle2, BookOpen, FolderTree, Plus, Trash2,
   Globe, GraduationCap, Pencil, X, Eye, ExternalLink, RefreshCw, Library,
+  DollarSign, Cpu,
 } from 'lucide-react';
 import api, { pingServer } from '../lib/api';
 import { DashboardLayout } from '../components/DashboardLayout';
 import { AdminQbankTab } from '../components/admin/AdminQbankTab';
+import { AdminCasesTab } from '../components/admin/AdminCasesTab';
 import { AdminUserPlanModal } from '../components/admin/AdminUserPlanModal';
-import { AdminCaseEditor } from '../components/admin/AdminCaseEditor';
-import { AdminStudentDetailModal } from '../components/admin/AdminStudentDetailModal';
+import { AdminApiUsageTab } from '../components/admin/AdminApiUsageTab';
+import { AdminPricingTab } from '../components/admin/AdminPricingTab';
+import { AdminStudentProfile } from '../components/admin/AdminStudentProfile';
 import type { SiteSettings } from '../components/SiteFooter';
 
-type Tab = 'overview' | 'users' | 'cases' | 'results' | 'knowledge' | 'site' | 'qbank';
+type Tab = 'overview' | 'users' | 'cases' | 'results' | 'knowledge' | 'site' | 'qbank' | 'apiUsage' | 'pricing';
 
 interface CategoryRow {
   id: string;
@@ -48,6 +51,11 @@ interface AISettingsRow {
   maxTokens: number;
   systemPromptAr?: string | null;
   systemPromptEn?: string | null;
+  patientSystemPromptAr?: string | null;
+  patientSystemPromptEn?: string | null;
+  examinerSystemPromptAr?: string | null;
+  examinerSystemPromptEn?: string | null;
+  maxContextMessages?: number;
 }
 
 interface UserSubscriptionRow {
@@ -64,7 +72,11 @@ interface AdminUserRow {
   lastName: string;
   role: string;
   isActive: boolean;
+  phone?: string | null;
   university?: string | null;
+  academicYear?: string | null;
+  lastSeenAt?: string | null;
+  totalXp?: number;
   subscriptions?: UserSubscriptionRow[];
 }
 
@@ -78,24 +90,56 @@ interface UniversityRow {
   isActive: boolean;
 }
 
+interface StatsSeriesPoint {
+  date: string;
+  sessions: number;
+  completedSessions: number;
+  newUsers: number;
+  revenueEgp: number;
+}
+
 const statMeta: Record<string, { label: string; icon: typeof Users; color: string; bg: string }> = {
   users: { label: 'Total Users', icon: Users, color: 'text-blue-600', bg: 'bg-blue-500' },
   cases: { label: 'Clinical Cases', icon: FileText, color: 'text-violet-600', bg: 'bg-violet-500' },
   sessions: { label: 'Sessions', icon: Activity, color: 'text-amber-600', bg: 'bg-amber-500' },
   completedSessions: { label: 'Completed', icon: CheckCircle2, color: 'text-emerald-600', bg: 'bg-emerald-500' },
+  newUsers: { label: 'New Users', icon: Users, color: 'text-sky-600', bg: 'bg-sky-500' },
   averageScore: { label: 'Avg Score', icon: TrendingUp, color: 'text-rose-600', bg: 'bg-rose-500' },
+  revenueEgp: { label: 'Revenue (EGP)', icon: DollarSign, color: 'text-emerald-700', bg: 'bg-emerald-600' },
 };
+
+function daysAgoIso(n: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function startOfMonthIso() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+}
+
+function startOfYearIso() {
+  const d = new Date();
+  return new Date(d.getFullYear(), 0, 1).toISOString().slice(0, 10);
+}
 
 export default function AdminDashboard() {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>('overview');
   const [stats, setStats] = useState<Record<string, number>>({});
+  const [statsSeries, setStatsSeries] = useState<StatsSeriesPoint[]>([]);
+  const [statsFrom, setStatsFrom] = useState(daysAgoIso(30));
+  const [statsTo, setStatsTo] = useState(new Date().toISOString().slice(0, 10));
+  const [statsGranularity, setStatsGranularity] = useState<'day' | 'week' | 'month'>('day');
   const [recentSessions, setRecentSessions] = useState<Record<string, unknown>[]>([]);
   const [users, setUsers] = useState<AdminUserRow[]>([]);
+  const [userUniversities, setUserUniversities] = useState<string[]>([]);
+  const [userFilterQ, setUserFilterQ] = useState('');
+  const [userFilterUniversity, setUserFilterUniversity] = useState('');
+  const [userFilterPlan, setUserFilterPlan] = useState('');
   const [planModalUser, setPlanModalUser] = useState<AdminUserRow | null>(null);
-  const [studentDetailUser, setStudentDetailUser] = useState<AdminUserRow | null>(null);
-  const [caseEditorId, setCaseEditorId] = useState<string | null | false>(false);
-  const [cases, setCases] = useState<Record<string, unknown>[]>([]);
+  const [profileUserId, setProfileUserId] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, unknown>[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeRow[]>([]);
@@ -120,6 +164,41 @@ export default function AdminDashboard() {
   const [siteSaved, setSiteSaved] = useState(false);
   const [knowledgeSaving, setKnowledgeSaving] = useState(false);
   const [aiSaved, setAiSaved] = useState(false);
+
+  const loadOverviewStats = async (overrides?: {
+    from?: string;
+    to?: string;
+    granularity?: 'day' | 'week' | 'month';
+  }) => {
+    const from = overrides?.from ?? statsFrom;
+    const to = overrides?.to ?? statsTo;
+    const granularity = overrides?.granularity ?? statsGranularity;
+    const r = await api.get('/admin/stats', {
+      params: { from, to, granularity },
+    });
+    setStats(r.data.stats);
+    setStatsSeries(r.data.series || []);
+    setRecentSessions(r.data.recentSessions || []);
+  };
+
+  const refreshUsers = (overrides?: { q?: string; university?: string; plan?: string }) => {
+    const q = overrides?.q ?? userFilterQ;
+    const university = overrides?.university ?? userFilterUniversity;
+    const plan = overrides?.plan ?? userFilterPlan;
+    void api
+      .get('/admin/users', {
+        params: {
+          q: q || undefined,
+          university: university || undefined,
+          plan: plan || undefined,
+          pageSize: 100,
+        },
+      })
+      .then((r) => {
+        setUsers(r.data.users as AdminUserRow[]);
+        setUserUniversities(r.data.universities || []);
+      });
+  };
 
   const refreshCategories = async () => {
     const r = await api.get('/admin/categories');
@@ -183,13 +262,9 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     if (tab === 'overview') {
-      api.get('/admin/stats').then((r) => {
-        setStats(r.data.stats);
-        setRecentSessions(r.data.recentSessions || []);
-      });
+      void loadOverviewStats();
     }
-    if (tab === 'users') api.get('/admin/users').then((r) => setUsers(r.data.users as AdminUserRow[]));
-    if (tab === 'cases') api.get('/admin/cases').then((r) => setCases(r.data.cases));
+    if (tab === 'users') refreshUsers();
     if (tab === 'results') api.get('/admin/results').then((r) => setResults(r.data.results));
     if (tab === 'knowledge') {
       void loadKnowledgeAdmin();
@@ -205,18 +280,10 @@ export default function AdminDashboard() {
     }
   }, [tab, selectedCategoryId]);
 
-  const refreshUsers = () => {
-    void api.get('/admin/users').then((r) => setUsers(r.data.users as AdminUserRow[]));
-  };
-
-  const refreshCases = () => {
-    void api.get('/admin/cases').then((r) => setCases(r.data.cases));
-  };
-
-  const formatPlanEndDate = (value?: string | null) => {
+  const formatLastSeen = (value?: string | null) => {
     if (!value) return '—';
     try {
-      return new Date(value).toLocaleDateString();
+      return new Date(value).toLocaleString();
     } catch {
       return '—';
     }
@@ -228,8 +295,34 @@ export default function AdminDashboard() {
     return sub.plan;
   };
 
+  const applyStatsPreset = (preset: 'today' | '7d' | '30d' | 'month' | 'year') => {
+    const today = new Date().toISOString().slice(0, 10);
+    let from = today;
+    let to = today;
+    let granularity: 'day' | 'week' | 'month' = 'day';
+    if (preset === 'today') {
+      from = today;
+      to = today;
+    } else if (preset === '7d') {
+      from = daysAgoIso(7);
+    } else if (preset === '30d') {
+      from = daysAgoIso(30);
+    } else if (preset === 'month') {
+      from = startOfMonthIso();
+    } else {
+      from = startOfYearIso();
+      granularity = 'month';
+    }
+    setStatsFrom(from);
+    setStatsTo(to);
+    setStatsGranularity(granularity);
+    void loadOverviewStats({ from, to, granularity });
+  };
+
   const navItems = [
     { id: 'overview', label: t('statistics'), icon: BarChart3 },
+    { id: 'apiUsage', label: t('adminApiUsage'), icon: Cpu },
+    { id: 'pricing', label: t('adminPricing'), icon: DollarSign },
     { id: 'users', label: t('users'), icon: Users },
     { id: 'cases', label: t('cases'), icon: FileText },
     { id: 'results', label: t('results'), icon: ClipboardList },
@@ -237,6 +330,9 @@ export default function AdminDashboard() {
     { id: 'qbank', label: t('adminQbankNav'), icon: Library },
     { id: 'site', label: 'Site Content', icon: Globe },
   ];
+
+  const overviewStatKeys = ['users', 'cases', 'sessions', 'completedSessions', 'newUsers', 'averageScore', 'revenueEgp'];
+  const maxSeriesSessions = Math.max(1, ...statsSeries.map((s) => s.sessions));
 
   const resetCategoryForm = () => {
     setEditingCategoryId(null);
@@ -405,8 +501,54 @@ export default function AdminDashboard() {
     >
       {tab === 'overview' && (
         <div className="space-y-6">
-          <div className="grid sm:grid-cols-2 xl:grid-cols-5 gap-4">
-            {Object.entries(stats).map(([key, value]) => {
+          <div className="card p-4 flex flex-wrap items-end gap-3">
+            <div className="flex flex-wrap gap-2">
+              {([
+                ['today', t('adminPresetToday')],
+                ['7d', t('adminPreset7d')],
+                ['30d', t('adminPreset30d')],
+                ['month', t('adminPresetMonth')],
+                ['year', t('adminPresetYear')],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className="btn-secondary text-xs"
+                  onClick={() => applyStatsPreset(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">{t('adminDateFrom')}</label>
+              <input type="date" className="input-field" value={statsFrom} onChange={(e) => setStatsFrom(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">{t('adminDateTo')}</label>
+              <input type="date" className="input-field" value={statsTo} onChange={(e) => setStatsTo(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">{t('adminGranularity')}</label>
+              <select
+                className="input-field"
+                value={statsGranularity}
+                onChange={(e) => setStatsGranularity(e.target.value as 'day' | 'week' | 'month')}
+              >
+                <option value="day">{t('adminGranularityDay')}</option>
+                <option value="week">{t('adminGranularityWeek')}</option>
+                <option value="month">{t('adminGranularityMonth')}</option>
+              </select>
+            </div>
+            <button type="button" className="btn-primary" onClick={() => void loadOverviewStats()}>
+              {t('adminApplyFilters')}
+            </button>
+          </div>
+
+          <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            {overviewStatKeys.map((key) => {
+              const value = stats[key];
+              if (value === undefined) return null;
               const meta = statMeta[key] || { label: key, icon: BarChart3, color: 'text-slate-600', bg: 'bg-slate-500' };
               const Icon = meta.icon;
               return (
@@ -416,7 +558,11 @@ export default function AdminDashboard() {
                     <div>
                       <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide">{meta.label}</p>
                       <p className="text-3xl font-bold mt-2 text-slate-900 dark:text-white">
-                        {typeof value === 'number' ? (key === 'averageScore' ? `${Math.round(value * 10) / 10}%` : value) : value}
+                        {typeof value === 'number'
+                          ? key === 'averageScore'
+                            ? `${Math.round(value * 10) / 10}%`
+                            : value.toLocaleString()
+                          : value}
                       </p>
                     </div>
                     <div className={`p-3 rounded-xl bg-slate-50 dark:bg-slate-800 ${meta.color}`}>
@@ -426,6 +572,26 @@ export default function AdminDashboard() {
                 </div>
               );
             })}
+          </div>
+
+          <div className="card p-6">
+            <h2 className="font-semibold text-slate-900 dark:text-white mb-4">{t('adminSessionsChart')}</h2>
+            {statsSeries.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-8">{t('adminNoSeriesData')}</p>
+            ) : (
+              <div className="flex items-end gap-1 h-44">
+                {statsSeries.map((point) => (
+                  <div key={point.date} className="flex-1 flex flex-col items-center gap-1 min-w-0">
+                    <div
+                      className="w-full rounded-t bg-amber-500/80"
+                      style={{ height: `${Math.max(4, (point.sessions / maxSeriesSessions) * 100)}%` }}
+                      title={`${point.date}: ${point.sessions} sessions, ${point.newUsers} users, ${point.revenueEgp} EGP`}
+                    />
+                    <span className="text-[9px] text-slate-400 truncate w-full text-center">{point.date.slice(5)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="card overflow-hidden">
@@ -464,23 +630,70 @@ export default function AdminDashboard() {
         </div>
       )}
 
+      {tab === 'apiUsage' && <AdminApiUsageTab />}
+      {tab === 'pricing' && <AdminPricingTab />}
+
       {tab === 'users' && (
         <>
           <AdminUserPlanModal
             user={planModalUser ?? { id: '', email: '', firstName: '', lastName: '', role: 'STUDENT' }}
             open={planModalUser !== null}
             onClose={() => setPlanModalUser(null)}
-            onSaved={refreshUsers}
+            onSaved={() => refreshUsers()}
           />
-          <AdminStudentDetailModal
-            user={studentDetailUser ?? { id: '', email: '', firstName: '', lastName: '' }}
-            open={studentDetailUser !== null}
-            onClose={() => setStudentDetailUser(null)}
+          <AdminStudentProfile
+            userId={profileUserId}
+            open={profileUserId !== null}
+            onClose={() => setProfileUserId(null)}
           />
           <div className="card overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-            <h2 className="font-semibold text-slate-900 dark:text-white">{t('users')}</h2>
-            <span className="badge bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">{users.length} total</span>
+          <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold text-slate-900 dark:text-white">{t('users')}</h2>
+              <span className="badge bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">{users.length} total</span>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <input
+                className="input-field min-w-[200px] flex-1"
+                placeholder={t('adminSearchUsers')}
+                value={userFilterQ}
+                onChange={(e) => setUserFilterQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') refreshUsers();
+                }}
+              />
+              <select
+                className="input-field"
+                value={userFilterUniversity}
+                onChange={(e) => {
+                  setUserFilterUniversity(e.target.value);
+                  refreshUsers({ university: e.target.value });
+                }}
+              >
+                <option value="">{t('adminAllUniversities')}</option>
+                {userUniversities.map((u) => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </select>
+              <select
+                className="input-field"
+                value={userFilterPlan}
+                onChange={(e) => {
+                  setUserFilterPlan(e.target.value);
+                  refreshUsers({ plan: e.target.value });
+                }}
+              >
+                <option value="">{t('adminAllPlans')}</option>
+                <option value="FREE">FREE</option>
+                <option value="PACKAGE_50">PACKAGE_50</option>
+                <option value="PACKAGE_150">PACKAGE_150</option>
+                <option value="PACKAGE_300">PACKAGE_300</option>
+                <option value="INSTITUTION">INSTITUTION</option>
+              </select>
+              <button type="button" className="btn-primary" onClick={() => refreshUsers()}>
+                {t('adminApplyFilters')}
+              </button>
+            </div>
           </div>
           <div className="table-scroll">
             <table className="dashboard-table">
@@ -488,50 +701,49 @@ export default function AdminDashboard() {
                 <tr>
                   <th>Name</th>
                   <th>Email</th>
-                  <th>Role</th>
-                  <th>{t('subscriptions')}</th>
-                  <th>{t('adminPlanValidUntil')}</th>
+                  <th>{t('adminPhone')}</th>
                   <th>University</th>
+                  <th>{t('subscriptions')}</th>
                   <th>Status</th>
+                  <th>{t('adminLastSeen')}</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {users.map((u) => (
                   <tr key={u.id}>
-                    <td className="font-medium">{u.firstName} {u.lastName}</td>
+                    <td className="font-medium">
+                      <button
+                        type="button"
+                        className="text-violet-600 dark:text-violet-400 hover:underline"
+                        onClick={() => setProfileUserId(u.id)}
+                      >
+                        {u.firstName} {u.lastName}
+                      </button>
+                    </td>
                     <td>{u.email}</td>
-                    <td><span className="badge bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300">{u.role}</span></td>
+                    <td className="text-slate-500">{u.phone || '—'}</td>
+                    <td className="text-slate-500">{u.university || '—'}</td>
                     <td>
                       <span className="badge bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">
                         {activePlanForUser(u)}
                       </span>
                     </td>
-                    <td className="text-slate-500">{formatPlanEndDate(u.subscriptions?.[0]?.endDate)}</td>
-                    <td className="text-slate-500">{u.university || '—'}</td>
                     <td>
                       <span className={`badge ${u.isActive ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
                         {u.isActive ? 'Active' : 'Inactive'}
                       </span>
                     </td>
+                    <td className="text-slate-500 text-xs">{formatLastSeen(u.lastSeenAt)}</td>
                     <td>
                       {u.role === 'STUDENT' && (
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setStudentDetailUser(u)}
-                            className="text-xs font-semibold text-sky-600 dark:text-sky-400 hover:underline"
-                          >
-                            {t('adminViewActivity')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setPlanModalUser(u)}
-                            className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline"
-                          >
-                            {t('adminManagePlan')}
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setPlanModalUser(u)}
+                          className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline"
+                        >
+                          {t('adminManagePlan')}
+                        </button>
                       )}
                     </td>
                   </tr>
@@ -543,51 +755,7 @@ export default function AdminDashboard() {
         </>
       )}
 
-      {tab === 'cases' && (
-        <>
-          <AdminCaseEditor
-            caseId={caseEditorId === false ? null : caseEditorId}
-            open={caseEditorId !== false}
-            onClose={() => setCaseEditorId(false)}
-            onSaved={refreshCases}
-          />
-          <div className="card p-4 mb-4 text-sm text-slate-600 dark:text-slate-300 bg-sky-50/80 dark:bg-sky-950/20 border border-sky-100 dark:border-sky-900">
-            {t('adminOsceUploadGuide')}
-          </div>
-          <div className="flex justify-end mb-3">
-            <button type="button" onClick={() => setCaseEditorId(null)} className="btn-primary flex items-center gap-2">
-              <Plus size={16} /> {t('adminAddCase')}
-            </button>
-          </div>
-        <div className="grid gap-3">
-          {cases.map((c) => (
-            <div key={c.id as string} className="card card-interactive p-4 sm:p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-              <div className="flex items-center gap-4">
-                <div className="w-11 h-11 rounded-xl bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center">
-                  <FileText className="text-violet-600" size={20} />
-                </div>
-                <div>
-                  <p className="font-semibold text-slate-900 dark:text-white">{c.titleEn as string}</p>
-                  <p className="text-sm text-slate-500">{c.patientName as string}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCaseEditorId(c.id as string)}
-                  className="text-xs font-semibold text-violet-600 hover:underline flex items-center gap-1"
-                >
-                  <Pencil size={14} /> {t('edit')}
-                </button>
-                <span className={`badge ${c.isPublished ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
-                  {c.isPublished ? 'Published' : 'Draft'}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-        </>
-      )}
+      {tab === 'cases' && <AdminCasesTab />}
 
       {tab === 'results' && (
         <div className="card overflow-hidden animate-fade-in">
@@ -824,12 +992,46 @@ export default function AdminDashboard() {
                     </div>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('systemPromptArabic')}</label>
-                    <textarea className="input-field min-h-[110px]" value={aiSettings.systemPromptAr || ''} onChange={(e) => setAiSettings({ ...aiSettings, systemPromptAr: e.target.value })} />
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('adminMaxContextMessages')}</label>
+                    <input
+                      type="number"
+                      className="input-field"
+                      value={aiSettings.maxContextMessages ?? 12}
+                      onChange={(e) => setAiSettings({ ...aiSettings, maxContextMessages: Number(e.target.value) || 12 })}
+                    />
+                    <p className="text-xs text-slate-400 mt-1">{t('adminMaxContextMessagesHint')}</p>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('systemPromptEnglish')}</label>
-                    <textarea className="input-field min-h-[110px]" value={aiSettings.systemPromptEn || ''} onChange={(e) => setAiSettings({ ...aiSettings, systemPromptEn: e.target.value })} />
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('adminPatientPromptAr')}</label>
+                    <textarea
+                      className="input-field min-h-[110px]"
+                      value={aiSettings.patientSystemPromptAr || aiSettings.systemPromptAr || ''}
+                      onChange={(e) => setAiSettings({ ...aiSettings, patientSystemPromptAr: e.target.value, systemPromptAr: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('adminPatientPromptEn')}</label>
+                    <textarea
+                      className="input-field min-h-[110px]"
+                      value={aiSettings.patientSystemPromptEn || aiSettings.systemPromptEn || ''}
+                      onChange={(e) => setAiSettings({ ...aiSettings, patientSystemPromptEn: e.target.value, systemPromptEn: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('adminExaminerPromptAr')}</label>
+                    <textarea
+                      className="input-field min-h-[110px]"
+                      value={aiSettings.examinerSystemPromptAr || ''}
+                      onChange={(e) => setAiSettings({ ...aiSettings, examinerSystemPromptAr: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('adminExaminerPromptEn')}</label>
+                    <textarea
+                      className="input-field min-h-[110px]"
+                      value={aiSettings.examinerSystemPromptEn || ''}
+                      onChange={(e) => setAiSettings({ ...aiSettings, examinerSystemPromptEn: e.target.value })}
+                    />
                   </div>
                   <button onClick={saveAISettings} className="btn-primary">{t('save')}</button>
                 </div>
@@ -840,14 +1042,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {tab === 'qbank' && (
-        <>
-          <div className="card p-4 mb-4 text-sm text-slate-600 dark:text-slate-300 bg-violet-50/80 dark:bg-violet-950/20 border border-violet-100 dark:border-violet-900">
-            {t('adminQbankUploadGuide')}
-          </div>
-          <AdminQbankTab />
-        </>
-      )}
+      {tab === 'qbank' && <AdminQbankTab />}
 
       {tab === 'site' && (
         <div className="grid lg:grid-cols-2 gap-6">

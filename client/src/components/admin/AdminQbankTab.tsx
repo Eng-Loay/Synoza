@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import api from '../../lib/api';
 import { downloadTextFile } from '../../lib/download';
+import { TagListInput } from './TagListInput';
 
 type QbankTerm = {
   id: string;
@@ -69,6 +70,13 @@ type ImportPreview = {
   validCount: number;
   invalidCount: number;
   invalid: Array<{ rowNum: number; errors: string[] }>;
+  validPreview?: Array<{ text?: string; chapter?: string; reference?: string }>;
+};
+
+type ImportResult = {
+  inserted: number;
+  skipped: number;
+  insertedPreview?: Array<{ text: string; chapter: string; reference: string }>;
 };
 
 type Section = 'terms' | 'lookups' | 'questions' | 'import';
@@ -80,7 +88,7 @@ const EMPTY_QUESTION = {
   text: '',
   options: ['', '', '', ''],
   correctIndex: 0,
-  subjectTags: '',
+  subjectTags: [] as string[],
   isPublished: true,
   sortOrder: 0,
 };
@@ -108,7 +116,7 @@ export function AdminQbankTab() {
     nameAr: '',
     specialtyEn: '',
     specialtyAr: '',
-    subjects: '',
+    subjects: [] as string[],
     free: false,
     bundled: false,
     priceEgp: 50,
@@ -126,8 +134,10 @@ export function AdminQbankTab() {
 
   const [csvContent, setCsvContent] = useState('');
   const [csvFileName, setCsvFileName] = useState('');
+  const [structuredContent, setStructuredContent] = useState('');
+  const [importMode, setImportMode] = useState<'csv' | 'structured'>('structured');
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
-  const [importResult, setImportResult] = useState<{ inserted: number; skipped: number } | null>(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
 
   const loadTerms = useCallback(async () => {
     const r = await api.get('/admin/qbank/terms');
@@ -206,7 +216,7 @@ export function AdminQbankTab() {
     try {
       const payload = {
         ...moduleForm,
-        subjects: moduleForm.subjects.split(',').map((s) => s.trim()).filter(Boolean),
+        subjects: moduleForm.subjects,
       };
       if (editingModuleId) {
         await api.put(`/admin/qbank/modules/${editingModuleId}`, payload);
@@ -219,7 +229,7 @@ export function AdminQbankTab() {
         nameAr: '',
         specialtyEn: '',
         specialtyAr: '',
-        subjects: '',
+        subjects: [],
         free: false,
         bundled: false,
         priceEgp: 50,
@@ -262,7 +272,7 @@ export function AdminQbankTab() {
       const payload = {
         ...questionForm,
         moduleId: questionForm.moduleId || selectedModuleId,
-        subjectTags: questionForm.subjectTags.split(',').map((s) => s.trim()).filter(Boolean),
+        subjectTags: questionForm.subjectTags,
       };
       if (editingQuestionId) {
         await api.put(`/admin/qbank/questions/${editingQuestionId}`, payload);
@@ -311,6 +321,67 @@ export function AdminQbankTab() {
       setImportResult({ inserted: r.data.inserted, skipped: r.data.skipped });
       setImportPreview(null);
       await loadQuestions(selectedTermId, selectedModuleId);
+    } catch (err: unknown) {
+      setError((err as { response?: { data?: { error?: string } } })?.response?.data?.error || t('adminQbankImportError'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const previewStructuredImport = async () => {
+    if (!selectedTermId || !selectedModuleId) {
+      setError(t('adminQbankImportSelectModule'));
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setImportResult(null);
+    try {
+      const r = await api.post('/admin/qbank/questions/import/structured/preview', {
+        content: structuredContent,
+        termId: selectedTermId,
+        moduleId: selectedModuleId,
+        autoCreateLookups: true,
+      });
+      setImportPreview(r.data);
+      if (r.data.parseErrors?.length) {
+        setError(r.data.parseErrors.join(' '));
+      }
+    } catch (err: unknown) {
+      setError((err as { response?: { data?: { error?: string } } })?.response?.data?.error || t('adminQbankImportError'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const commitStructuredImport = async () => {
+    if (!selectedTermId || !selectedModuleId) {
+      setError(t('adminQbankImportSelectModule'));
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const r = await api.post('/admin/qbank/questions/import/structured/commit', {
+        content: structuredContent,
+        termId: selectedTermId,
+        moduleId: selectedModuleId,
+        autoCreateLookups: true,
+      });
+      setImportResult({
+        inserted: r.data.inserted,
+        skipped: r.data.skipped,
+        insertedPreview: r.data.insertedPreview || [],
+      });
+      setImportPreview(null);
+      await loadQuestions(selectedTermId, selectedModuleId);
+      await loadLookups();
+      if (r.data.parseErrors?.length) {
+        setError(r.data.parseErrors.join(' '));
+      }
+      if (r.data.inserted > 0) {
+        setSection('questions');
+      }
     } catch (err: unknown) {
       setError((err as { response?: { data?: { error?: string } } })?.response?.data?.error || t('adminQbankImportError'));
     } finally {
@@ -410,7 +481,7 @@ export function AdminQbankTab() {
                             nameAr: mod.nameAr,
                             specialtyEn: mod.specialtyEn,
                             specialtyAr: mod.specialtyAr,
-                            subjects: mod.subjects.join(', '),
+                            subjects: mod.subjects,
                             free: mod.free,
                             bundled: mod.bundled,
                             priceEgp: mod.priceEgp,
@@ -437,7 +508,14 @@ export function AdminQbankTab() {
               <input className="input-field" placeholder="Module ID" value={moduleForm.id} disabled={!!editingModuleId} onChange={(e) => setModuleForm({ ...moduleForm, id: e.target.value })} />
               <input className="input-field" placeholder="Name EN" value={moduleForm.nameEn} onChange={(e) => setModuleForm({ ...moduleForm, nameEn: e.target.value })} />
               <input className="input-field" placeholder="Name AR" value={moduleForm.nameAr} onChange={(e) => setModuleForm({ ...moduleForm, nameAr: e.target.value })} />
-              <input className="input-field" placeholder="Subjects (comma-separated)" value={moduleForm.subjects} onChange={(e) => setModuleForm({ ...moduleForm, subjects: e.target.value })} />
+              <div className="sm:col-span-2">
+                <p className="text-sm font-medium mb-2">{t('adminQbankModuleSubjects')}</p>
+                <TagListInput
+                  value={moduleForm.subjects}
+                  onChange={(subjects) => setModuleForm({ ...moduleForm, subjects })}
+                  placeholder={t('adminQbankModuleSubjectsPlaceholder')}
+                />
+              </div>
               <input type="number" className="input-field" placeholder="Price EGP" value={moduleForm.priceEgp} onChange={(e) => setModuleForm({ ...moduleForm, priceEgp: Number(e.target.value) })} />
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={moduleForm.free} onChange={(e) => setModuleForm({ ...moduleForm, free: e.target.checked })} /> Free</label>
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={moduleForm.bundled} onChange={(e) => setModuleForm({ ...moduleForm, bundled: e.target.checked })} /> Bundled</label>
@@ -486,6 +564,14 @@ export function AdminQbankTab() {
 
       {section === 'questions' && (
         <div className="space-y-6">
+          {importResult && importResult.inserted > 0 && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-200">
+              <p className="font-semibold">{t('adminQbankImportDone', { inserted: importResult.inserted, skipped: importResult.skipped })}</p>
+              <p className="text-xs mt-1 text-emerald-700/80 dark:text-emerald-300/80">
+                Showing questions for the selected module below. Empty Source rows use reference &quot;Previous Years&quot;.
+              </p>
+            </div>
+          )}
           <div className="flex flex-wrap gap-3">
             <select className="input-field w-auto" value={selectedTermId} onChange={(e) => setSelectedTermId(e.target.value)}>
               {terms.map((term) => <option key={term.id} value={term.id}>{term.titleEn}</option>)}
@@ -511,7 +597,7 @@ export function AdminQbankTab() {
                       text: q.text,
                       options: [...q.options],
                       correctIndex: q.correctIndex,
-                      subjectTags: q.subjectTags.join(', '),
+                      subjectTags: q.subjectTags,
                       isPublished: q.isPublished,
                       sortOrder: q.sortOrder,
                     });
@@ -549,7 +635,14 @@ export function AdminQbankTab() {
                 }} />
               </div>
             ))}
-            <input className="input-field" placeholder="Subject tags (comma-separated)" value={questionForm.subjectTags} onChange={(e) => setQuestionForm({ ...questionForm, subjectTags: e.target.value })} />
+            <div>
+              <p className="text-sm font-medium mb-2">{t('adminQbankSubjectTags')}</p>
+              <TagListInput
+                value={questionForm.subjectTags}
+                onChange={(subjectTags) => setQuestionForm({ ...questionForm, subjectTags })}
+                placeholder={t('adminQbankSubjectTagsPlaceholder')}
+              />
+            </div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={questionForm.isPublished} onChange={(e) => setQuestionForm({ ...questionForm, isPublished: e.target.checked })} /> {t('adminQbankPublished')}</label>
             <button type="button" onClick={saveQuestion} disabled={saving} className="btn-primary">{editingQuestionId ? t('save') : t('add')}</button>
           </div>
@@ -558,46 +651,116 @@ export function AdminQbankTab() {
 
       {section === 'import' && (
         <div className="card p-6 space-y-4">
-          <p className="text-sm text-slate-600 dark:text-slate-400">{t('adminQbankCsvHint')}</p>
-          <button type="button" onClick={downloadImportTemplate} className="btn-secondary inline-flex items-center gap-2">
-            <Download size={16} />
-            {t('adminQbankDownloadTemplate')}
-          </button>
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">{t('adminQbankCsvUpload')}</label>
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              className="block w-full text-sm text-slate-600 dark:text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 dark:file:bg-slate-800 dark:file:text-slate-200"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                setCsvFileName(file.name);
-                setImportPreview(null);
-                setImportResult(null);
-                const reader = new FileReader();
-                reader.onload = () => setCsvContent(String(reader.result ?? ''));
-                reader.readAsText(file);
-              }}
-            />
-            {csvFileName && (
-              <p className="text-xs text-slate-500 dark:text-slate-400">{t('adminQbankCsvSelected', { fileName: csvFileName })}</p>
-            )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => { setImportMode('structured'); setImportPreview(null); setImportResult(null); }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium ${importMode === 'structured' ? 'bg-violet-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'}`}
+            >
+              {t('adminQbankStructuredImport')}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setImportMode('csv'); setImportPreview(null); setImportResult(null); }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium ${importMode === 'csv' ? 'bg-violet-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'}`}
+            >
+              {t('adminQbankCsvImport')}
+            </button>
           </div>
-          <div className="flex gap-2">
-            <button type="button" onClick={previewImport} disabled={saving || !csvContent.trim()} className="btn-secondary">{t('adminQbankPreviewImport')}</button>
-            <button type="button" onClick={commitImport} disabled={saving || !csvContent.trim()} className="btn-primary">{t('adminQbankCommitImport')}</button>
-          </div>
+
+          {importMode === 'structured' ? (
+            <>
+              <p className="text-sm text-slate-600 dark:text-slate-400">{t('adminQbankStructuredHint')}</p>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <select className="input-field" value={selectedTermId} onChange={(e) => setSelectedTermId(e.target.value)}>
+                  <option value="">{t('adminQbankSelectTerm')}</option>
+                  {terms.map((term) => <option key={term.id} value={term.id}>{term.titleEn} ({term.id})</option>)}
+                </select>
+                <select className="input-field" value={selectedModuleId} onChange={(e) => setSelectedModuleId(e.target.value)}>
+                  <option value="">{t('adminQbankSelectModule')}</option>
+                  {modules.filter((m) => m.termId === selectedTermId).map((mod) => (
+                    <option key={mod.id} value={mod.id}>{mod.nameEn} ({mod.id})</option>
+                  ))}
+                </select>
+              </div>
+              <textarea
+                className="input-field min-h-[320px] font-mono text-xs"
+                placeholder={t('adminQbankStructuredPlaceholder')}
+                value={structuredContent}
+                onChange={(e) => setStructuredContent(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <button type="button" onClick={previewStructuredImport} disabled={saving || !structuredContent.trim()} className="btn-secondary">{t('adminQbankPreviewImport')}</button>
+                <button type="button" onClick={commitStructuredImport} disabled={saving || !structuredContent.trim()} className="btn-primary">{t('adminQbankCommitImport')}</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-slate-600 dark:text-slate-400">{t('adminQbankCsvHint')}</p>
+              <button type="button" onClick={downloadImportTemplate} className="btn-secondary inline-flex items-center gap-2">
+                <Download size={16} />
+                {t('adminQbankDownloadTemplate')}
+              </button>
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">{t('adminQbankCsvUpload')}</label>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="block w-full text-sm text-slate-600 dark:text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 dark:file:bg-slate-800 dark:file:text-slate-200"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setCsvFileName(file.name);
+                    setImportPreview(null);
+                    setImportResult(null);
+                    const reader = new FileReader();
+                    reader.onload = () => setCsvContent(String(reader.result ?? ''));
+                    reader.readAsText(file);
+                  }}
+                />
+                {csvFileName && (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{t('adminQbankCsvSelected', { fileName: csvFileName })}</p>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={previewImport} disabled={saving || !csvContent.trim()} className="btn-secondary">{t('adminQbankPreviewImport')}</button>
+                <button type="button" onClick={commitImport} disabled={saving || !csvContent.trim()} className="btn-primary">{t('adminQbankCommitImport')}</button>
+              </div>
+            </>
+          )}
+
           {importPreview && (
             <div className="text-sm space-y-2">
               <p>{t('adminQbankImportSummary', { valid: importPreview.validCount, invalid: importPreview.invalidCount, total: importPreview.total })}</p>
               {importPreview.invalid.slice(0, 10).map((row) => (
                 <p key={row.rowNum} className="text-red-600">Row {row.rowNum}: {row.errors.join('; ')}</p>
               ))}
+              {!!importPreview.validPreview?.length && (
+                <ul className="space-y-1 text-slate-600 dark:text-slate-300 max-h-48 overflow-y-auto">
+                  {importPreview.validPreview.map((row, idx) => (
+                    <li key={`${idx}-${row.text}`} className="text-xs border-b border-slate-100 dark:border-slate-800 py-1">
+                      <span className="font-semibold">{idx + 1}.</span> {row.text}
+                      <span className="text-slate-400"> · {row.chapter} · {row.reference}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
           {importResult && (
-            <p className="text-emerald-600 text-sm">{t('adminQbankImportDone', { inserted: importResult.inserted, skipped: importResult.skipped })}</p>
+            <div className="space-y-2">
+              <p className="text-emerald-600 text-sm">{t('adminQbankImportDone', { inserted: importResult.inserted, skipped: importResult.skipped })}</p>
+              {!!importResult.insertedPreview?.length && (
+                <ul className="space-y-1 text-slate-600 dark:text-slate-300 text-xs max-h-48 overflow-y-auto">
+                  {importResult.insertedPreview.map((row, idx) => (
+                    <li key={`${idx}-${row.text}`} className="border-b border-slate-100 dark:border-slate-800 py-1">
+                      <span className="font-semibold">{idx + 1}.</span> {row.text}
+                      <span className="text-slate-400"> · {row.chapter} · {row.reference}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       )}
