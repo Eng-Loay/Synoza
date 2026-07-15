@@ -11,6 +11,7 @@ import {
 } from '../../lib/qbankSavedQuestions';
 import { QBANK } from '../../lib/qbankTheme';
 import { splitQuestionContent } from '../../lib/qbankQuestionContent';
+import { QbankQuestionInsightPanel } from '../../components/student/qbank/QbankQuestionInsightPanel';
 
 export default function StudentMcqSavedPage() {
   const { t, i18n } = useTranslation();
@@ -158,16 +159,11 @@ export default function StudentMcqSavedPage() {
                                 </div>
                               );
                             })}
-                            {display.explanation?.trim() && (
-                              <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3">
-                                <p className="text-[11px] font-bold uppercase tracking-wide text-violet-700 mb-1">
-                                  {t('portalMcqExplanation')}
-                                </p>
-                                <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
-                                  {display.explanation}
-                                </p>
-                              </div>
-                            )}
+                            <QbankQuestionInsightPanel
+                              className="mt-3"
+                              question={record.question}
+                              revealed
+                            />
                           </div>
                         )}
                       </div>

@@ -31,6 +31,7 @@ export type QbankQuestionView = {
   source: string;
   chapterId: string;
   referenceId: string;
+  subjectTags?: string[];
 };
 
 const MAX_EXAM_QUESTIONS = 100;
@@ -309,6 +310,15 @@ export async function fetchExamQuestions(
 
   return selected.map((q) => {
     const split = splitQuestionContent(q.text, q.explanation);
+    let subjectTags: string[] | undefined;
+    if (q.subjectTags) {
+      try {
+        const parsed = JSON.parse(q.subjectTags) as unknown;
+        if (Array.isArray(parsed)) subjectTags = parsed.map(String);
+      } catch {
+        subjectTags = undefined;
+      }
+    }
     return {
       id: q.id,
       text: split.stem,
@@ -323,6 +333,7 @@ export async function fetchExamQuestions(
       source: q.reference.nameEn,
       chapterId: q.chapterId,
       referenceId: q.referenceId,
+      ...(subjectTags?.length ? { subjectTags } : {}),
     };
   });
 }

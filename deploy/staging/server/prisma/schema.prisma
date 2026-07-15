@@ -172,6 +172,7 @@ model Case {
   evaluationRubric    String            @db.Text
   vitalSigns          String            @db.Text
   examinerQuestions   String            @default("[]") @db.LongText
+  stationConfig       String            @default("{}") @db.Text
   patientPersonality  String?           @db.Text
   scenarioPrompt      String            @db.Text
   isPublished         Boolean           @default(true)

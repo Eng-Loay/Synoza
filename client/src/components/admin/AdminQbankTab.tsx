@@ -12,6 +12,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import api from '../../lib/api';
+import { AdminStickySaveBar } from './AdminStickySaveBar';
 import { downloadTextFile } from '../../lib/download';
 import { TagListInput } from './TagListInput';
 
@@ -57,6 +58,7 @@ type QbankQuestion = {
   text: string;
   options: string[];
   correctIndex: number;
+  explanation?: string | null;
   subjectTags: string[];
   isPublished: boolean;
   sortOrder: number;
@@ -88,6 +90,7 @@ const EMPTY_QUESTION = {
   text: '',
   options: ['', '', '', ''],
   correctIndex: 0,
+  explanation: '',
   subjectTags: [] as string[],
   isPublished: true,
   sortOrder: 0,
@@ -525,6 +528,14 @@ export function AdminQbankTab() {
               <Plus size={16} /> {editingModuleId ? t('save') : t('adminQbankAddModule')}
             </button>
           </div>
+          {(editingModuleId || moduleForm.nameEn.trim() || moduleForm.id.trim()) && (
+            <AdminStickySaveBar
+              onSave={() => void saveModule()}
+              saving={saving}
+              disabled={!moduleForm.id.trim() || !moduleForm.nameEn.trim()}
+              saveLabel={editingModuleId ? t('save') : t('adminQbankAddModule')}
+            />
+          )}
         </div>
       )}
 
@@ -597,6 +608,7 @@ export function AdminQbankTab() {
                       text: q.text,
                       options: [...q.options],
                       correctIndex: q.correctIndex,
+                      explanation: q.explanation ?? '',
                       subjectTags: q.subjectTags,
                       isPublished: q.isPublished,
                       sortOrder: q.sortOrder,
@@ -636,6 +648,16 @@ export function AdminQbankTab() {
               </div>
             ))}
             <div>
+              <p className="text-sm font-medium mb-2">{t('adminQbankExplanation')}</p>
+              <textarea
+                className="input-field min-h-[140px] font-mono text-xs sm:text-sm"
+                placeholder={t('adminQbankExplanationPlaceholder')}
+                value={questionForm.explanation}
+                onChange={(e) => setQuestionForm({ ...questionForm, explanation: e.target.value })}
+              />
+              <p className="text-[11px] text-slate-500 mt-1">{t('adminQbankExplanationHint')}</p>
+            </div>
+            <div>
               <p className="text-sm font-medium mb-2">{t('adminQbankSubjectTags')}</p>
               <TagListInput
                 value={questionForm.subjectTags}
@@ -646,6 +668,14 @@ export function AdminQbankTab() {
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={questionForm.isPublished} onChange={(e) => setQuestionForm({ ...questionForm, isPublished: e.target.checked })} /> {t('adminQbankPublished')}</label>
             <button type="button" onClick={saveQuestion} disabled={saving} className="btn-primary">{editingQuestionId ? t('save') : t('add')}</button>
           </div>
+          {(editingQuestionId || questionForm.text.trim()) && (
+            <AdminStickySaveBar
+              onSave={() => void saveQuestion()}
+              saving={saving}
+              disabled={!questionForm.text.trim() || !questionForm.moduleId}
+              saveLabel={editingQuestionId ? t('save') : t('add')}
+            />
+          )}
         </div>
       )}
 

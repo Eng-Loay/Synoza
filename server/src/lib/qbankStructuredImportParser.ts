@@ -16,6 +16,7 @@ export interface StructuredQbankQuestion {
   system?: string;
   source?: string;
   bloomLevel?: string;
+  estimatedTime?: string;
 }
 
 const KNOWN_FIELDS = new Set([
@@ -176,11 +177,27 @@ function buildExplanation(fields: Map<string, string>): string | undefined {
   const learningPoint = fields.get('learning point')?.trim();
   const pearl = fields.get('high-yield pearl')?.trim();
   const whyWrong = fields.get('why others are wrong')?.trim();
+  const tags = parseTags(fields.get('tags'), fields);
+  const system = fields.get('system')?.trim();
+  const estimatedTime = fields.get('estimated time')?.trim();
+  const bloomLevel = fields.get('bloom level')?.trim();
+  const topic = fields.get('topic')?.trim();
+  const subtopic = fields.get('subtopic')?.trim();
+  const difficulty = fields.get('difficulty')?.trim();
+  const questionType = fields.get('question type')?.trim();
 
   if (explanation) parts.push(explanation);
   if (learningPoint) parts.push(`Learning Point: ${learningPoint}`);
   if (pearl) parts.push(`High-Yield Pearl: ${pearl}`);
   if (whyWrong) parts.push(`Why Others Are Wrong:\n${whyWrong}`);
+  if (tags.length) parts.push(`Tags: ${tags.join(', ')}`);
+  if (system) parts.push(`System: ${system}`);
+  if (estimatedTime) parts.push(`Estimated Time: ${estimatedTime}`);
+  if (bloomLevel) parts.push(`Bloom Level: ${bloomLevel}`);
+  if (topic) parts.push(`Topic: ${topic}`);
+  if (subtopic) parts.push(`Subtopic: ${subtopic}`);
+  if (difficulty) parts.push(`Difficulty: ${difficulty}`);
+  if (questionType) parts.push(`Question Type: ${questionType}`);
 
   return parts.length ? parts.join('\n\n') : undefined;
 }
@@ -220,6 +237,7 @@ function parseBlock(block: string, index: number): StructuredQbankQuestion | { e
     system: fields.get('system')?.trim() || undefined,
     source: sanitizeReferenceName(fields.get('source')),
     bloomLevel: fields.get('bloom level')?.trim() || undefined,
+    estimatedTime: fields.get('estimated time')?.trim() || undefined,
   };
 }
 

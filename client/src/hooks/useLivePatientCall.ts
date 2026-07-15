@@ -67,6 +67,8 @@ export function useLiveVoiceCall({
 }: UseLiveVoiceCallOptions) {
   const [isLiveCall, setIsLiveCall] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
+  const [isMicListening, setIsMicListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const liveRef = useRef(false);
   const busyRef = useRef(false);
   const speakingRef = useRef(false);
@@ -97,6 +99,16 @@ export function useLiveVoiceCall({
   listenLangRef.current = listenLang;
   speakLangRef.current = speakLang;
   sessionLangRef.current = sessionLang;
+
+  const setListening = useCallback((active: boolean) => {
+    listeningRef.current = active;
+    setIsMicListening(active);
+  }, []);
+
+  const setSpeaking = useCallback((active: boolean) => {
+    speakingRef.current = active;
+    setIsSpeaking(active);
+  }, []);
 
   const useBrowserStt = shouldUseBrowserStt();
   const isSupported = typeof window !== 'undefined' && (useBrowserStt || isAudioRecordingSupported());
@@ -203,16 +215,18 @@ export function useLiveVoiceCall({
 
       const speak = speakLangRef.current.startsWith('ar') ? 'ar-EG' : speakLangRef.current;
       speakingRef.current = true;
+      setSpeaking(true);
       try {
         await speakText(trimmed, speak);
       } catch {
         // Ignore playback errors — text is already in chat.
       } finally {
         speakingRef.current = false;
+        setSpeaking(false);
         scheduleListen(POST_TURN_LISTEN_DELAY_MS);
       }
     },
-    [scheduleListen],
+    [scheduleListen, setSpeaking],
   );
 
   const stopCall = useCallback(() => {
@@ -221,7 +235,8 @@ export function useLiveVoiceCall({
     busyRef.current = false;
     speakingRef.current = false;
     setIsBusy(false);
-    listeningRef.current = false;
+    setListening(false);
+    setSpeaking(false);
     speechStartedAtRef.current = 0;
     browserSttRef.current?.abort();
     browserSttRef.current = null;
@@ -238,7 +253,7 @@ export function useLiveVoiceCall({
 
   const finishRecording = useCallback(() => {
     if (!listeningRef.current) return;
-    listeningRef.current = false;
+    setListening(false);
     clearTimers();
     const recorder = recorderRef.current;
     if (recorder && recorder.state === 'recording') {
@@ -335,6 +350,7 @@ export function useLiveVoiceCall({
 
     releaseMicrophoneStream();
     listeningRef.current = true;
+    setIsMicListening(true);
 
     const session = await startBrowserStt({
       lang: listenLangRef.current,
@@ -342,7 +358,7 @@ export function useLiveVoiceCall({
       liveCall: true,
       onResult: (transcript) => {
         browserSttRef.current = null;
-        listeningRef.current = false;
+        setListening(false);
         if (!liveRef.current) return;
 
         startBusy();
@@ -365,7 +381,7 @@ export function useLiveVoiceCall({
       },
       onError: (code) => {
         browserSttRef.current = null;
-        listeningRef.current = false;
+        setListening(false);
         if (!liveRef.current) return;
 
         if (code === 'no-speech' || code === 'transcription-invalid') {
@@ -387,13 +403,13 @@ export function useLiveVoiceCall({
     });
 
     if (!session) {
-      listeningRef.current = false;
+      setListening(false);
       if (liveRef.current) scheduleListen(300);
       return;
     }
 
     browserSttRef.current = session;
-  }, [disabled, endBusy, processTextTurn, scheduleListen, startBusy, stopCall]);
+  }, [disabled, endBusy, processTextTurn, scheduleListen, setListening, startBusy, stopCall]);
 
   const listenOnce = useCallback(async () => {
     if (useBrowserStt) {
@@ -406,12 +422,13 @@ export function useLiveVoiceCall({
     }
 
     listeningRef.current = true;
+    setIsMicListening(true);
     speechStartedAtRef.current = 0;
 
     try {
       const stream = await ensureStream();
       if (!stream || !liveRef.current) {
-        listeningRef.current = false;
+        setListening(false);
         return;
       }
 
@@ -429,7 +446,7 @@ export function useLiveVoiceCall({
       };
 
       recorder.onerror = () => {
-        listeningRef.current = false;
+        setListening(false);
         clearTimers();
         recorderRef.current = null;
         onErrorRef.current?.('audio-capture');
@@ -439,7 +456,7 @@ export function useLiveVoiceCall({
       recorder.onstop = async () => {
         clearTimers();
         recorderRef.current = null;
-        listeningRef.current = false;
+        setListening(false);
 
         const elapsed = Date.now() - startedAt;
         const blob = new Blob(chunks, { type: mimeTypeRef.current });
@@ -480,7 +497,7 @@ export function useLiveVoiceCall({
       }
       const audioContext = audioContextRef.current;
       if (!audioContext) {
-        listeningRef.current = false;
+        setListening(false);
         onErrorRef.current?.('audio-capture');
         scheduleListen(300);
         return;
@@ -542,7 +559,7 @@ export function useLiveVoiceCall({
       recorder.start(recorderTimesliceMs());
       vadFrameRef.current = requestAnimationFrame(monitor);
     } catch (err) {
-      listeningRef.current = false;
+      setListening(false);
       const name = err instanceof DOMException ? err.name : '';
       if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
         onErrorRef.current?.('not-allowed');
@@ -562,6 +579,7 @@ export function useLiveVoiceCall({
     startBusy,
     endBusy,
     scheduleListen,
+    setListening,
     useBrowserStt,
     listenOnceWithBrowser,
   ]);
@@ -605,7 +623,7 @@ export function useLiveVoiceCall({
     [clearBusyWatchdog, clearTimers, closeAudioContext, releaseStream, stopRecorder],
   );
 
-  return { isLiveCall, isBusy, isSupported, toggleLiveCall, stopCall };
+  return { isLiveCall, isBusy, isMicListening, isSpeaking, isSupported, toggleLiveCall, stopCall };
 }
 
 export const useLivePatientCall = useLiveVoiceCall;

@@ -22,6 +22,7 @@ import {
   respondToHistoryVivaAnswer,
 } from '../services/examinerVivaService.js';
 import { Language, MessageRole } from '@prisma/client';
+import { isManeuverEnabled, parseStationConfig } from '../lib/stationConfig.js';
 
 const router = Router();
 
@@ -135,6 +136,11 @@ router.post('/:id/maneuver/start', async (req, res) => {
     include: { case: true, messages: true },
   });
   if (!session) return res.status(404).json({ error: 'Active session not found' });
+
+  const stationConfig = parseStationConfig(session.case.stationConfig);
+  if (!isManeuverEnabled(stationConfig, maneuverId)) {
+    return res.status(400).json({ error: 'Maneuver not enabled for this case' });
+  }
 
   const completed = parseCompletedManeuvers(session.completedManeuvers);
   if (!canStartManeuver(maneuverId, completed)) {
@@ -415,6 +421,11 @@ router.post('/:id/examiner-viva/init', async (req, res) => {
     });
     if (!session) return res.status(404).json({ error: 'Active session not found' });
 
+    const stationConfig = parseStationConfig(session.case.stationConfig);
+    if (!stationConfig.enableHistoryExaminer) {
+      return res.status(403).json({ error: 'History examiner is disabled for this case' });
+    }
+
     const stage = HISTORY_EXAMINER_STAGE;
     const existing = session.messages.find(
       (m) => m.stage === stage && m.role === MessageRole.EXAMINER,
@@ -450,7 +461,15 @@ router.post('/:id/examiner', async (req, res) => {
 
   if (!session) return res.status(404).json({ error: 'Active session not found' });
 
+  const stationConfig = parseStationConfig(session.case.stationConfig);
   const effectiveStage = maneuverId ? maneuverStage(maneuverId) : stage;
+
+  if (!maneuverId && isHistoryExaminerVivaStage(effectiveStage, maneuverId) && !stationConfig.enableHistoryExaminer) {
+    return res.status(403).json({ error: 'History examiner is disabled for this case' });
+  }
+  if (maneuverId && !isManeuverEnabled(stationConfig, maneuverId)) {
+    return res.status(400).json({ error: 'Maneuver not enabled for this case' });
+  }
 
   await prisma.message.create({
     data: {

@@ -3,6 +3,7 @@ import type { ChatCompletion } from 'openai/resources/chat/completions';
 import type { Case, Language } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { getCategoryKnowledgeContext } from './knowledgeService.js';
+import { parsePhysicalExamForm } from './caseFormService.js';
 import { toEgyptianColloquial } from './arabicColloquial.js';
 import { fixArabicSpeechTranscript } from './arabicSttFix.js';
 import { logAiUsage, type AiUsageMeta } from './aiUsageService.js';
@@ -129,7 +130,7 @@ function buildPatientSystemPrompt(
 Chief complaint: ${caseData.chiefComplaint}
 Personality: ${personality}
 ${langNote}
-Rules: answer ONLY the last question; 1–2 sentences; never state diagnosis (${caseData.finalDiagnosis}); lay language only.`;
+Rules: if the doctor asks several short factual questions together (name, age, where you live), answer all briefly in 1–2 sentences; otherwise focus on the main question; never state diagnosis (${caseData.finalDiagnosis}); lay language only.`;
   }
 
   const langNote =
@@ -137,11 +138,10 @@ Rules: answer ONLY the last question; 1–2 sentences; never state diagnosis (${
       ? voiceTurn
         ? `VOICE CALL — مريض مصري في مكالمة صوتية. افهم المعنى مش الكلمات الحرفية. عامية مصرية طبيعية، جملة أو اتنين. ممنوع الفصحى والإنجليزي.`
         : `اكتب بعامية مصرية طبيعية زي مريض حقيقي قاعد قدام الدكتور في العيادة — مش روبوت ولا فصحى.
-أمثلة على الأسلوب المطلوب:
-- "صباح النور يا دكتور. والله يا دكتور أنا تعبان أوي، بقالي فترة مش قادر آخد نفسي كويس، وخصوصاً لما بتحرك أو أعمل مجهود."
-- "الله يسلمك يا دكتور، تسلم. والله أنا متبهدل ومش عارف أعيش حياتي زي الناس."
+أمثلة على الأسلوب المطلوب (المحتوى لازم ييجي من بيانات الحالة فقط):
+- "صباح النور يا دكتور. والله يا دكتور أنا تعبان أوي، [اذكر الشكوى من بيانات الحالة]."
+- "الله يسلمك يا دكتور، تسلم. [ثم اذكر تأثير المرض على حياتك من بيانات الحالة]."
 - "اسمي ${nameAr}."
-- "من ٣ أسابيع بحس بضيق نفس مع المجهود، ورجليّا بتورم كمان."
 استخدم كلمات طبيعية: والله، أوي، يا دكتور، مش، عشان، كده.
 ٢–٤ جمل لما تحكي عن أعراضك أو مشاعرك؛ جملة أو اتنين للأسئلة الواقعية (الاسم، السن، السكن).`
       : language === 'EN'
@@ -163,6 +163,7 @@ Rules: answer ONLY the last question; 1–2 sentences; never state diagnosis (${
 - Sound human — vary tone with personality: ${personality}
 - When the doctor shows empathy (سلامة، ربنا يشفيك) → thank them warmly; you may add one sentence about how illness affects your life.
 - The doctor speaks natural Egyptian colloquial Arabic (عامية): understand "هيلو/أهلاً" as greeting, "عامل إيه/إزيك/ايه الأخبار" as asking how you feel, "اسمك ايه" as name, etc.
+- If the doctor asks multiple questions in one message (e.g. name + age + where you live), answer ALL of them naturally in one reply.
 - Only if the question is truly unclear (single word like "أيه" alone) → "مش فاهم قصدك يا دكتور، ممكن توضّح سؤالك؟"
 - Never ask the doctor questions back. Never state the diagnosis (${caseData.finalDiagnosis}).`;
 
@@ -181,6 +182,7 @@ CASE BACKGROUND (use when relevant to the question — do not recite everything 
 ${phaseNote}
 
 ${voiceRules}
+- CRITICAL: Only reveal facts from CASE BACKGROUND and scenario notes above. Never invent symptoms, history, medications, or details not configured for this case.
 - Lay language only — no medical jargon or English disease terms.
 - ${langNote}
 ${knowledgeContext}`;
@@ -602,8 +604,16 @@ function patientComplaintPhrase(caseData: Case, isArabic: boolean): string {
   if (/dyspnea|breath|shortness|exertional|ضيق|تنفس|نفس/i.test(c)) {
     return `${duration} بحس بضيق نفس مع المجهود.`;
   }
-  if (/chest|pain|tight|صدر|ألم|الم/i.test(c)) {
+  // Avoid treating epigastric/abdominal "pain" as chest pain.
+  if (
+    /chest|tight|صدر/i.test(c) ||
+    (/(?:ألم|الم|وجع|pain)\s*(?:في|فى|of)?\s*(?:ال)?صدر/i.test(c) &&
+      !/epigastr|بطن|abdomen|stomach|gastro|ulcer|قرحة/i.test(c))
+  ) {
     return `${duration} عندي ألم/تقل في الصدر.`;
+  }
+  if (/epigastr|بطن|abdomen|stomach|gastro|ulcer|قرحة|حرقان/i.test(c)) {
+    return `${duration} عندي ألم/حرقان في فم المعدة.`;
   }
   if (/[\u0600-\u06FF]/.test(caseData.chiefComplaint)) {
     return `${duration} ${caseData.chiefComplaint.split('.')[0].trim()}.`;
@@ -671,27 +681,71 @@ function quickSocialPatientReply(
   }
 
   if (asksWellbeing(userMessage)) {
+    // If the doctor mixed wellbeing with other questions (name/age/...),
+    // don't answer wellbeing alone — let the multi-intent combiner handle it.
+    const intents = resolvePatientQuestionIntents(userMessage);
+    const hasOtherFacts = intents.some(
+      (intent) =>
+        intent !== 'wellbeing' &&
+        intent !== 'greeting' &&
+        intent !== 'empathy',
+    );
+    if (hasOtherFacts) return null;
     return patientWellbeingReply(caseData, isArabic, voiceTurn);
   }
 
   return null;
 }
 
+function firstSentences(text: string, max = 2): string {
+  const cleaned = text.trim();
+  if (!cleaned) return '';
+  const parts = cleaned.split(/(?<=[.!?؟])\s+/).filter(Boolean);
+  return parts.slice(0, max).join(' ').trim();
+}
+
+function pickArabicCaseText(...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    const value = candidate?.trim();
+    if (value && /[\u0600-\u06FF]/.test(value)) return value;
+  }
+  return '';
+}
+
+/** Case-specific patient narrative from admin fields — no hardcoded persona scripts. */
+function patientScenarioSnippet(caseData: Case, isArabic: boolean): string {
+  const scenario = caseData.scenarioPrompt?.trim() ?? '';
+  const chief = caseData.chiefComplaint?.trim() ?? '';
+  const social = caseData.socialHistory?.trim() ?? '';
+  const personality = caseData.patientPersonality?.trim() ?? '';
+
+  if (isArabic) {
+    const arabicBlock = pickArabicCaseText(scenario, chief, social, personality);
+    if (arabicBlock) return firstSentences(arabicBlock, 2);
+
+    const complaint = patientComplaintPhrase(caseData, true);
+    const socialSnippet = /[\u0600-\u06FF]/.test(social) ? firstSentences(social, 1) : '';
+    return [complaint, socialSnippet].filter(Boolean).join(' ').trim();
+  }
+
+  return (
+    firstSentences(scenario, 2) ||
+    firstSentences(chief, 2) ||
+    patientComplaintPhrase(caseData, false)
+  );
+}
+
 function patientRichComplaint(caseData: Case, isArabic: boolean): string {
-  if (!isArabic) return patientComplaintPhrase(caseData, false);
-
-  const lower = caseData.patientName.toLowerCase();
-  const c = caseData.chiefComplaint.toLowerCase();
-
-  if (lower.includes('samira') || /swell|ankle|orthopnea|3 weeks/i.test(c)) {
-    return 'والله يا دكتور أنا تعبانة أوي، بقالي ٣ أسابيع مش قادرة أتنفس كويس، وخصوصاً لما بتحرك شوية أو بنام. رجليّا بتورم كمان ومش عارفة أنام بالليل كويس.';
-  }
-  if (lower.includes('tarek') || /painter|exertional|2 weeks/i.test(c)) {
-    return 'والله يا دكتور أنا تعبان أوي، بقالي فترة مش قادر آخد نفسي كويس، وخصوصاً لما ببدأ أتحرك أو أعمل مجهود في الشغل. الموضوع ده تعبني جداً ومخلي حياتي صعبة.';
+  if (!isArabic) {
+    return patientScenarioSnippet(caseData, false) || patientComplaintPhrase(caseData, false);
   }
 
-  const brief = patientComplaintPhrase(caseData, true);
-  return `والله يا دكتور مش في أحسن حالي. ${brief} الموضوع بقى يتعبني في يومي.`;
+  const narrative = patientScenarioSnippet(caseData, true);
+  if (!narrative) {
+    return `والله يا دكتور مش في أحسن حالي. ${patientComplaintPhrase(caseData, true)}`;
+  }
+  if (/^والله/i.test(narrative)) return narrative;
+  return `والله يا دكتور ${narrative}`;
 }
 
 function patientWellbeingReply(caseData: Case, isArabic: boolean, voiceTurn: boolean): string {
@@ -702,27 +756,30 @@ function patientWellbeingReply(caseData: Case, isArabic: boolean, voiceTurn: boo
 }
 
 function patientOpeningReply(caseData: Case, isArabic: boolean): string {
-  if (!isArabic) return `Hello doctor. I have not been feeling well — ${patientComplaintPhrase(caseData, false)}`;
-  const lower = caseData.patientName.toLowerCase();
-  if (lower.includes('tarek')) {
-    return 'صباح النور يا دكتور. والله يا دكتور أنا تعبان أوي، بقالي فترة مش قادر آخد نفسي كويس، وخصوصاً لما ببدأ أتحرك أو أعمل مجهود في الشغل. الموضوع ده تعبني جداً ومخلي حياتي صعبة.';
+  if (!isArabic) {
+    const snippet = patientScenarioSnippet(caseData, false) || patientComplaintPhrase(caseData, false);
+    return `Hello doctor. I have not been feeling well — ${snippet}`;
   }
-  if (lower.includes('samira')) {
-    return 'أهلاً يا دكتور. والله أنا تعبانة أوي، بقالي ٣ أسابيع مش قادرة أتنفس كويس، وخصوصاً لما بتحرك أو بنام. رجليّا بتورم كمان.';
-  }
-  return `أهلاً يا دكتور. ${patientRichComplaint(caseData, true)}`;
+
+  const greeting = 'أهلاً يا دكتور.';
+  const narrative = patientScenarioSnippet(caseData, true) || patientRichComplaint(caseData, true);
+  if (/^أهلاً|^والله/i.test(narrative)) return `${greeting} ${narrative}`;
+  return `${greeting} ${narrative}`;
 }
 
 function patientEmpathyReply(caseData: Case, isArabic: boolean): string {
-  if (!isArabic) return 'Thank you, doctor. I really appreciate it.';
-  const lower = caseData.patientName.toLowerCase();
-  if (lower.includes('tarek')) {
-    return 'الله يسلمك يا دكتور، تسلم. والله يا ابني أنا متبهدل، مش عارف أعيش حياتي زي باقي الناس، الشغل في الدهانات بياخد مجهود وأنا مش قادر آخد نفسي وأنا واقف على السلم أو بصبغ، وبضطر أقف أستريح كتير.';
+  if (!isArabic) {
+    const snippet = patientScenarioSnippet(caseData, false);
+    return snippet ? `Thank you, doctor. ${snippet}` : 'Thank you, doctor. I really appreciate it.';
   }
-  if (lower.includes('samira')) {
-    return 'الله يسلمك يا دكتور، تسلم. والله أنا تعبانة ومش قادرة أعمل حاجة في البيت، كل شوية لازم أقعد أستريح عشان مش قادرة أكمل نفسي.';
-  }
-  return `الله يسلمك يا دكتور، تسلم. ${patientRichComplaint(caseData, true)}`;
+
+  const thanks = caseData.patientGender.toLowerCase().startsWith('f')
+    ? 'الله يسلمك يا دكتور، تسلمي.'
+    : 'الله يسلمك يا دكتور، تسلم.';
+  const narrative = patientScenarioSnippet(caseData, true);
+  if (!narrative) return thanks;
+  if (/^والله/i.test(narrative)) return `${thanks} ${narrative}`;
+  return `${thanks} ${narrative}`;
 }
 
 function truncatePatientAnswer(text: string, maxSentences = 2): string {
@@ -855,7 +912,7 @@ type PatientQuestionIntent =
   | 'medication'
   | 'familyHistory';
 
-/** Split merged STT phrases so the last question wins (e.g. greeting + wellbeing + name). */
+/** Split merged phrases (STT or typed) into separate questions when possible. */
 function messageQuestionParts(message: string): string[] {
   const trimmed = message.trim();
   const punctParts = trimmed
@@ -863,6 +920,36 @@ function messageQuestionParts(message: string): string[] {
     .map((s) => s.trim())
     .filter((s) => s.length > 1);
   if (punctParts.length > 1) return punctParts;
+
+  const inlineMarkers = [
+    /\s+(?=اسمك\s*(?:إ?يه|ايه|eh)\b)/i,
+    /\s+(?=اسم\s*حضرتك)/i,
+    /\s+(?=what\s+is\s+your\s+name)/i,
+    /\s+(?=عندك\s*(?:كم|كام)\s*سنة)/i,
+    /\s+(?=عندك\s*(?:كم|كام)\s*سن)/i,
+    /\s+(?=عمرك\s*(?:كم|كام)?)/i,
+    /\s+(?=how\s*old\b)/i,
+    /\s+(?=ساكن(?:ة)?\s*فين)/i,
+    /\s+(?=عايش(?:ة)?\s*فين)/i,
+    /\s+(?=where\s+do\s+you\s+live)/i,
+    /\s+(?=إزيك|ازيك|عامل(?:ة)?\s*(?:إيه|ايه|أي|eh|eih)|ايه\s*الأخبار|إيه\s*الأخبار)/i,
+    /\s+(?=how\s+are\s+you)/i,
+    /\s+(?=بتشتكي|تشتكي|شكواك|شكواكي)/i,
+  ];
+
+  let inlineParts = [trimmed];
+  for (const marker of inlineMarkers) {
+    const next: string[] = [];
+    for (const part of inlineParts) {
+      const split = part
+        .split(marker)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 1);
+      next.push(...(split.length > 1 ? split : [part]));
+    }
+    inlineParts = next;
+  }
+  if (inlineParts.length > 1) return inlineParts;
 
   const tailPatterns = [
     /(?:اسمك\s*إ?يه|اسمك\s*ايه|اسم حضرتك|what is your name)\s*$/i,
@@ -900,13 +987,47 @@ function intentForQuestionPart(part: string): PatientQuestionIntent | null {
   return null;
 }
 
-function resolvePrimaryPatientQuestionIntent(message: string): PatientQuestionIntent | null {
+function resolvePatientQuestionIntents(message: string): PatientQuestionIntent[] {
   const parts = messageQuestionParts(message);
-  for (let i = parts.length - 1; i >= 0; i -= 1) {
-    const intent = intentForQuestionPart(parts[i]);
-    if (intent) return intent;
+  const intents: PatientQuestionIntent[] = [];
+  const seen = new Set<PatientQuestionIntent>();
+  for (const part of parts) {
+    const intent = intentForQuestionPart(part);
+    if (intent && !seen.has(intent)) {
+      seen.add(intent);
+      intents.push(intent);
+    }
   }
-  return intentForQuestionPart(message);
+
+  // Catch intents still present in the full message when splitting merges phrases
+  // like "اسمك ايه عامل ايه".
+  const detectors: Array<[PatientQuestionIntent, (text: string) => boolean]> = [
+    ['name', asksName],
+    ['age', asksAge],
+    ['residence', asksResidence],
+    ['wellbeing', asksWellbeing],
+    ['priorDoctor', asksPriorDoctorVisit],
+    ['nationality', asksNationality],
+    ['marital', asksMaritalStatus],
+    ['gender', asksGender],
+  ];
+  for (const [intent, detect] of detectors) {
+    if (!seen.has(intent) && detect(message)) {
+      seen.add(intent);
+      intents.push(intent);
+    }
+  }
+
+  if (intents.length === 0) {
+    const fallback = intentForQuestionPart(message);
+    if (fallback) intents.push(fallback);
+  }
+  return intents;
+}
+
+function resolvePrimaryPatientQuestionIntent(message: string): PatientQuestionIntent | null {
+  const intents = resolvePatientQuestionIntents(message);
+  return intents.length > 0 ? intents[intents.length - 1] : null;
 }
 
 function asksFamilyHistory(text: string): boolean {
@@ -974,6 +1095,30 @@ function deterministicReplyForIntent(
   }
 }
 
+function deterministicReplyForIntents(
+  caseData: Case,
+  intents: PatientQuestionIntent[],
+  isArabic: boolean,
+  voiceTurn = true,
+): string | null {
+  if (intents.length === 0) return null;
+  if (intents.length === 1) {
+    return deterministicReplyForIntent(caseData, intents[0], isArabic, voiceTurn);
+  }
+
+  const replies = intents
+    .map((intent) => deterministicReplyForIntent(caseData, intent, isArabic, voiceTurn))
+    .filter((reply): reply is string => !!reply?.trim());
+
+  if (replies.length === 0) return null;
+  if (replies.length === 1) return replies[0];
+
+  if (isArabic) {
+    return `${replies.map((reply) => reply.replace(/\.\s*$/, '').trim()).join('، ')}.`;
+  }
+  return replies.join(' ');
+}
+
 function sanitizePatientResponse(
   caseData: Case,
   userMessage: string,
@@ -1021,10 +1166,10 @@ function getDeterministicPatientResponse(
 ): string | null {
   const isArabic = resolvePatientLanguage(language, userMessage);
   const text = userMessage.trim().toLowerCase();
-  const intent = resolvePrimaryPatientQuestionIntent(userMessage);
+  const intents = resolvePatientQuestionIntents(userMessage);
 
-  if (intent) {
-    const intentReply = deterministicReplyForIntent(caseData, intent, isArabic, true);
+  if (intents.length > 0) {
+    const intentReply = deterministicReplyForIntents(caseData, intents, isArabic, true);
     if (intentReply) return intentReply;
   }
 
@@ -1841,12 +1986,271 @@ function vivaQuestionKeywords(question: string): string[] {
     .filter((word) => word.length >= 4 && !VIVA_EVAL_STOP_WORDS.has(word));
 }
 
+function splitModelAnswerPoints(sampleAnswer: string): string[] {
+  return sampleAnswer
+    .split(/\n+|(?:^|\n)\s*(?:[-*•]|\d+[.)])\s+/m)
+    .flatMap((chunk) => chunk.split(/;\s+/))
+    .map((point) => point.replace(/^[-*•\s]+/, '').replace(/\*\*/g, '').trim())
+    .filter((point) => point.length >= 3)
+    .filter((point) => !/:\s*$/.test(point) && !/^(causes|complications|signs|definition)\b/i.test(point));
+}
+
+const GENERIC_MEDICAL_WORDS = new Set([
+  'mitral',
+  'aortic',
+  'tricuspid',
+  'pulmonary',
+  'ventricular',
+  'atrial',
+  'cardiac',
+  'heart',
+  'defect',
+  'disease',
+  'left',
+  'right',
+  'thrill',
+  'apical',
+  'patient',
+  'causes',
+  'include',
+  'the',
+  'with',
+  'from',
+  'and',
+  'arteriosus',
+]);
+
+const LABEL_TIMING_WORDS = ['systolic', 'diastolic', 'presystolic', 'ejection', 'pansystolic'];
+const LABEL_SITE_WORDS = ['parasternal', 'basal', 'epigastric', 'pulmonary', 'tricuspid'];
+const LABEL_VOLUME_WORDS = ['minimal', 'earliest', 'mild', 'moderate', 'tense', 'pelvic'];
+
+function stripMarkdown(text: string): string {
+  return text.replace(/\*\*/g, '').trim();
+}
+
+function requiredLabelTerms(label: string): string[] {
+  const lower = stripMarkdown(label).toLowerCase();
+  const terms: string[] = [];
+  for (const word of LABEL_TIMING_WORDS) {
+    if (lower.includes(word)) terms.push(word);
+  }
+  for (const word of LABEL_SITE_WORDS) {
+    if (lower.includes(word)) terms.push(word);
+  }
+  for (const word of LABEL_VOLUME_WORDS) {
+    if (lower.includes(word)) terms.push(word);
+  }
+  if (lower.includes('left') && lower.includes('parasternal')) terms.push('left');
+  if (terms.length === 0 && /\bapical\b/.test(lower)) terms.push('apical');
+  return [...new Set(terms)];
+}
+
+function requiredValueTerms(value: string): string[] {
+  const cleaned = stripMarkdown(value).toLowerCase();
+  const abbreviation = cleaned.match(/\(([a-z]{2,8})\)/);
+  if (abbreviation) return [abbreviation[1]];
+
+  const words = cleaned
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length >= 4 && !GENERIC_MEDICAL_WORDS.has(word));
+  return words;
+}
+
+function colonStructuredPointIsCovered(studentLower: string, point: string): boolean | null {
+  const cleaned = stripMarkdown(point);
+  const parts = cleaned.split(/:\s*/);
+  if (parts.length < 2) return null;
+
+  const label = parts[0];
+  const value = parts.slice(1).join(':');
+  const labelTerms = requiredLabelTerms(label);
+  const valueTerms = requiredValueTerms(value);
+
+  if (labelTerms.length > 0 && !labelTerms.every((term) => studentLower.includes(term))) {
+    return false;
+  }
+
+  const valuePhrase = value.toLowerCase().replace(/[.!?]/g, '').replace(/\s+/g, ' ').trim();
+  if (valuePhrase.length >= 10 && studentLower.includes(valuePhrase)) {
+    return true;
+  }
+
+  if (valueTerms.length === 0) return false;
+
+  return valueTerms.every((term) => {
+    if (term.length <= 5) {
+      return new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(studentLower);
+    }
+    return studentLower.includes(term);
+  });
+}
+
+function pointKeywords(point: string): string[] {
+  return point
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0600-\u06ff\s]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length >= 3 && !VIVA_EVAL_STOP_WORDS.has(word));
+}
+
+function pointIsCovered(studentLower: string, point: string): boolean {
+  const colonMatch = colonStructuredPointIsCovered(studentLower, point);
+  if (colonMatch !== null) return colonMatch;
+
+  const cleaned = stripMarkdown(point);
+  const pointLower = cleaned.toLowerCase();
+  const abbreviation = cleaned.match(/\(([A-Za-z]{2,8})\)/);
+  if (abbreviation) {
+    const abbr = abbreviation[1].toLowerCase();
+    if (new RegExp(`\\b${abbr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(studentLower)) {
+      return true;
+    }
+    const corePhrase = pointLower
+      .replace(/\([^)]*\)/g, '')
+      .replace(/[.!?]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (corePhrase.length >= 10 && studentLower.includes(corePhrase)) {
+      return true;
+    }
+    return false;
+  }
+
+  const keywords = pointKeywords(point);
+  if (keywords.length === 0) return false;
+  const hits = keywords.filter((word) => studentLower.includes(word));
+  if (keywords.length <= 2) return hits.length >= 1;
+  return hits.length / keywords.length >= 0.45;
+}
+
+function scoreAnswerAgainstModel(
+  studentAnswer: string,
+  sampleAnswer: string,
+): { coverage: number; matched: string[]; missing: string[] } {
+  const points = splitModelAnswerPoints(sampleAnswer);
+  if (points.length === 0) {
+    return { coverage: 0, matched: [], missing: [] };
+  }
+  const studentLower = studentAnswer.toLowerCase();
+  const matched: string[] = [];
+  const missing: string[] = [];
+  for (const point of points) {
+    if (pointIsCovered(studentLower, point)) matched.push(point);
+    else missing.push(point);
+  }
+  return {
+    coverage: matched.length / points.length,
+    matched,
+    missing,
+  };
+}
+
+function shortPointLabel(point: string): string {
+  const cleaned = stripMarkdown(point).replace(/[.]+$/g, '').trim();
+  const [label] = cleaned.split(/:\s*/);
+  return (label ?? cleaned).slice(0, 90).trim();
+}
+
+function buildPartialCreditFeedback(
+  matched: string[],
+  missing: string[],
+  options?: { duplicateAttempt?: boolean },
+): string {
+  if (missing.length === 0) {
+    return 'Correct — you covered all the expected key points.';
+  }
+
+  const missingLabels = missing.slice(0, 4).map(shortPointLabel);
+
+  if (options?.duplicateAttempt) {
+    return missing.length === 1
+      ? `You already mentioned that point. Add the remaining one: ${missingLabels[0]}.`
+      : `You already mentioned that point. Keep going — you still need ${missing.length} more (${missingLabels.slice(0, 2).join(', ')}${missing.length > 2 ? ', …' : ''}).`;
+  }
+
+  const correctLabels = matched.slice(0, 3).map(shortPointLabel);
+  const correctPart = correctLabels.length
+    ? `Good — that's correct for: ${correctLabels.join('; ')}. `
+    : '';
+
+  const missingPart =
+    missing.length === 1
+      ? `One more to go — think about ${missingLabels[0]}.`
+      : `Keep going — you still need ${missing.length} more point${missing.length > 1 ? 's' : ''} (e.g. ${missingLabels.slice(0, 2).join(', ')}).`;
+
+  return `${correctPart}${missingPart}`.trim();
+}
+
+function priorCombinedAnswer(combined: string, current: string): string {
+  const trimmedCombined = combined.trim();
+  const trimmedCurrent = current.trim();
+  if (!trimmedCurrent || trimmedCombined === trimmedCurrent) return '';
+  if (trimmedCombined.endsWith(trimmedCurrent)) {
+    return trimmedCombined.slice(0, trimmedCombined.length - trimmedCurrent.length).replace(/\n+$/, '').trim();
+  }
+  return trimmedCombined.replace(trimmedCurrent, '').trim();
+}
+
+function evaluateHistoryVivaAnswerFromModel(
+  studentAnswer: string,
+  sampleAnswer: string,
+  combinedStudentAnswer?: string,
+): VivaAnswerEvaluation {
+  const combined = (combinedStudentAnswer ?? studentAnswer).trim();
+  const current = studentAnswer.trim();
+  const before = priorCombinedAnswer(combined, current);
+  const { matched, missing } = scoreAnswerAgainstModel(combined, sampleAnswer);
+  const prior = before ? scoreAnswerAgainstModel(before, sampleAnswer) : { matched: [] as string[], missing };
+  const duplicateAttempt =
+    before.length > 0 &&
+    matched.length === prior.matched.length &&
+    matched.every((point) => prior.matched.includes(point));
+
+  if (matched.length > 0 && missing.length === 0) {
+    return {
+      advance: true,
+      feedback: 'Correct — you covered all the expected key points.',
+    };
+  }
+
+  if (matched.length > 0) {
+    return {
+      advance: false,
+      feedback: buildPartialCreditFeedback(matched, missing, { duplicateAttempt }),
+    };
+  }
+
+  const words = current.split(/\s+/).filter(Boolean);
+  if (words.length < 2) {
+    return {
+      advance: false,
+      feedback:
+        'That is quite brief. Think about the key clinical point in the question and try again.',
+    };
+  }
+
+  return {
+    advance: false,
+    feedback:
+      'Not quite — your answer does not address the main expected points. Give a focused clinical response and try again.',
+  };
+}
+
 function mockEvaluateHistoryVivaAnswer(
   vivaQuestion: string,
   studentAnswer: string,
+  sampleAnswer?: string,
+  combinedStudentAnswer?: string,
 ): VivaAnswerEvaluation {
   const answer = studentAnswer.trim();
+  const combined = (combinedStudentAnswer ?? answer).trim();
   const words = answer.split(/\s+/).filter(Boolean);
+
+  if (sampleAnswer?.trim()) {
+    return evaluateHistoryVivaAnswerFromModel(answer, sampleAnswer, combined);
+  }
+
   if (words.length < 3) {
     return {
       advance: false,
@@ -1897,16 +2301,41 @@ export async function evaluateHistoryVivaAnswer(
   vivaQuestion: string,
   questionNumber: number,
   studentAnswer: string,
+  sampleAnswer = '',
+  combinedStudentAnswer?: string,
 ): Promise<VivaAnswerEvaluation> {
   const settings = await getAISettings();
   const provider = process.env.AI_PROVIDER || settings.provider;
-  const fallback = () => mockEvaluateHistoryVivaAnswer(vivaQuestion, studentAnswer);
+  const combined = (combinedStudentAnswer ?? studentAnswer).trim();
+  const fallback = () =>
+    mockEvaluateHistoryVivaAnswer(vivaQuestion, studentAnswer, sampleAnswer, combined);
+
+  if (sampleAnswer.trim()) {
+    return evaluateHistoryVivaAnswerFromModel(studentAnswer, sampleAnswer, combined);
+  }
 
   if (provider === 'mock' || provider === 'demo') {
     return fallback();
   }
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
+  const modelAnswerBlock = sampleAnswer.trim()
+    ? `\nMODEL ANSWER (marking key from case author — NEVER reveal verbatim to student):\n${sampleAnswer.trim()}\n\nUse this as the primary marking key. Score each key point in the model answer.`
+    : '';
+
+  const priorAttempts =
+    combinedStudentAnswer && combinedStudentAnswer.trim() !== studentAnswer.trim()
+      ? combinedStudentAnswer
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line && line !== studentAnswer.trim())
+      : [];
+
+  const attemptBlock =
+    priorAttempts.length > 0
+      ? `\nPrevious attempts for this SAME question (score together with the latest attempt):\n${priorAttempts.map((attempt, index) => `${index + 1}. ${attempt}`).join('\n')}\n`
+      : '';
+
   const messages: ChatMessage[] = [
     {
       role: 'system',
@@ -1914,18 +2343,21 @@ export async function evaluateHistoryVivaAnswer(
 
 CASE: ${caseData.titleEn}
 DIAGNOSIS (reference only — do not reveal to student): ${caseData.finalDiagnosis}
+${modelAnswerBlock}
 
 RULES:
 1. Respond in English only in the feedback field (2-4 sentences).
-2. advance=true ONLY if the answer is substantially correct OR good enough for an undergraduate OSCE pass (partial credit OK).
-3. advance=false if wrong, off-topic, or too vague (fewer than ~5 meaningful words).
-4. When advance=false: give a brief hint without the full model answer. Encourage retry on the SAME question. Do NOT ask the next question.
-5. When advance=true: brief acknowledgement only (e.g. "Good.", "Correct.", "Fair enough.") — never include the next question text.
-6. Return ONLY valid JSON: {"advance":true|false,"feedback":"..."}${knowledgeContext}`,
+2. The student may answer across MULTIPLE attempts for the SAME question. Score ALL attempts together.
+3. advance=true ONLY when every key point in the model answer is covered across all attempts.
+4. PARTIAL CREDIT: if some points are correct but others are missing, advance=false. Praise what is correct, then name ONLY the missing category/topic in short form (e.g. "mild ascites", "VSD") — NEVER quote the full model answer or reveal signs/tests the student has not stated.
+5. advance=false if the latest attempt is substantially wrong, off-topic, or too vague — unless earlier attempts already covered enough points.
+6. When advance=false with partial credit: praise what is already correct cumulatively; do NOT ask for points they already gave in earlier attempts. If they repeat the same point, say so briefly and ask for the next category only.
+7. When advance=true: brief acknowledgement only (e.g. "Correct — all key points covered.") — never include the next question text.
+8. Return ONLY valid JSON: {"advance":true|false,"feedback":"..."}${knowledgeContext}`,
     },
     {
       role: 'user',
-      content: `Question ${questionNumber} of 5: ${vivaQuestion}\n\nStudent answer: ${studentAnswer}`,
+      content: `Question ${questionNumber} of 5: ${vivaQuestion}${attemptBlock}\nLatest student attempt: ${studentAnswer}\n\nCombined answer so far:\n${combined}`,
     },
   ];
 
@@ -1967,7 +2399,18 @@ export async function getExaminerVivaResponse(
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content: `You are an Egyptian OSCE examiner conducting a viva for case: ${caseTitle}. Diagnosis: ${caseData.finalDiagnosis}. Ask follow-up questions and provide brief constructive feedback. Do not reveal full answers immediately. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang, 'examiner')}`,
+      content: `You are an Egyptian OSCE examiner conducting a viva for case: ${caseTitle}.
+
+CORRECT DIAGNOSIS (reference — do not reveal immediately): ${caseData.finalDiagnosis}
+TEACHING POINTS / EXPECTED MANAGEMENT (marking key from case author):
+${caseData.teachingPoints || '(not specified)'}
+
+RULES:
+1. Ask focused follow-up questions and give brief constructive feedback.
+2. PARTIAL CREDIT: if the student states 3 of 4 expected points, acknowledge the 3 correct points and ask only about what is missing. Do NOT say the entire answer is wrong.
+3. Use the teaching points above as your marking reference — stay aligned with the case author's expected answer.
+4. Do not reveal the full model answer immediately unless the student has clearly failed after a reasonable attempt.
+5. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang, 'examiner')}`,
     },
     ...promptHistory.map((m) => ({
       role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',
@@ -2035,6 +2478,9 @@ export async function getManeuverExaminerResponse(
 
   const knowledgeContext = await getCategoryKnowledgeContext(caseData.categoryId);
   const promptHistory = contextWindow(history, settings.maxContextMessages);
+  const physicalExam = parsePhysicalExamForm(caseData.physicalExam);
+  const maneuverFindings =
+    physicalExam[maneuverId as keyof typeof physicalExam]?.trim() || '';
 
   const messages: ChatMessage[] = [
     {
@@ -2043,14 +2489,16 @@ export async function getManeuverExaminerResponse(
 
 CASE: ${caseTitle}
 DIAGNOSIS (hidden from student): ${caseData.finalDiagnosis}
-PHYSICAL EXAM DATA: ${caseData.physicalExam}
+EXPECTED FINDINGS FOR ${name.toUpperCase()} (marking key from case author — do not read verbatim):
+${maneuverFindings || '(No specific findings configured — use diagnosis context only)'}
 
 RULES:
-1. Evaluate the student's spoken findings for ${name} only.
-2. Ask one focused follow-up question OR give brief constructive feedback (2-4 sentences).
-3. Do NOT reveal the full diagnosis immediately.
-4. Probe technique, expected findings, and clinical reasoning.
-5. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang, 'examiner')}`,
+1. Evaluate the student's spoken findings for ${name} only, against the expected findings above.
+2. PARTIAL CREDIT IS REQUIRED: if the student correctly states 3 of 4 expected findings, acknowledge what was correct and prompt only for what is missing. Never say the whole answer is wrong when most points are correct.
+3. Ask one focused follow-up question OR give brief constructive feedback (2-4 sentences).
+4. Do NOT reveal the full diagnosis or full model findings immediately.
+5. Probe technique, expected findings, and clinical reasoning.
+6. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang, 'examiner')}`,
     },
     ...promptHistory.map((m) => ({
       role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',

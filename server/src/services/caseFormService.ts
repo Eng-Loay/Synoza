@@ -1,6 +1,13 @@
 import type { Case } from '@prisma/client';
+import {
+  DEFAULT_STATION_CONFIG,
+  parseStationConfig,
+  serializeStationConfig,
+  type ManeuverId,
+  type StationConfig,
+} from '../lib/stationConfig.js';
 
-export type ManeuverId = 'inspection' | 'palpation' | 'percussion' | 'auscultation';
+export type { ManeuverId };
 export type MediaType = 'image' | 'video' | 'audio';
 
 export interface VitalSignForm {
@@ -52,6 +59,11 @@ export interface ExaminerQuestionForm {
   sampleAnswer: string;
 }
 
+export interface StationConfigForm {
+  enabledManeuvers: ManeuverId[];
+  enableHistoryExaminer: boolean;
+}
+
 export interface CaseFormPayload {
   titleEn: string;
   titleAr: string;
@@ -80,6 +92,7 @@ export interface CaseFormPayload {
   labSections: LabSectionForm[];
   rubricItems: RubricItemForm[];
   examinerQuestions: ExaminerQuestionForm[];
+  stationConfig: StationConfigForm;
 }
 
 const EMPTY_VITALS: VitalSignForm = {
@@ -274,6 +287,21 @@ export function serializeExaminerQuestions(questions: ExaminerQuestionForm[]): s
   return JSON.stringify(rows);
 }
 
+export function parseStationConfigForm(raw: string | null | undefined): StationConfigForm {
+  const parsed = parseStationConfig(raw);
+  return {
+    enabledManeuvers: [...parsed.enabledManeuvers],
+    enableHistoryExaminer: parsed.enableHistoryExaminer,
+  };
+}
+
+export function serializeStationConfigForm(config: StationConfigForm): string {
+  return serializeStationConfig({
+    enabledManeuvers: config.enabledManeuvers,
+    enableHistoryExaminer: config.enableHistoryExaminer,
+  });
+}
+
 export function caseToForm(caseData: Case): CaseFormPayload {
   return {
     titleEn: caseData.titleEn,
@@ -303,6 +331,7 @@ export function caseToForm(caseData: Case): CaseFormPayload {
     labSections: parseLabSectionsForm(caseData.labResults),
     rubricItems: parseRubricItemsForm(caseData.evaluationRubric),
     examinerQuestions: parseExaminerQuestionsForm(caseData.examinerQuestions),
+    stationConfig: parseStationConfigForm(caseData.stationConfig),
   };
 }
 
@@ -335,5 +364,6 @@ export function formToCaseData(form: CaseFormPayload) {
     labResults: serializeLabSections(form.labSections),
     evaluationRubric: serializeRubricItems(form.rubricItems),
     examinerQuestions: serializeExaminerQuestions(form.examinerQuestions ?? []),
+    stationConfig: serializeStationConfigForm(form.stationConfig ?? DEFAULT_STATION_CONFIG),
   };
 }

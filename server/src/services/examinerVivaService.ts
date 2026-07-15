@@ -4,6 +4,11 @@ import { evaluateHistoryVivaAnswer } from "./aiService.js";
 export const HISTORY_EXAMINER_STAGE = "history:examiner";
 export const VIVA_QUESTIONS_PER_SESSION = 5;
 
+export interface ExaminerVivaItem {
+  question: string;
+  sampleAnswer: string;
+}
+
 const VIVA_CLOSING =
   "Thank you. That completes the examiner viva for this station. You may continue with the rest of the OSCE.";
 
@@ -115,17 +120,23 @@ function seededShuffle<T>(items: T[], seed: string): T[] {
   return arr;
 }
 
-function parseCaseExaminerQuestions(caseData: Case): string[] {
+function parseCaseExaminerQuestions(caseData: Case): ExaminerVivaItem[] {
   try {
     const parsed = JSON.parse(caseData.examinerQuestions || "[]") as Array<
-      { question?: string } | string
+      { question?: string; sampleAnswer?: string } | string
     >;
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .map((row) =>
-        (typeof row === "string" ? row : String(row.question ?? "")).trim(),
-      )
-      .filter(Boolean);
+      .map((row) => {
+        if (typeof row === "string") {
+          return { question: row.trim(), sampleAnswer: "" };
+        }
+        return {
+          question: String(row.question ?? "").trim(),
+          sampleAnswer: String(row.sampleAnswer ?? "").trim(),
+        };
+      })
+      .filter((row) => row.question);
   } catch {
     return [];
   }
@@ -134,7 +145,7 @@ function parseCaseExaminerQuestions(caseData: Case): string[] {
 export function pickVivaQuestionsForSession(
   sessionId: string,
   caseData: Case,
-): string[] {
+): ExaminerVivaItem[] {
   const custom = parseCaseExaminerQuestions(caseData);
   if (custom.length > 0) {
     const seed = `${sessionId}:${caseData.id}:${caseData.titleEn}:custom`;
@@ -142,7 +153,9 @@ export function pickVivaQuestionsForSession(
   }
   const pool = QUESTION_POOLS[casePoolKey(caseData)] ?? QUESTION_POOLS.default;
   const seed = `${sessionId}:${caseData.id}:${caseData.titleEn}`;
-  return seededShuffle(pool, seed).slice(0, VIVA_QUESTIONS_PER_SESSION);
+  return seededShuffle(pool, seed)
+    .slice(0, VIVA_QUESTIONS_PER_SESSION)
+    .map((question) => ({ question, sampleAnswer: "" }));
 }
 
 export function isHistoryExaminerVivaStage(
@@ -195,7 +208,41 @@ export function buildExaminerVivaOpening(
   caseData: Case,
 ): string {
   const [first] = pickVivaQuestionsForSession(sessionId, caseData);
-  return `Good morning. I will ask you five short viva questions for this station. Question 1 of ${VIVA_QUESTIONS_PER_SESSION}: ${first}`;
+  return `Good morning. I will ask you five short viva questions for this station. Question 1 of ${VIVA_QUESTIONS_PER_SESSION}: ${first.question}`;
+}
+
+export function getCumulativeStudentAnswerForCurrentQuestion(
+  messages: Array<{ role: string; stage: string; content: string }>,
+  stage: string,
+  latestAnswer = '',
+): { attempts: string[]; combined: string } {
+  let questionStartIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.stage !== stage || message.role !== "EXAMINER") continue;
+    if (parseVivaQuestionNumber(message.content)) {
+      questionStartIndex = i;
+      break;
+    }
+  }
+
+  const attempts: string[] = [];
+  const start = questionStartIndex >= 0 ? questionStartIndex + 1 : 0;
+  for (let i = start; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (message.stage === stage && message.role === "STUDENT") {
+      attempts.push(message.content);
+    }
+  }
+
+  if (latestAnswer.trim()) {
+    attempts.push(latestAnswer.trim());
+  }
+
+  return {
+    attempts,
+    combined: attempts.join("\n"),
+  };
 }
 
 export async function respondToHistoryVivaAnswer(
@@ -213,6 +260,11 @@ export async function respondToHistoryVivaAnswer(
   const questionNumber = getCurrentVivaQuestionNumber(messages, stage);
   const questionIndex = Math.min(questionNumber - 1, questions.length - 1);
   const currentQuestion = questions[questionIndex];
+  const { combined: combinedStudentAnswer } = getCumulativeStudentAnswerForCurrentQuestion(
+    messages,
+    stage,
+    studentAnswer,
+  );
 
   const evaluation = studentGaveUp(studentAnswer)
     ? {
@@ -221,9 +273,11 @@ export async function respondToHistoryVivaAnswer(
       }
     : await evaluateHistoryVivaAnswer(
         caseData,
-        currentQuestion,
+        currentQuestion.question,
         questionNumber,
         studentAnswer,
+        currentQuestion.sampleAnswer,
+        combinedStudentAnswer,
       );
 
   const feedback = evaluation.feedback.trim();
@@ -239,5 +293,5 @@ export async function respondToHistoryVivaAnswer(
 
   const nextQuestion = questions[completedCount];
   const nextNumber = completedCount + 1;
-  return `${feedback} Question ${nextNumber} of ${VIVA_QUESTIONS_PER_SESSION}: ${nextQuestion}`;
+  return `${feedback} Question ${nextNumber} of ${VIVA_QUESTIONS_PER_SESSION}: ${nextQuestion.question}`;
 }

@@ -18,6 +18,7 @@ import {
   type QbankExamResult,
 } from '../../data/qbankMock';
 import { splitQuestionContent } from '../../lib/qbankQuestionContent';
+import { QbankQuestionInsightPanel } from '../../components/student/qbank/QbankQuestionInsightPanel';
 
 function formatDuration(ms: number) {
   const totalSec = Math.floor(ms / 1000);
@@ -338,16 +339,12 @@ export default function StudentMcqExamReportPage() {
                 })}
               </div>
 
-              {display.explanation?.trim() && (
-                <div className="mt-4 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/30 p-4">
-                  <p className="text-xs font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300 mb-2">
-                    {t('portalMcqExplanation')}
-                  </p>
-                  <p className="text-sm text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed">
-                    {display.explanation}
-                  </p>
-                </div>
-              )}
+              <QbankQuestionInsightPanel
+                className="mt-4"
+                question={question}
+                selectedIndex={selectedIndex}
+                revealed
+              />
             </article>
             );
           })}

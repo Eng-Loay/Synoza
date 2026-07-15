@@ -52,7 +52,7 @@ assert(JSON.stringify(qA) !== JSON.stringify(qB), 'different sessions get differ
 
 const opening = buildExaminerVivaOpening(sessionA, tarekCase);
 assert(/Question 1 of 5/i.test(opening), 'opening in English with Q1', opening);
-assert(opening.includes(qA[0]), 'opening uses first picked question');
+assert(opening.includes(qA[0].question), 'opening uses first picked question');
 
 const stage = 'history:examiner';
 const baseMessages = [
@@ -66,7 +66,7 @@ assert(studentGaveUp("don't know"), 'detects bare "don\'t know"');
 assert(studentGaveUp('مش عارف يا دكتور'), 'detects Arabic give-up');
 
 const penicillinQ =
-  qA.find((q) => q.toLowerCase().includes('penicillin')) ??
+  qA.find((q) => q.question.toLowerCase().includes('penicillin'))?.question ??
   'What is the purpose of penicillin prophylaxis after rheumatic fever?';
 
 const wrongReply = await respondToHistoryVivaAnswer(
@@ -123,7 +123,119 @@ const closingReply = await respondToHistoryVivaAnswer(
 assert(/completes the examiner viva/i.test(closingReply), 'closes after Q5', closingReply);
 
 const samiraQ = pickVivaQuestionsForSession(sessionA, samiraCase);
-assert(samiraQ[0] !== qA[0] || samiraQ[1] !== qA[1], 'different case pool changes questions');
+assert(samiraQ[0].question !== qA[0].question || samiraQ[1].question !== qA[1].question, 'different case pool changes questions');
+
+const shuntSampleAnswer = `Causes of a left-to-right shunt include:
+- Ventricular septal defect (VSD).
+- Atrial septal defect (ASD).
+- Patent ductus arteriosus (PDA).`;
+
+const vsdCase = {
+  id: 'case-vsd',
+  titleEn: 'VSD (Ventricular Septal Defect)',
+  finalDiagnosis: 'Ventricular septal defect',
+  examinerQuestions: JSON.stringify(
+    Array.from({ length: 5 }, (_, index) => ({
+      id: `q${index + 1}`,
+      question: 'What are the causes of a left-to-right shunt?',
+      sampleAnswer: shuntSampleAnswer,
+    })),
+  ),
+} as Case;
+
+const vsdSession = 'session-vsd-shunt';
+const vsdOpening = buildExaminerVivaOpening(vsdSession, vsdCase);
+const vsdMessages = [{ role: 'EXAMINER', stage, content: vsdOpening }];
+
+const asdReply = await respondToHistoryVivaAnswer(
+  vsdSession,
+  vsdCase,
+  vsdMessages,
+  stage,
+  'Atrial septal defect (ASD)',
+);
+assert(!/Question 2 of 5/i.test(asdReply), 'first partial point stays on Q1', asdReply);
+assert(/good|correct/i.test(asdReply), 'partial point gets encouragement', asdReply);
+assert(/VSD|PDA|ventricular|patent/i.test(asdReply), 'partial point hints remaining causes', asdReply);
+
+const vsdMessages2 = [
+  ...vsdMessages,
+  { role: 'STUDENT', stage, content: 'Atrial septal defect (ASD)' },
+  { role: 'EXAMINER', stage, content: asdReply },
+];
+const vsdReply = await respondToHistoryVivaAnswer(
+  vsdSession,
+  vsdCase,
+  vsdMessages2,
+  stage,
+  'Ventricular septal defect (VSD)',
+);
+assert(!/Question 2 of 5/i.test(vsdReply), 'second partial point stays on Q1', vsdReply);
+assert(/good|correct/i.test(vsdReply), 'second partial point gets encouragement', vsdReply);
+
+const vsdMessages3 = [
+  ...vsdMessages2,
+  { role: 'STUDENT', stage, content: 'Ventricular septal defect (VSD)' },
+  { role: 'EXAMINER', stage, content: vsdReply },
+];
+const pdaReply = await respondToHistoryVivaAnswer(
+  vsdSession,
+  vsdCase,
+  vsdMessages3,
+  stage,
+  'Patent ductus arteriosus (PDA)',
+);
+assert(/Question 2 of 5/i.test(pdaReply), 'all points advance to Q2', pdaReply);
+assert(/correct|covered/i.test(pdaReply.toLowerCase()), 'full answer acknowledged', pdaReply);
+
+const thrillSampleAnswer = `Causes of a thrill include:
+- **Apical systolic thrill:** Mitral regurgitation.
+- **Apical diastolic thrill:** Mitral stenosis.
+- **Left parasternal thrill:** Ventricular septal defect.
+- **Basal thrill:** Aortic stenosis.`;
+
+const thrillEval = await import('../src/services/aiService.js').then((m) =>
+  m.evaluateHistoryVivaAnswer(
+    vsdCase,
+    'What are the causes of a thrill in a cardiac patient?',
+    2,
+    'Apical systolic thrill: Mitral regurgitation',
+    thrillSampleAnswer,
+    'Apical systolic thrill: Mitral regurgitation',
+  ),
+);
+assert(!thrillEval.advance, 'single thrill point does not advance', thrillEval.feedback);
+assert(/apical systolic thrill/i.test(thrillEval.feedback), 'credits MR thrill point', thrillEval.feedback);
+const creditedPart = thrillEval.feedback.split(/keep going|one more|still need/i)[0] ?? thrillEval.feedback;
+assert(
+  !/diastolic thrill|mitral stenosis/i.test(creditedPart),
+  'does not falsely credit MS thrill point',
+  thrillEval.feedback,
+);
+
+const ascitesSample = `- **Minimal / Earliest Ascites (< 500 mL):** Detected via Abdominal Ultrasound or by auscultating the Puddle sign.
+- **Mild Ascites (500 - 1500 mL):** Detected via the Knee-Elbow percussory test.
+- **Moderate Ascites (1500 - 3000 mL):** Detected via Shifting Dullness using light percussion.
+- **Tense Ascites (> 3000 mL):** Easily inspected as generalized distension with full flanks and an everted umbilicus.`;
+
+const ascitesEval = await import('../src/services/aiService.js').then((m) =>
+  m.evaluateHistoryVivaAnswer(
+    vsdCase,
+    'How to detect ascites clinically based on fluid volume?',
+    1,
+    'Minimal / Earliest Ascites (< 500 mL): Detected via Abdominal Ultrasound or by auscultating the Puddle sign.',
+    ascitesSample,
+    'Minimal / Earliest Ascites (< 500 mL): Detected via Abdominal Ultrasound or by auscultating the Puddle sign.',
+  ),
+);
+assert(!ascitesEval.advance, 'ascites partial does not advance', ascitesEval.feedback);
+assert(/good|correct/i.test(ascitesEval.feedback), 'ascites partial gets praise', ascitesEval.feedback);
+assert(
+  !/knee-elbow|shifting dullness|everted umbilicus/i.test(ascitesEval.feedback),
+  'ascites feedback does not reveal full remaining answers',
+  ascitesEval.feedback,
+);
+assert(/mild|moderate|tense/i.test(ascitesEval.feedback), 'ascites hints remaining categories only', ascitesEval.feedback);
 
 console.log('\n=== Summary ===\n');
 console.log(`Passed: ${passed}`);

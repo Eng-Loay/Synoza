@@ -241,27 +241,29 @@ router.post('/forgot-password', [body('email').isEmail().normalizeEmail()], asyn
   const { email } = req.body;
   const user = await prisma.user.findUnique({ where: { email } });
 
-  if (user) {
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const resetExpires = new Date(Date.now() + 3600000);
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { resetToken, resetExpires },
-    });
-
-    if (isSmtpConfigured()) {
-      try {
-        await sendPasswordResetEmail(user.email, user.firstName, resetToken, normalizeEmailLang(user.preferredLang));
-      } catch (err) {
-        console.error('[auth/forgot-password] email failed:', err);
-        return res.status(503).json({ error: 'Failed to send reset email' });
-      }
-    } else if (process.env.NODE_ENV === 'development') {
-      return res.json({ message: 'Reset token generated', resetToken });
-    }
+  if (!user) {
+    return res.status(404).json({ error: 'Email not registered', code: 'EMAIL_NOT_FOUND' });
   }
 
-  res.json({ message: 'If the email exists, a reset link has been sent' });
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  const resetExpires = new Date(Date.now() + 3600000);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { resetToken, resetExpires },
+  });
+
+  if (isSmtpConfigured()) {
+    try {
+      await sendPasswordResetEmail(user.email, user.firstName, resetToken, normalizeEmailLang(user.preferredLang));
+    } catch (err) {
+      console.error('[auth/forgot-password] email failed:', err);
+      return res.status(503).json({ error: 'Failed to send reset email' });
+    }
+  } else if (process.env.NODE_ENV === 'development') {
+    return res.json({ message: 'Reset token generated', resetToken });
+  }
+
+  res.json({ message: 'Password reset link sent' });
 });
 
 router.post(

@@ -28,6 +28,7 @@ export type QbankQuestion = {
   source: string;
   chapterId?: string;
   referenceId?: string;
+  subjectTags?: string[];
 };
 
 export type QbankExamConfig = {

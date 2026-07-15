@@ -89,6 +89,30 @@ const helloRepeat = await getPatientResponse(
 );
 assert(/أهلاً|اهلا/i.test(helloRepeat), 'اهلا اهلا gets greeting not clarify', helloRepeat);
 
+const multiDemographics = await getPatientResponse(
+  samiraCase,
+  [{ role: 'STUDENT', content: 'اهلا' }],
+  'اسمك ايه عندك كم سنه ساكن فين',
+  'AR',
+);
+assert(/اسمي/i.test(multiDemographics), 'multi-question includes name', multiDemographics);
+assert(/58|سنة/i.test(multiDemographics), 'multi-question includes age', multiDemographics);
+assert(/القاهرة|شبرا|من/i.test(multiDemographics), 'multi-question includes residence', multiDemographics);
+
+const mixedSocial = await getPatientResponse(
+  samiraCase,
+  [{ role: 'STUDENT', content: 'اهلا' }],
+  'اسمك ايه عامل ايه عندك كم سنه',
+  'AR',
+);
+assert(/اسمي/i.test(mixedSocial), 'mixed name+wellbeing+age includes name', mixedSocial);
+assert(/58|سنة/i.test(mixedSocial), 'mixed name+wellbeing+age includes age', mixedSocial);
+assert(
+  /تعبان|مش في أحسن حالي|والله/i.test(mixedSocial),
+  'mixed name+wellbeing+age includes wellbeing',
+  mixedSocial,
+);
+
 console.log('\n=== Voice path stays brief ===\n');
 const voiceWellbeing = sanitizeRealtimePatientTranscript(samiraCase, 'إيه الأخبار', 'long ai dump', 'AR');
 assert(voiceWellbeing.length < 80, 'voice wellbeing stays short', voiceWellbeing);

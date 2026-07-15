@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText, Plus, Trash2, Pencil, Upload, Save, X, ClipboardPaste, Music } from 'lucide-react';
+import { AdminStickySaveBar } from './AdminStickySaveBar';
 import api from '../../lib/api';
+import { ALL_MANEUVERS, DEFAULT_STATION_CONFIG } from '../../lib/stationConfig';
 
 type ManeuverId = 'inspection' | 'palpation' | 'percussion' | 'auscultation';
 type MediaType = 'image' | 'video' | 'audio';
@@ -106,6 +108,10 @@ interface CaseFormPayload {
   labSections: LabSectionForm[];
   rubricItems: RubricItemForm[];
   examinerQuestions: ExaminerQuestionForm[];
+  stationConfig: {
+    enabledManeuvers: ManeuverId[];
+    enableHistoryExaminer: boolean;
+  };
 }
 
 const MANEUVERS: Array<{ id: ManeuverId; label: string }> = [
@@ -155,6 +161,10 @@ function emptyForm(specialtyId = '', difficultyId = '', categoryId = ''): CaseFo
     labSections: [],
     rubricItems: [],
     examinerQuestions: [],
+    stationConfig: {
+      enabledManeuvers: [...ALL_MANEUVERS],
+      enableHistoryExaminer: DEFAULT_STATION_CONFIG.enableHistoryExaminer,
+    },
   };
 }
 
@@ -318,6 +328,10 @@ export function AdminCasesTab() {
       setError(t('adminCaseRequiredFields'));
       return;
     }
+    if (form.stationConfig.enabledManeuvers.length === 0) {
+      setError(t('adminCaseManeuverRequired'));
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -429,8 +443,8 @@ export function AdminCasesTab() {
 
   if (editingId) {
     return (
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="space-y-4 pb-2">
+        <div className="sticky top-0 z-20 -mx-1 px-1 py-3 mb-2 bg-slate-100/95 dark:bg-slate-950/95 backdrop-blur border-b border-slate-200/80 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
               {editingId === 'new' ? t('adminCaseAdd') : t('adminCaseEdit')}
@@ -535,6 +549,64 @@ export function AdminCasesTab() {
                 </div>
               );
             })}
+          </div>
+        </Section>
+
+        <Section title={t('adminCaseSectionStation')}>
+          <p className="text-sm text-slate-500 mb-3">{t('adminCaseStationDesc')}</p>
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">
+                {t('adminCaseEnabledManeuvers')}
+              </p>
+              <div className="flex flex-wrap gap-3">
+                {MANEUVERS.map((maneuver) => {
+                  const checked = form.stationConfig.enabledManeuvers.includes(maneuver.id);
+                  return (
+                    <label
+                      key={maneuver.id}
+                      className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer ${
+                        checked
+                          ? 'border-violet-400 bg-violet-50 dark:bg-violet-950/30'
+                          : 'border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const enabled = e.target.checked
+                            ? [...form.stationConfig.enabledManeuvers, maneuver.id]
+                            : form.stationConfig.enabledManeuvers.filter((id) => id !== maneuver.id);
+                          setForm({
+                            ...form,
+                            stationConfig: { ...form.stationConfig, enabledManeuvers: enabled },
+                          });
+                        }}
+                      />
+                      <span className="text-sm">{maneuver.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.stationConfig.enableHistoryExaminer}
+                onChange={(e) => setForm({
+                  ...form,
+                  stationConfig: {
+                    ...form.stationConfig,
+                    enableHistoryExaminer: e.target.checked,
+                  },
+                })}
+              />
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                {t('adminCaseEnableHistoryExaminer')}
+              </span>
+            </label>
+            <p className="text-xs text-slate-500">{t('adminCaseEnableHistoryExaminerHint')}</p>
           </div>
         </Section>
 
@@ -799,6 +871,13 @@ export function AdminCasesTab() {
             <textarea className="input-field min-h-[100px]" placeholder={t('adminCaseTeachingPoints')} value={form.teachingPoints} onChange={(e) => setForm({ ...form, teachingPoints: e.target.value })} />
           </div>
         </Section>
+
+        <AdminStickySaveBar
+          onSave={() => void saveCase()}
+          onCancel={cancelEdit}
+          saving={saving}
+          disabled={!form.titleEn.trim() || !form.specialtyId || !form.difficultyId}
+        />
       </div>
     );
   }

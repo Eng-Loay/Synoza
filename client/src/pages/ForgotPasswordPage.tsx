@@ -33,7 +33,9 @@ export default function ForgotPasswordPage() {
         setDevResetUrl(`/reset-password?token=${encodeURIComponent(data.resetToken)}`);
       }
     } catch (err: unknown) {
-      if (axios.isAxiosError(err) && err.response?.status === 503) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) {
+        setError(t('forgotPasswordEmailNotFound'));
+      } else if (axios.isAxiosError(err) && err.response?.status === 503) {
         setError(t('otpSendFailed'));
       } else {
         setError(t('error'));

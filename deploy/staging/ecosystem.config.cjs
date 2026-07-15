@@ -9,6 +9,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: '5099',
+        SYNOZA_EXAM_MEDIA_ROOT: '/home/adminanmkavps/synoza-media/exam',
       },
     },
   ],
