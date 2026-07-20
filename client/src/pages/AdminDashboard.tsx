@@ -5,7 +5,7 @@ import {
   Users, FileText, BarChart3, ClipboardList,
   TrendingUp, Activity, CheckCircle2, BookOpen, FolderTree, Plus, Trash2,
   Globe, GraduationCap, Pencil, X, Eye, ExternalLink, RefreshCw, Library,
-  DollarSign, Cpu,
+  DollarSign, Cpu, Sparkles,
 } from 'lucide-react';
 import api, { pingServer } from '../lib/api';
 import { DashboardLayout } from '../components/DashboardLayout';
@@ -15,9 +15,10 @@ import { AdminUserPlanModal } from '../components/admin/AdminUserPlanModal';
 import { AdminApiUsageTab } from '../components/admin/AdminApiUsageTab';
 import { AdminPricingTab } from '../components/admin/AdminPricingTab';
 import { AdminStudentProfile } from '../components/admin/AdminStudentProfile';
+import { AdminKnowledgeAiTab } from '../components/admin/AdminKnowledgeAiTab';
 import type { SiteSettings } from '../components/SiteFooter';
 
-type Tab = 'overview' | 'users' | 'cases' | 'results' | 'knowledge' | 'site' | 'qbank' | 'apiUsage' | 'pricing';
+type Tab = 'overview' | 'users' | 'cases' | 'results' | 'knowledge' | 'knowledgeAi' | 'site' | 'qbank' | 'apiUsage' | 'pricing';
 
 interface CategoryRow {
   id: string;
@@ -327,6 +328,7 @@ export default function AdminDashboard() {
     { id: 'cases', label: t('cases'), icon: FileText },
     { id: 'results', label: t('results'), icon: ClipboardList },
     { id: 'knowledge', label: t('knowledgeBase'), icon: BookOpen },
+    { id: 'knowledgeAi', label: t('adminAiKbNav'), icon: Sparkles },
     { id: 'qbank', label: t('adminQbankNav'), icon: Library },
     { id: 'site', label: 'Site Content', icon: Globe },
   ];
@@ -756,6 +758,8 @@ export default function AdminDashboard() {
       )}
 
       {tab === 'cases' && <AdminCasesTab />}
+
+      {tab === 'knowledgeAi' && <AdminKnowledgeAiTab />}
 
       {tab === 'results' && (
         <div className="card overflow-hidden animate-fade-in">

@@ -38,7 +38,10 @@ try {
   $content = (Get-Content $installSh -Raw) -replace "`r`n", "`n"
   [System.IO.File]::WriteAllText($installSh, $content)
   Copy-Item "$Root/deploy/env.production.template" "$Stage/deploy/"
-  Copy-Item "$Root/deploy/server.env.production" "$Stage/server/.env"
+  # Optional local env template; production restores server/.env from live backup during push-update
+  if (Test-Path "$Root/deploy/server.env.production") {
+    Copy-Item "$Root/deploy/server.env.production" "$Stage/server/.env"
+  }
   Copy-Item "$Root/deploy/ecosystem.config.cjs" "$Stage/"
 
   @"

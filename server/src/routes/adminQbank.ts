@@ -9,6 +9,7 @@ import {
   validateQuestionInput,
   grantModuleAccess,
 } from '../services/qbankService.js';
+import { syncModuleUniversities } from '../lib/universityScope.js';
 import {
   parseStructuredQbankImport,
   sanitizeImportedReferenceName,
@@ -210,6 +211,7 @@ async function validateStructuredQuestion(
   moduleId: string,
   autoCreateLookups: boolean,
   lookupCache?: Map<string, string>,
+  subjectOverride?: string,
 ): Promise<StructuredImportRow> {
   const errors: string[] = [];
 
@@ -248,7 +250,12 @@ async function validateStructuredQuestion(
     if (!referenceId) errors.push(`Reference "${referenceName}" not found`);
   }
 
-  const subjectTags = question.tags.length ? question.tags : null;
+  const override = subjectOverride?.trim();
+  const subjectTags = override
+    ? [override]
+    : question.tags.length
+      ? question.tags
+      : null;
 
   return {
     rowNum,
@@ -386,12 +393,17 @@ router.get('/terms/:termId/modules', async (req, res) => {
   const modules = await prisma.qbankModule.findMany({
     where: { termId: req.params.termId },
     orderBy: { sortOrder: 'asc' },
-    include: { _count: { select: { questions: true } } },
+    include: {
+      _count: { select: { questions: true } },
+      universities: { include: { university: { select: { id: true, nameEn: true, nameAr: true } } } },
+    },
   });
   res.json({
     modules: modules.map((m) => ({
       ...m,
       subjects: parseSubjects(m.subjects),
+      universityIds: m.universities.map((row) => row.universityId),
+      universities: m.universities.map((row) => row.university),
     })),
   });
 });
@@ -409,6 +421,7 @@ router.post('/terms/:termId/modules', async (req, res) => {
     priceEgp = 50,
     sortOrder = 0,
     isActive = true,
+    universityIds = [],
   } = req.body;
 
   if (!id?.trim() || !nameEn?.trim() || !nameAr?.trim()) {
@@ -432,7 +445,29 @@ router.post('/terms/:termId/modules', async (req, res) => {
     },
   });
 
-  res.status(201).json({ module: { ...mod, subjects: parseSubjects(mod.subjects) } });
+  try {
+    await syncModuleUniversities(
+      mod.id,
+      Array.isArray(universityIds) ? universityIds.map(String) : [],
+    );
+  } catch (error) {
+    await prisma.qbankModule.delete({ where: { id: mod.id } });
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid universities' });
+  }
+
+  const linked = await prisma.qbankModuleUniversity.findMany({
+    where: { moduleId: mod.id },
+    include: { university: { select: { id: true, nameEn: true, nameAr: true } } },
+  });
+
+  res.status(201).json({
+    module: {
+      ...mod,
+      subjects: parseSubjects(mod.subjects),
+      universityIds: linked.map((row) => row.universityId),
+      universities: linked.map((row) => row.university),
+    },
+  });
 });
 
 router.put('/modules/:id', async (req, res) => {
@@ -450,6 +485,7 @@ router.put('/modules/:id', async (req, res) => {
     priceEgp,
     sortOrder,
     isActive,
+    universityIds,
   } = req.body;
 
   const mod = await prisma.qbankModule.update({
@@ -468,7 +504,30 @@ router.put('/modules/:id', async (req, res) => {
     },
   });
 
-  res.json({ module: { ...mod, subjects: parseSubjects(mod.subjects) } });
+  if (universityIds != null) {
+    try {
+      await syncModuleUniversities(
+        mod.id,
+        Array.isArray(universityIds) ? universityIds.map(String) : [],
+      );
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid universities' });
+    }
+  }
+
+  const linked = await prisma.qbankModuleUniversity.findMany({
+    where: { moduleId: mod.id },
+    include: { university: { select: { id: true, nameEn: true, nameAr: true } } },
+  });
+
+  res.json({
+    module: {
+      ...mod,
+      subjects: parseSubjects(mod.subjects),
+      universityIds: linked.map((row) => row.universityId),
+      universities: linked.map((row) => row.university),
+    },
+  });
 });
 
 router.delete('/modules/:id', async (req, res) => {
@@ -791,6 +850,7 @@ router.post('/questions/import/structured/preview', async (req, res) => {
   const content = String(req.body?.content ?? '').trim();
   const termId = String(req.body?.termId ?? '').trim();
   const moduleId = String(req.body?.moduleId ?? '').trim();
+  const subject = String(req.body?.subject ?? '').trim();
   const autoCreateLookups = req.body?.autoCreateLookups !== false;
 
   if (!content) return res.status(400).json({ error: 'content is required' });
@@ -812,6 +872,7 @@ router.post('/questions/import/structured/preview', async (req, res) => {
         moduleId,
         autoCreateLookups,
         lookupCache,
+        subject || undefined,
       ),
     );
   }
@@ -832,6 +893,7 @@ router.post('/questions/import/structured/commit', async (req, res) => {
   const content = String(req.body?.content ?? '').trim();
   const termId = String(req.body?.termId ?? '').trim();
   const moduleId = String(req.body?.moduleId ?? '').trim();
+  const subject = String(req.body?.subject ?? '').trim();
   const autoCreateLookups = req.body?.autoCreateLookups !== false;
 
   if (!content) return res.status(400).json({ error: 'content is required' });
@@ -853,6 +915,7 @@ router.post('/questions/import/structured/commit', async (req, res) => {
         moduleId,
         autoCreateLookups,
         lookupCache,
+        subject || undefined,
       ),
     );
   }

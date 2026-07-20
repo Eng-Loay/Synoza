@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileText, Plus, Trash2, Pencil, Upload, Save, X, ClipboardPaste, Music } from 'lucide-react';
-import { AdminStickySaveBar } from './AdminStickySaveBar';
+import { FileText, Plus, Trash2, Pencil, Upload, Save, X, ClipboardPaste, Music, Search, ArrowUpDown, Undo2, ChevronUp, ChevronDown } from 'lucide-react';
 import api from '../../lib/api';
-import { ALL_MANEUVERS, DEFAULT_STATION_CONFIG } from '../../lib/stationConfig';
+import {
+  ALL_MANEUVERS,
+  DEFAULT_STATION_CONFIG,
+  DEFAULT_MANEUVER_OPENING_TEMPLATE,
+  MAIN_STAGES,
+  MANEUVER_LABELS,
+  type MainStageId,
+} from '../../lib/stationConfig';
 
 type ManeuverId = 'inspection' | 'palpation' | 'percussion' | 'auscultation';
 type MediaType = 'image' | 'video' | 'audio';
@@ -27,9 +33,19 @@ interface CaseListRow {
   patientName: string;
   isPublished: boolean;
   isFreeTier: boolean;
+  specialtyId: string;
+  difficultyId: string;
+  categoryId?: string | null;
+  createdAt: string;
   specialty?: { nameEn: string };
   difficulty?: { nameEn: string };
+  category?: { id: string; nameEn: string; nameAr?: string } | null;
 }
+
+type CaseStatusFilter = 'all' | 'published' | 'draft' | 'free';
+type CaseSortKey = 'newest' | 'oldest' | 'titleAz' | 'titleZa';
+
+const CASES_PER_PAGE = 12;
 
 interface VitalSignForm {
   bpValue: string;
@@ -111,15 +127,58 @@ interface CaseFormPayload {
   stationConfig: {
     enabledManeuvers: ManeuverId[];
     enableHistoryExaminer: boolean;
+    enableInvestigations: boolean;
+    stageOrder: MainStageId[];
+    maneuverOpeningMessages: Partial<Record<ManeuverId, string>>;
+    maneuverLabels: Partial<Record<ManeuverId, { en: string; ar: string }>>;
   };
 }
 
-const MANEUVERS: Array<{ id: ManeuverId; label: string }> = [
-  { id: 'inspection', label: 'Inspection' },
-  { id: 'palpation', label: 'Palpation' },
-  { id: 'percussion', label: 'Percussion' },
-  { id: 'auscultation', label: 'Auscultation' },
-];
+type UniversityOverrideRow = {
+  id: string;
+  universityId: string;
+  university: { id: string; nameEn: string; nameAr: string; isActive?: boolean };
+  isActive: boolean;
+  stationConfig: CaseFormPayload['stationConfig'];
+};
+
+const MANEUVERS: Array<{ id: ManeuverId; label: string }> = ALL_MANEUVERS.map((id) => ({
+  id,
+  label: MANEUVER_LABELS[id].en,
+}));
+
+const STAGE_LABELS: Record<MainStageId, string> = {
+  history: 'History',
+  examination: 'Examination',
+  investigations: 'Investigations',
+  diagnosis: 'Diagnosis',
+};
+
+const FORM_HISTORY_LIMIT = 30;
+
+function cloneForm(value: CaseFormPayload): CaseFormPayload {
+  return JSON.parse(JSON.stringify(value)) as CaseFormPayload;
+}
+
+function normalizeStationConfig(
+  raw?: Partial<CaseFormPayload['stationConfig']> | null,
+): CaseFormPayload['stationConfig'] {
+  return {
+    enabledManeuvers: raw?.enabledManeuvers?.length ? [...raw.enabledManeuvers] : [...ALL_MANEUVERS],
+    enableHistoryExaminer: raw?.enableHistoryExaminer !== false,
+    enableInvestigations: raw?.enableInvestigations !== false,
+    stageOrder: raw?.stageOrder?.length ? [...raw.stageOrder] : [...MAIN_STAGES],
+    maneuverOpeningMessages: { ...(raw?.maneuverOpeningMessages ?? {}) },
+    maneuverLabels: { ...(raw?.maneuverLabels ?? {}) },
+  };
+}
+
+function normalizeCaseForm(raw: CaseFormPayload): CaseFormPayload {
+  return {
+    ...raw,
+    stationConfig: normalizeStationConfig(raw.stationConfig),
+  };
+}
 
 const RUBRIC_CATEGORIES = ['History', 'Examination', 'Reasoning', 'Investigations', 'Management', 'Communication'];
 
@@ -164,6 +223,10 @@ function emptyForm(specialtyId = '', difficultyId = '', categoryId = ''): CaseFo
     stationConfig: {
       enabledManeuvers: [...ALL_MANEUVERS],
       enableHistoryExaminer: DEFAULT_STATION_CONFIG.enableHistoryExaminer,
+      enableInvestigations: DEFAULT_STATION_CONFIG.enableInvestigations,
+      stageOrder: [...MAIN_STAGES],
+      maneuverOpeningMessages: {},
+      maneuverLabels: {},
     },
   };
 }
@@ -244,7 +307,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 export function AdminCasesTab() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const isAr = i18n.language?.startsWith('ar');
   const [cases, setCases] = useState<CaseListRow[]>([]);
   const [specialties, setSpecialties] = useState<LookupRow[]>([]);
   const [difficulties, setDifficulties] = useState<LookupRow[]>([]);
@@ -258,12 +322,117 @@ export function AdminCasesTab() {
   const [importSource, setImportSource] = useState('');
   const [importMessage, setImportMessage] = useState('');
   const [importError, setImportError] = useState('');
+  const [search, setSearch] = useState('');
+  const [specialtyFilter, setSpecialtyFilter] = useState('');
+  const [difficultyFilter, setDifficultyFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<CaseStatusFilter>('all');
+  const [sortKey, setSortKey] = useState<CaseSortKey>('newest');
+  const [page, setPage] = useState(1);
+  const [partnerUniversities, setPartnerUniversities] = useState<Array<{ id: string; nameEn: string; nameAr: string; isActive?: boolean }>>([]);
+  const [universityOverrides, setUniversityOverrides] = useState<UniversityOverrideRow[]>([]);
+  const [selectedOverrideUniversityId, setSelectedOverrideUniversityId] = useState('');
+  const [overrideDraft, setOverrideDraft] = useState<CaseFormPayload['stationConfig'] | null>(null);
+  const [overrideSaving, setOverrideSaving] = useState(false);
+  const [formHistory, setFormHistory] = useState<CaseFormPayload[]>([]);
+
+  const pushFormHistory = useCallback((snapshot: CaseFormPayload) => {
+    setFormHistory((prev) => {
+      const next = [...prev, cloneForm(snapshot)];
+      return next.length > FORM_HISTORY_LIMIT ? next.slice(next.length - FORM_HISTORY_LIMIT) : next;
+    });
+  }, []);
+
+  const updateForm = useCallback(
+    (updater: CaseFormPayload | ((prev: CaseFormPayload) => CaseFormPayload)) => {
+      setForm((prev) => {
+        pushFormHistory(prev);
+        return typeof updater === 'function' ? updater(prev) : updater;
+      });
+    },
+    [pushFormHistory],
+  );
+
+  const undoFormChange = useCallback(() => {
+    setFormHistory((prev) => {
+      if (!prev.length) return prev;
+      const next = [...prev];
+      const last = next.pop()!;
+      setForm(last);
+      return next;
+    });
+  }, []);
+
+  const filteredCases = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const rows = cases.filter((c) => {
+      if (q && ![c.titleEn, c.titleAr, c.patientName, c.category?.nameEn].some((v) => v?.toLowerCase().includes(q))) return false;
+      if (specialtyFilter && c.specialtyId !== specialtyFilter) return false;
+      if (difficultyFilter && c.difficultyId !== difficultyFilter) return false;
+      if (categoryFilter === '__none__' && c.categoryId) return false;
+      if (categoryFilter && categoryFilter !== '__none__' && c.categoryId !== categoryFilter) return false;
+      if (statusFilter === 'published' && !c.isPublished) return false;
+      if (statusFilter === 'draft' && c.isPublished) return false;
+      if (statusFilter === 'free' && !c.isFreeTier) return false;
+      return true;
+    });
+    const sorted = [...rows];
+    switch (sortKey) {
+      case 'oldest':
+        sorted.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        break;
+      case 'titleAz':
+        sorted.sort((a, b) => a.titleEn.localeCompare(b.titleEn));
+        break;
+      case 'titleZa':
+        sorted.sort((a, b) => b.titleEn.localeCompare(a.titleEn));
+        break;
+      default:
+        sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+    return sorted;
+  }, [cases, search, specialtyFilter, difficultyFilter, categoryFilter, statusFilter, sortKey]);
+
+  const groupedCases = useMemo(() => {
+    const groups = new Map<string, { key: string; label: string; items: CaseListRow[] }>();
+    for (const row of filteredCases) {
+      const key = row.categoryId || '__uncategorized__';
+      const label = row.category?.nameEn || t('adminCaseUncategorized');
+      if (!groups.has(key)) groups.set(key, { key, label, items: [] });
+      groups.get(key)!.items.push(row);
+    }
+    return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [filteredCases, t]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredCases.length / CASES_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedGroups = useMemo(() => {
+    const start = (currentPage - 1) * CASES_PER_PAGE;
+    const end = start + CASES_PER_PAGE;
+    let offset = 0;
+    const result: Array<{ key: string; label: string; items: CaseListRow[] }> = [];
+    for (const group of groupedCases) {
+      const groupStart = offset;
+      const groupEnd = offset + group.items.length;
+      offset = groupEnd;
+      if (groupEnd <= start || groupStart >= end) continue;
+      const sliceStart = Math.max(0, start - groupStart);
+      const sliceEnd = Math.min(group.items.length, end - groupStart);
+      result.push({ ...group, items: group.items.slice(sliceStart, sliceEnd) });
+    }
+    return result;
+  }, [groupedCases, currentPage]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, specialtyFilter, difficultyFilter, categoryFilter, statusFilter, sortKey]);
 
   const loadLookups = useCallback(async () => {
-    const [specRes, diffRes, catRes] = await Promise.all([
+    const [specRes, diffRes, catRes, uniRes] = await Promise.all([
       api.get('/cases/specialties'),
       api.get('/cases/difficulties'),
       api.get('/admin/categories'),
+      api.get('/admin/universities'),
     ]);
     const specs = specRes.data.specialties as LookupRow[];
     const diffs = diffRes.data.difficulties as LookupRow[];
@@ -271,6 +440,7 @@ export function AdminCasesTab() {
     setSpecialties(specs);
     setDifficulties(diffs);
     setCategories(cats);
+    setPartnerUniversities(uniRes.data.universities ?? []);
     return { specs, diffs, cats };
   }, []);
 
@@ -295,10 +465,22 @@ export function AdminCasesTab() {
     void refresh();
   }, [refresh]);
 
+  const loadUniversityOverrides = useCallback(async (caseId: string) => {
+    const r = await api.get(`/admin/cases/${caseId}/university-overrides`);
+    setUniversityOverrides(r.data.overrides ?? []);
+  }, []);
+
   const startCreate = async () => {
     const { specs, diffs, cats } = await loadLookups();
     setEditingId('new');
+    setFormHistory([]);
     setForm(emptyForm(specs[0]?.id ?? '', diffs[0]?.id ?? '', cats[0]?.id ?? ''));
+    setUniversityOverrides([]);
+    setSelectedOverrideUniversityId('');
+    setOverrideDraft(null);
+    setImportSource('');
+    setImportMessage('');
+    setImportError('');
     setError('');
   };
 
@@ -308,7 +490,14 @@ export function AdminCasesTab() {
     try {
       const r = await api.get(`/admin/cases/${id}`);
       setEditingId(id);
-      setForm(r.data.form as CaseFormPayload);
+      setFormHistory([]);
+      setForm(normalizeCaseForm(r.data.form as CaseFormPayload));
+      await loadUniversityOverrides(id);
+      setSelectedOverrideUniversityId('');
+      setOverrideDraft(null);
+      setImportSource('');
+      setImportMessage('');
+      setImportError('');
     } catch {
       setError(t('adminCaseLoadError'));
     } finally {
@@ -318,7 +507,14 @@ export function AdminCasesTab() {
 
   const cancelEdit = () => {
     setEditingId(null);
+    setFormHistory([]);
     setForm(emptyForm());
+    setUniversityOverrides([]);
+    setSelectedOverrideUniversityId('');
+    setOverrideDraft(null);
+    setImportSource('');
+    setImportMessage('');
+    setImportError('');
     setError('');
     setUploadProgress({});
   };
@@ -335,15 +531,14 @@ export function AdminCasesTab() {
     setSaving(true);
     setError('');
     try {
+      const payload = normalizeCaseForm(form);
       if (editingId === 'new') {
-        const r = await api.post('/admin/cases', form);
-        setEditingId(r.data.case.id as string);
-        setForm(r.data.form as CaseFormPayload);
+        await api.post('/admin/cases', payload);
       } else if (editingId) {
-        const r = await api.put(`/admin/cases/${editingId}`, form);
-        setForm(r.data.form as CaseFormPayload);
+        await api.put(`/admin/cases/${editingId}`, payload);
       }
       await loadCases();
+      cancelEdit();
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setError(msg || t('adminCaseSaveError'));
@@ -352,11 +547,80 @@ export function AdminCasesTab() {
     }
   };
 
+  const beginOverrideEdit = (universityId: string) => {
+    if (!universityId) {
+      setSelectedOverrideUniversityId('');
+      setOverrideDraft(null);
+      return;
+    }
+    const existing = universityOverrides.find((row) => row.universityId === universityId);
+    setSelectedOverrideUniversityId(universityId);
+    setOverrideDraft(
+      normalizeStationConfig(
+        existing?.stationConfig ?? {
+          enabledManeuvers: [...form.stationConfig.enabledManeuvers],
+          enableHistoryExaminer: form.stationConfig.enableHistoryExaminer,
+          enableInvestigations: form.stationConfig.enableInvestigations,
+          stageOrder: [...form.stationConfig.stageOrder],
+          maneuverOpeningMessages: { ...form.stationConfig.maneuverOpeningMessages },
+          maneuverLabels: { ...form.stationConfig.maneuverLabels },
+        },
+      ),
+    );
+  };
+
+  const saveUniversityOverride = async () => {
+    if (!editingId || editingId === 'new' || !selectedOverrideUniversityId || !overrideDraft) return;
+    if (overrideDraft.enabledManeuvers.length === 0) {
+      setError(t('adminCaseManeuverRequired'));
+      return;
+    }
+    setOverrideSaving(true);
+    setError('');
+    try {
+      await api.put(`/admin/cases/${editingId}/university-overrides/${selectedOverrideUniversityId}`, {
+        stationConfig: overrideDraft,
+      });
+      await loadUniversityOverrides(editingId);
+      setSelectedOverrideUniversityId('');
+      setOverrideDraft(null);
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || t('adminCaseOverrideSaveError'));
+    } finally {
+      setOverrideSaving(false);
+    }
+  };
+
+  const deleteUniversityOverride = async (universityId: string) => {
+    if (!editingId || editingId === 'new') return;
+    if (!window.confirm(t('adminCaseOverrideDeleteConfirm'))) return;
+    setOverrideSaving(true);
+    setError('');
+    try {
+      await api.delete(`/admin/cases/${editingId}/university-overrides/${universityId}`);
+      await loadUniversityOverrides(editingId);
+      if (selectedOverrideUniversityId === universityId) {
+        setSelectedOverrideUniversityId('');
+        setOverrideDraft(null);
+      }
+    } catch {
+      setError(t('adminCaseOverrideSaveError'));
+    } finally {
+      setOverrideSaving(false);
+    }
+  };
+
   const deleteCase = async (id: string) => {
     if (!window.confirm(t('adminCaseDeleteConfirm'))) return;
-    await api.delete(`/admin/cases/${id}`);
-    if (editingId === id) cancelEdit();
-    await loadCases();
+    try {
+      await api.delete(`/admin/cases/${id}`);
+      if (editingId === id) cancelEdit();
+      await loadCases();
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || t('adminCaseDeleteError'));
+    }
   };
 
   const uploadMedia = async (imageId: string, file: File) => {
@@ -427,7 +691,7 @@ export function AdminCasesTab() {
     try {
       const r = await api.post('/admin/cases/import/parse', { source: importSource });
       const mapped = r.data.form as CaseFormPayload;
-      setForm((prev) => ({
+      updateForm((prev) => normalizeCaseForm({
         ...prev,
         ...mapped,
         titleAr: prev.titleAr.trim() ? prev.titleAr : mapped.titleAr,
@@ -444,14 +708,28 @@ export function AdminCasesTab() {
   if (editingId) {
     return (
       <div className="space-y-4 pb-2">
-        <div className="sticky top-0 z-20 -mx-1 px-1 py-3 mb-2 bg-slate-100/95 dark:bg-slate-950/95 backdrop-blur border-b border-slate-200/80 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-              {editingId === 'new' ? t('adminCaseAdd') : t('adminCaseEdit')}
+        <div className="sticky top-0 z-30 -mx-4 lg:-mx-8 px-4 lg:px-8 py-3 mb-2 bg-slate-100/95 dark:bg-slate-950/95 backdrop-blur border-b border-slate-200/80 dark:border-slate-800/80 shadow-sm flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-white truncate">
+              {editingId === 'new'
+                ? (form.titleEn.trim() || t('adminCaseAdd'))
+                : (form.titleEn.trim() || t('adminCaseEdit'))}
             </h2>
-            <p className="text-sm text-slate-500">{t('adminCaseEditorDesc')}</p>
+            <p className="text-sm text-slate-500">
+              {editingId === 'new' ? t('adminCaseAdd') : t('adminCaseEdit')}
+              {form.titleEn.trim() ? ` — ${form.titleEn}` : ''}
+            </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={undoFormChange}
+              disabled={!formHistory.length || saving}
+              className="btn-secondary inline-flex items-center gap-2 disabled:opacity-40"
+              title={t('adminCaseUndo')}
+            >
+              <Undo2 size={16} /> {t('adminCaseUndo')}
+            </button>
             <button type="button" onClick={cancelEdit} className="btn-secondary inline-flex items-center gap-2">
               <X size={16} /> {t('cancel')}
             </button>
@@ -562,6 +840,7 @@ export function AdminCasesTab() {
               <div className="flex flex-wrap gap-3">
                 {MANEUVERS.map((maneuver) => {
                   const checked = form.stationConfig.enabledManeuvers.includes(maneuver.id);
+                  const customLabel = form.stationConfig.maneuverLabels[maneuver.id]?.en || maneuver.label;
                   return (
                     <label
                       key={maneuver.id}
@@ -578,23 +857,141 @@ export function AdminCasesTab() {
                           const enabled = e.target.checked
                             ? [...form.stationConfig.enabledManeuvers, maneuver.id]
                             : form.stationConfig.enabledManeuvers.filter((id) => id !== maneuver.id);
-                          setForm({
+                          updateForm({
                             ...form,
                             stationConfig: { ...form.stationConfig, enabledManeuvers: enabled },
                           });
                         }}
                       />
-                      <span className="text-sm">{maneuver.label}</span>
+                      <span className="text-sm">{customLabel}</span>
                     </label>
                   );
                 })}
               </div>
             </div>
+
+            <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                {t('adminCaseManeuverLabels')}
+              </p>
+              <p className="text-xs text-slate-500">{t('adminCaseManeuverLabelsHint')}</p>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {MANEUVERS.map((maneuver) => (
+                  <div key={maneuver.id} className="space-y-1">
+                    <p className="text-xs font-medium text-slate-500">{maneuver.label}</p>
+                    <input
+                      className="input-field"
+                      placeholder={`${maneuver.label} (EN)`}
+                      value={form.stationConfig.maneuverLabels[maneuver.id]?.en ?? ''}
+                      onChange={(e) => {
+                        const en = e.target.value;
+                        const ar = form.stationConfig.maneuverLabels[maneuver.id]?.ar ?? '';
+                        updateForm({
+                          ...form,
+                          stationConfig: {
+                            ...form.stationConfig,
+                            maneuverLabels: {
+                              ...form.stationConfig.maneuverLabels,
+                              ...(en.trim() || ar.trim()
+                                ? { [maneuver.id]: { en, ar } }
+                                : Object.fromEntries(
+                                    Object.entries(form.stationConfig.maneuverLabels).filter(
+                                      ([key]) => key !== maneuver.id,
+                                    ),
+                                  )),
+                            },
+                          },
+                        });
+                      }}
+                    />
+                    <input
+                      className="input-field"
+                      placeholder={`${maneuver.label} (AR)`}
+                      value={form.stationConfig.maneuverLabels[maneuver.id]?.ar ?? ''}
+                      onChange={(e) => {
+                        const ar = e.target.value;
+                        const en = form.stationConfig.maneuverLabels[maneuver.id]?.en ?? '';
+                        updateForm({
+                          ...form,
+                          stationConfig: {
+                            ...form.stationConfig,
+                            maneuverLabels: {
+                              ...form.stationConfig.maneuverLabels,
+                              ...(en.trim() || ar.trim()
+                                ? { [maneuver.id]: { en, ar } }
+                                : Object.fromEntries(
+                                    Object.entries(form.stationConfig.maneuverLabels).filter(
+                                      ([key]) => key !== maneuver.id,
+                                    ),
+                                  )),
+                            },
+                          },
+                        });
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                {t('adminCaseStageOrder')}
+              </p>
+              <p className="text-xs text-slate-500">{t('adminCaseStageOrderHint')}</p>
+              <div className="space-y-2">
+                {form.stationConfig.stageOrder.map((stage, index) => (
+                  <div
+                    key={stage}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2"
+                  >
+                    <span className="text-sm font-medium">
+                      {index + 1}. {STAGE_LABELS[stage]}
+                    </span>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
+                        disabled={index === 0}
+                        onClick={() => {
+                          const next = [...form.stationConfig.stageOrder];
+                          [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                          updateForm({
+                            ...form,
+                            stationConfig: { ...form.stationConfig, stageOrder: next },
+                          });
+                        }}
+                        aria-label="Move up"
+                      >
+                        <ChevronUp size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
+                        disabled={index === form.stationConfig.stageOrder.length - 1}
+                        onClick={() => {
+                          const next = [...form.stationConfig.stageOrder];
+                          [next[index + 1], next[index]] = [next[index], next[index + 1]];
+                          updateForm({
+                            ...form,
+                            stationConfig: { ...form.stationConfig, stageOrder: next },
+                          });
+                        }}
+                        aria-label="Move down"
+                      >
+                        <ChevronDown size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <label className="inline-flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
                 checked={form.stationConfig.enableHistoryExaminer}
-                onChange={(e) => setForm({
+                onChange={(e) => updateForm({
                   ...form,
                   stationConfig: {
                     ...form.stationConfig,
@@ -606,9 +1003,283 @@ export function AdminCasesTab() {
                 {t('adminCaseEnableHistoryExaminer')}
               </span>
             </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.stationConfig.enableInvestigations}
+                onChange={(e) => updateForm({
+                  ...form,
+                  stationConfig: {
+                    ...form.stationConfig,
+                    enableInvestigations: e.target.checked,
+                  },
+                })}
+              />
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                {t('adminCaseEnableInvestigations')}
+              </span>
+            </label>
             <p className="text-xs text-slate-500">{t('adminCaseEnableHistoryExaminerHint')}</p>
+            <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                {t('adminCaseManeuverOpeningMessages')}
+              </p>
+              <p className="text-xs text-slate-500">{t('adminCaseManeuverOpeningMessagesHint')}</p>
+              {MANEUVERS.map((maneuver) => {
+                const label = form.stationConfig.maneuverLabels[maneuver.id]?.en || maneuver.label;
+                return (
+                <div key={maneuver.id}>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+                    {label}
+                  </label>
+                  <textarea
+                    className="input-field min-h-[88px] text-sm"
+                    placeholder={DEFAULT_MANEUVER_OPENING_TEMPLATE.replace(/\{\{maneuver\}\}/g, label)}
+                    value={form.stationConfig.maneuverOpeningMessages[maneuver.id] ?? ''}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      updateForm({
+                        ...form,
+                        stationConfig: {
+                          ...form.stationConfig,
+                          maneuverOpeningMessages: {
+                            ...form.stationConfig.maneuverOpeningMessages,
+                            ...(value.trim()
+                              ? { [maneuver.id]: value }
+                              : Object.fromEntries(
+                                  Object.entries(form.stationConfig.maneuverOpeningMessages).filter(
+                                    ([key]) => key !== maneuver.id,
+                                  ),
+                                )),
+                          },
+                        },
+                      });
+                    }}
+                  />
+                </div>
+              );})}
+            </div>
           </div>
         </Section>
+
+        {editingId && editingId !== 'new' && (
+          <Section title={t('adminCaseUniversityOverrides')}>
+            <p className="text-sm text-slate-500">{t('adminCaseUniversityOverridesDesc')}</p>
+            <div className="space-y-3">
+              {universityOverrides.map((row) => (
+                <div key={row.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 dark:border-slate-700 p-3">
+                  <div>
+                    <p className="font-medium">{isAr ? row.university.nameAr : row.university.nameEn}</p>
+                    <p className="text-xs text-slate-500">
+                      {row.stationConfig.enabledManeuvers.join(', ')}
+                      {!row.stationConfig.enableInvestigations ? ` · ${t('adminCaseInvestigationsOff')}` : ''}
+                      {!row.stationConfig.enableHistoryExaminer ? ` · ${t('adminCaseHistoryExaminerOff')}` : ''}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" className="text-violet-600 text-sm" onClick={() => beginOverrideEdit(row.universityId)}>
+                      {t('edit')}
+                    </button>
+                    <button type="button" className="text-red-600 text-sm" onClick={() => void deleteUniversityOverride(row.universityId)}>
+                      {t('delete')}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="grid sm:grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
+              <div>
+                <label className="block text-sm font-medium mb-1.5">{t('adminCaseSelectUniversityOverride')}</label>
+                <select
+                  className="input-field"
+                  value={selectedOverrideUniversityId}
+                  onChange={(e) => beginOverrideEdit(e.target.value)}
+                >
+                  <option value="">{t('adminCaseSelectUniversityOverride')}</option>
+                  {partnerUniversities
+                    .filter((u) => u.isActive !== false)
+                    .filter((u) => !universityOverrides.some((row) => row.universityId === u.id))
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>{isAr ? u.nameAr : u.nameEn}</option>
+                    ))}
+                </select>
+              </div>
+            </div>
+            {overrideDraft && selectedOverrideUniversityId && (
+              <div className="space-y-4 rounded-xl border border-violet-200 dark:border-violet-900/40 bg-violet-50/40 dark:bg-violet-950/20 p-4">
+                <p className="text-sm font-semibold">{t('adminCaseOverrideFlowTitle')}</p>
+                <div className="flex flex-wrap gap-3">
+                  {MANEUVERS.map((maneuver) => {
+                    const checked = overrideDraft.enabledManeuvers.includes(maneuver.id);
+                    const customLabel = overrideDraft.maneuverLabels[maneuver.id]?.en || maneuver.label;
+                    return (
+                      <label key={maneuver.id} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const enabled = e.target.checked
+                              ? [...overrideDraft.enabledManeuvers, maneuver.id]
+                              : overrideDraft.enabledManeuvers.filter((id) => id !== maneuver.id);
+                            setOverrideDraft({ ...overrideDraft, enabledManeuvers: enabled });
+                          }}
+                        />
+                        <span className="text-sm">{customLabel}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold">{t('adminCaseStageOrder')}</p>
+                  <p className="text-xs text-slate-500">{t('adminCaseStageOrderHint')}</p>
+                  {overrideDraft.stageOrder.map((stage, index) => (
+                    <div
+                      key={`override-stage-${stage}`}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-violet-200 dark:border-violet-900/40 px-3 py-2 bg-white/60 dark:bg-slate-900/40"
+                    >
+                      <span className="text-sm font-medium">
+                        {index + 1}. {STAGE_LABELS[stage]}
+                      </span>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          className="p-1.5 rounded hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-30"
+                          disabled={index === 0}
+                          onClick={() => {
+                            const next = [...overrideDraft.stageOrder];
+                            [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                            setOverrideDraft({ ...overrideDraft, stageOrder: next });
+                          }}
+                          aria-label="Move up"
+                        >
+                          <ChevronUp size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          className="p-1.5 rounded hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-30"
+                          disabled={index === overrideDraft.stageOrder.length - 1}
+                          onClick={() => {
+                            const next = [...overrideDraft.stageOrder];
+                            [next[index + 1], next[index]] = [next[index], next[index + 1]];
+                            setOverrideDraft({ ...overrideDraft, stageOrder: next });
+                          }}
+                          aria-label="Move down"
+                        >
+                          <ChevronDown size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold">{t('adminCaseManeuverLabels')}</p>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {MANEUVERS.map((maneuver) => (
+                      <div key={`override-label-${maneuver.id}`} className="space-y-1">
+                        <p className="text-xs font-medium text-slate-500">{maneuver.label}</p>
+                        <input
+                          className="input-field"
+                          placeholder={`${maneuver.label} (EN)`}
+                          value={overrideDraft.maneuverLabels[maneuver.id]?.en ?? ''}
+                          onChange={(e) => {
+                            const en = e.target.value;
+                            const ar = overrideDraft.maneuverLabels[maneuver.id]?.ar ?? '';
+                            setOverrideDraft({
+                              ...overrideDraft,
+                              maneuverLabels: {
+                                ...overrideDraft.maneuverLabels,
+                                ...(en.trim() || ar.trim()
+                                  ? { [maneuver.id]: { en, ar } }
+                                  : Object.fromEntries(
+                                      Object.entries(overrideDraft.maneuverLabels).filter(
+                                        ([key]) => key !== maneuver.id,
+                                      ),
+                                    )),
+                              },
+                            });
+                          }}
+                        />
+                        <input
+                          className="input-field"
+                          placeholder={`${maneuver.label} (AR)`}
+                          value={overrideDraft.maneuverLabels[maneuver.id]?.ar ?? ''}
+                          onChange={(e) => {
+                            const ar = e.target.value;
+                            const en = overrideDraft.maneuverLabels[maneuver.id]?.en ?? '';
+                            setOverrideDraft({
+                              ...overrideDraft,
+                              maneuverLabels: {
+                                ...overrideDraft.maneuverLabels,
+                                ...(en.trim() || ar.trim()
+                                  ? { [maneuver.id]: { en, ar } }
+                                  : Object.fromEntries(
+                                      Object.entries(overrideDraft.maneuverLabels).filter(
+                                        ([key]) => key !== maneuver.id,
+                                      ),
+                                    )),
+                              },
+                            });
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={overrideDraft.enableHistoryExaminer}
+                    onChange={(e) => setOverrideDraft({ ...overrideDraft, enableHistoryExaminer: e.target.checked })}
+                  />
+                  <span className="text-sm">{t('adminCaseEnableHistoryExaminer')}</span>
+                </label>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={overrideDraft.enableInvestigations}
+                    onChange={(e) => setOverrideDraft({ ...overrideDraft, enableInvestigations: e.target.checked })}
+                  />
+                  <span className="text-sm">{t('adminCaseEnableInvestigations')}</span>
+                </label>
+                <div className="space-y-3 pt-2 border-t border-violet-200/60 dark:border-violet-900/40">
+                  <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    {t('adminCaseManeuverOpeningMessages')}
+                  </p>
+                  {MANEUVERS.map((maneuver) => {
+                    const label = overrideDraft.maneuverLabels[maneuver.id]?.en || maneuver.label;
+                    return (
+                    <div key={`override-${maneuver.id}`}>
+                      <label className="block text-xs text-slate-500 mb-1">{label}</label>
+                      <textarea
+                        className="input-field min-h-[72px] text-sm"
+                        placeholder={DEFAULT_MANEUVER_OPENING_TEMPLATE.replace(/\{\{maneuver\}\}/g, label)}
+                        value={overrideDraft.maneuverOpeningMessages?.[maneuver.id] ?? ''}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          const current = overrideDraft.maneuverOpeningMessages ?? {};
+                          setOverrideDraft({
+                            ...overrideDraft,
+                            maneuverOpeningMessages: value.trim()
+                              ? { ...current, [maneuver.id]: value }
+                              : Object.fromEntries(
+                                  Object.entries(current).filter(([key]) => key !== maneuver.id),
+                                ),
+                          });
+                        }}
+                      />
+                    </div>
+                  );})}
+                </div>
+                <button type="button" onClick={() => void saveUniversityOverride()} disabled={overrideSaving} className="btn-primary">
+                  {t('adminCaseSaveOverride')}
+                </button>
+              </div>
+            )}
+          </Section>
+        )}
 
         <Section title={t('adminCaseSectionPhysicalExam')}>
           <div className="grid sm:grid-cols-2 gap-3">
@@ -616,7 +1287,7 @@ export function AdminCasesTab() {
               <textarea
                 key={maneuver.id}
                 className="input-field min-h-[110px]"
-                placeholder={maneuver.label}
+                placeholder={form.stationConfig.maneuverLabels[maneuver.id]?.en || maneuver.label}
                 value={form.physicalExam[maneuver.id]}
                 onChange={(e) => setForm({
                   ...form,
@@ -872,12 +1543,6 @@ export function AdminCasesTab() {
           </div>
         </Section>
 
-        <AdminStickySaveBar
-          onSave={() => void saveCase()}
-          onCancel={cancelEdit}
-          saving={saving}
-          disabled={!form.titleEn.trim() || !form.specialtyId || !form.difficultyId}
-        />
       </div>
     );
   }
@@ -897,33 +1562,122 @@ export function AdminCasesTab() {
       {error && <p className="text-sm text-red-600">{error}</p>}
       {loading && <p className="text-sm text-slate-500">{t('loading')}</p>}
 
-      <div className="grid gap-3">
-        {cases.map((c) => (
-          <div key={c.id} className="card card-interactive p-4 sm:p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-            <div className="flex items-center gap-4">
-              <div className="w-11 h-11 rounded-xl bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center">
-                <FileText className="text-violet-600" size={20} />
-              </div>
-              <div>
-                <p className="font-semibold text-slate-900 dark:text-white">{c.titleEn}</p>
-                <p className="text-sm text-slate-500">{c.patientName} · {c.specialty?.nameEn} · {c.difficulty?.nameEn}</p>
-              </div>
+      <div className="card p-4 space-y-3">
+        <div className="relative">
+          <Search size={16} className="absolute start-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          <input
+            className="input-field ps-9"
+            placeholder={t('adminCaseSearchPlaceholder')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
+          <select className="input-field" value={specialtyFilter} onChange={(e) => setSpecialtyFilter(e.target.value)}>
+            <option value="">{t('adminCaseFilterSpecialtyAll')}</option>
+            {specialties.map((s) => <option key={s.id} value={s.id}>{s.nameEn}</option>)}
+          </select>
+          <select className="input-field" value={difficultyFilter} onChange={(e) => setDifficultyFilter(e.target.value)}>
+            <option value="">{t('adminCaseFilterDifficultyAll')}</option>
+            {difficulties.map((d) => <option key={d.id} value={d.id}>{d.nameEn}</option>)}
+          </select>
+          <select className="input-field" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+            <option value="">{t('adminCaseFilterCategoryAll')}</option>
+            <option value="__none__">{t('adminCaseUncategorized')}</option>
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.nameEn}</option>)}
+          </select>
+          <select className="input-field" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as CaseStatusFilter)}>
+            <option value="all">{t('adminCaseFilterStatusAll')}</option>
+            <option value="published">{t('adminCaseStatusPublished')}</option>
+            <option value="draft">{t('adminCaseStatusDraft')}</option>
+            <option value="free">{t('adminCaseStatusFree')}</option>
+          </select>
+          <div className="relative">
+            <ArrowUpDown size={14} className="absolute start-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <select className="input-field ps-8" value={sortKey} onChange={(e) => setSortKey(e.target.value as CaseSortKey)}>
+              <option value="newest">{t('adminCaseSortNewest')}</option>
+              <option value="oldest">{t('adminCaseSortOldest')}</option>
+              <option value="titleAz">{t('adminCaseSortTitleAz')}</option>
+              <option value="titleZa">{t('adminCaseSortTitleZa')}</option>
+            </select>
+          </div>
+        </div>
+        <p className="text-xs text-slate-500">
+          {t('adminCaseShowingCount', {
+            shown: pagedGroups.reduce((sum, g) => sum + g.items.length, 0),
+            total: filteredCases.length,
+          })}
+        </p>
+      </div>
+
+      {!loading && filteredCases.length === 0 && (
+        <p className="text-sm text-slate-500 text-center py-8">{t('adminCaseNoMatches')}</p>
+      )}
+
+      <div className="space-y-6">
+        {pagedGroups.map((group) => (
+          <div key={group.key} className="space-y-3">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{group.label}</h3>
+              <span className="text-xs text-slate-400">({group.items.length})</span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={`badge ${c.isPublished ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
-                {c.isPublished ? t('adminCasePublished') : t('adminCaseDraft')}
-              </span>
-              {c.isFreeTier && <span className="badge bg-blue-50 dark:bg-blue-900/30 text-blue-700">{t('adminCaseFreeTier')}</span>}
-              <button type="button" className="text-violet-600 p-2" onClick={() => void startEdit(c.id)} aria-label={t('edit')}>
-                <Pencil size={16} />
-              </button>
-              <button type="button" className="text-red-600 p-2" onClick={() => void deleteCase(c.id)} aria-label={t('delete')}>
-                <Trash2 size={16} />
-              </button>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {group.items.map((c) => (
+                <div key={c.id} className="card card-interactive p-5 flex flex-col gap-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="w-11 h-11 rounded-xl bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center shrink-0">
+                      <FileText className="text-violet-600" size={20} />
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button type="button" className="text-violet-600 p-2" onClick={() => void startEdit(c.id)} aria-label={t('edit')}>
+                        <Pencil size={16} />
+                      </button>
+                      <button type="button" className="text-red-600 p-2" onClick={() => void deleteCase(c.id)} aria-label={t('delete')}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-slate-900 dark:text-white break-words">{c.titleEn}</p>
+                    <p className="text-sm text-slate-500 mt-0.5">{c.patientName}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">{c.specialty?.nameEn} · {c.difficulty?.nameEn}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 mt-auto">
+                    <span className={`badge ${c.isPublished ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                      {c.isPublished ? t('adminCaseStatusPublished') : t('adminCaseStatusDraft')}
+                    </span>
+                    {c.isFreeTier && <span className="badge bg-blue-50 dark:bg-blue-900/30 text-blue-700">{t('adminCaseStatusFree')}</span>}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         ))}
       </div>
+
+      {totalPages > 1 && (
+        <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+          <button
+            type="button"
+            className="btn-secondary text-sm disabled:opacity-40"
+            disabled={currentPage <= 1}
+            onClick={() => setPage(currentPage - 1)}
+          >
+            {t('adminCasePrevPage')}
+          </button>
+          <span className="text-sm text-slate-500 px-2">
+            {t('adminCasePageOf', { page: currentPage, pages: totalPages })}
+          </span>
+          <button
+            type="button"
+            className="btn-secondary text-sm disabled:opacity-40"
+            disabled={currentPage >= totalPages}
+            onClick={() => setPage(currentPage + 1)}
+          >
+            {t('adminCaseNextPage')}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

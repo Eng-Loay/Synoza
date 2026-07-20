@@ -37,7 +37,7 @@ export function DashboardLayout({
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex">
+    <div className="h-dvh min-h-0 bg-slate-100 dark:bg-slate-950 flex overflow-hidden">
       {/* Sidebar — boutique-style dark panel */}
       <aside
         className={`fixed inset-y-0 left-0 z-40 w-[min(280px,85vw)] bg-[#0f1117] text-slate-300 transform transition-transform duration-300 ease-out lg:translate-x-0 lg:static lg:flex-shrink-0 ${
@@ -101,9 +101,9 @@ export function DashboardLayout({
         <div className="fixed inset-0 bg-black/50 z-30 lg:hidden animate-fade-in" onClick={() => setSidebarOpen(false)} />
       )}
 
-      {/* Main */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="sticky top-0 z-20 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200 dark:border-slate-800 px-4 lg:px-8 py-4">
+      {/* Main — constrained height so content scrolls in <main> and sticky bars work */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        <header className="shrink-0 z-20 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200 dark:border-slate-800 px-4 lg:px-8 py-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <button
@@ -124,7 +124,7 @@ export function DashboardLayout({
           </div>
         </header>
 
-        <main className="flex-1 p-4 lg:p-8 overflow-auto">{children}</main>
+        <main className="flex-1 min-h-0 p-4 lg:p-8 overflow-auto">{children}</main>
       </div>
     </div>
   );

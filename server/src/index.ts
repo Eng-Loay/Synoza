@@ -29,6 +29,10 @@ import {
   persistentExamRoot,
   packagedExamRoot,
 } from "./lib/examMediaPaths.js";
+import {
+  ensureAiKnowledgeDirs,
+  persistentAiKnowledgeRoot,
+} from "./lib/aiKnowledgePaths.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -86,14 +90,22 @@ app.use("/api/speech", speechRoutes);
 app.use("/api/payments", paymentsRoutes);
 
 ensureExamMediaDirs();
+ensureAiKnowledgeDirs();
 // Persistent uploads first (survives deploy wipe), then packaged defaults
 app.use("/exam", express.static(persistentExamRoot()));
 app.use("/exam", express.static(packagedExamRoot()));
+app.use("/knowledge", express.static(persistentAiKnowledgeRoot()));
 
 const clientDist = path.join(__dirname, "../../client/dist");
 app.use(express.static(clientDist));
 app.get("*", (req, res, next) => {
-  if (req.path.startsWith("/api") || req.path.startsWith("/exam")) return next();
+  if (
+    req.path.startsWith("/api") ||
+    req.path.startsWith("/exam") ||
+    req.path.startsWith("/knowledge")
+  ) {
+    return next();
+  }
   res.sendFile(path.join(clientDist, "index.html"), (err) => {
     if (err) next();
   });

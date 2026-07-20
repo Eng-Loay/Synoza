@@ -4,6 +4,13 @@ import { withTimeout } from './withTimeout';
 
 const TRANSCRIBE_TIMEOUT_MS = 25000;
 
+function resolveRequestLanguage(language: string, sessionLang: string): string {
+  if (shouldForceArabicTranscription(sessionLang)) return 'ar-EG';
+  if (sessionLang === 'EN') return 'en-US';
+  if (sessionLang === 'AUTO') return 'auto';
+  return language || 'auto';
+}
+
 export async function transcribeAudioBlob(blob: Blob, language: string, sessionLang = 'AR'): Promise<string> {
   const expectArabic = shouldForceArabicTranscription(sessionLang);
   const audioBase64 = await blobToBase64(blob);
@@ -11,15 +18,21 @@ export async function transcribeAudioBlob(blob: Blob, language: string, sessionL
     api.post<{ text: string }>('/transcribe', {
       audioBase64,
       mimeType: blob.type || 'audio/webm',
-      language: expectArabic ? 'ar-EG' : language,
+      language: resolveRequestLanguage(language, sessionLang),
       forceArabic: expectArabic,
     }),
     TRANSCRIBE_TIMEOUT_MS,
     'transcription-timeout',
   );
-  const text = fixArabicSpeechTranscript(res.data.text.trim(), expectArabic);
+  const text = fixArabicSpeechTranscript(
+    res.data.text.trim(),
+    expectArabic,
+    sessionLang === 'AUTO',
+  );
   if (!isValidArabicSessionTranscript(text, expectArabic)) {
-    throw Object.assign(new Error('transcription-invalid'), { response: { status: 422, data: { error: 'Could not recognize Arabic speech' } } });
+    throw Object.assign(new Error('transcription-invalid'), {
+      response: { status: 422, data: { error: 'Could not recognize speech' } },
+    });
   }
   return text;
 }

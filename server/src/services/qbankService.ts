@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { splitQuestionContent } from '../lib/qbankQuestionContent.js';
+import { qbankModuleUniversityFilter, resolveUserUniversityId } from '../lib/universityScope.js';
 
 export type QbankModuleView = {
   id: string;
@@ -101,52 +102,68 @@ export async function getUserEntitlements(userId: string, termId: string): Promi
   return new Set(rows.map((r) => r.moduleId));
 }
 
-export async function getModuleFromDb(termId: string, moduleId: string) {
+export async function getModuleFromDb(
+  termId: string,
+  moduleId: string,
+  universityId?: string | null,
+) {
+  const visibility =
+    universityId !== undefined ? qbankModuleUniversityFilter(universityId) : {};
   return prisma.qbankModule.findFirst({
-    where: { id: moduleId, termId, isActive: true },
+    where: { id: moduleId, termId, isActive: true, ...visibility },
   });
 }
 
 export async function userHasModuleAccess(userId: string, termId: string, moduleId: string): Promise<boolean> {
-  const mod = await getModuleFromDb(termId, moduleId);
+  const universityId = await resolveUserUniversityId(userId);
+  const mod = await getModuleFromDb(termId, moduleId, universityId);
   if (!mod) return false;
   if (mod.free) return true;
   const entitlements = await getUserEntitlements(userId, termId);
   return entitlements.has(moduleId) || mod.bundled;
 }
 
-export async function isPurchasableModule(termId: string, moduleId: string): Promise<boolean> {
-  const mod = await getModuleFromDb(termId, moduleId);
+export async function isPurchasableModule(userId: string, termId: string, moduleId: string): Promise<boolean> {
+  const universityId = await resolveUserUniversityId(userId);
+  const mod = await getModuleFromDb(termId, moduleId, universityId);
   return !!mod && !mod.free;
 }
 
-export async function getActiveTerms(): Promise<QbankTermView[]> {
+export async function getActiveTerms(userId: string): Promise<QbankTermView[]> {
+  const universityId = await resolveUserUniversityId(userId);
+  const moduleWhere = { isActive: true, ...qbankModuleUniversityFilter(universityId) };
+
   const terms = await prisma.qbankTerm.findMany({
     where: { isActive: true },
     orderBy: { sortOrder: 'asc' },
     include: {
       modules: {
-        where: { isActive: true },
+        where: moduleWhere,
         include: { _count: { select: { questions: { where: { isPublished: true } } } } },
       },
     },
   });
 
-  return terms.map((term) => ({
-    id: term.id,
-    titleEn: term.titleEn,
-    titleAr: term.titleAr,
-    modules: term.modules.length,
-    questions: term.modules.reduce((sum, m) => sum + m._count.questions, 0),
-  }));
+  return terms
+    .filter((term) => term.modules.length > 0)
+    .map((term) => ({
+      id: term.id,
+      titleEn: term.titleEn,
+      titleAr: term.titleAr,
+      modules: term.modules.length,
+      questions: term.modules.reduce((sum, m) => sum + m._count.questions, 0),
+    }));
 }
 
 export async function getModulesForUser(userId: string, termId: string) {
+  const universityId = await resolveUserUniversityId(userId);
+  const moduleWhere = { isActive: true, ...qbankModuleUniversityFilter(universityId) };
+
   const term = await prisma.qbankTerm.findFirst({
     where: { id: termId, isActive: true },
     include: {
       modules: {
-        where: { isActive: true },
+        where: moduleWhere,
         orderBy: { sortOrder: 'asc' },
         include: { _count: { select: { questions: { where: { isPublished: true } } } } },
       },

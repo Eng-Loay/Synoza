@@ -29,16 +29,29 @@ export function isBrowserSttSupported(): boolean {
   return !!getSpeechRecognitionCtor();
 }
 
+// Chrome's Web Speech API depends on Google's speech servers; when they are
+// unreachable (firewall/region issues) recognition fails with 'network'.
+// After such a runtime failure we permanently switch this tab to the
+// MediaRecorder + server transcription path.
+let browserSttRuntimeFailed = false;
+
+export function markBrowserSttRuntimeFailure(): void {
+  browserSttRuntimeFailed = true;
+}
+
 /** Device/browser STT (Web Speech API) — no OpenAI transcription. */
 export function shouldUseBrowserStt(): boolean {
-  return isBrowserSttSupported();
+  return isBrowserSttSupported() && !browserSttRuntimeFailed;
 }
 
 export function resolveBrowserSttLang(lang: string, sessionLang: string): string {
   if (shouldForceArabicTranscription(sessionLang)) return 'ar-EG';
-  if (lang.toLowerCase().startsWith('ar')) return 'ar-EG';
+  if (sessionLang === 'EN') return 'en-US';
+  if (sessionLang === 'AR') return 'ar-EG';
+  // AUTO: follow the stage-aware lang from the UI (patient → AR, examiner → EN).
   if (lang.toLowerCase().startsWith('en')) return 'en-US';
-  return lang;
+  if (lang.toLowerCase().startsWith('ar')) return 'ar-EG';
+  return 'en-US';
 }
 
 export interface BrowserSttSession {
@@ -57,10 +70,10 @@ export interface StartBrowserSttOptions {
   onError: (code: string) => void;
 }
 
-function validateTranscript(raw: string, expectArabic: boolean): string | null {
+function validateTranscript(raw: string, expectArabic: boolean, codeSwitch = false): string | null {
   const collapsed = collapseSttRepetition(raw.trim());
-  const text = fixArabicSpeechTranscript(collapsed, expectArabic);
-  if (!text || text.length < 2 || looksLikeSttHallucination(text)) return null;
+  const text = fixArabicSpeechTranscript(collapsed, expectArabic, codeSwitch);
+  if (!text || text.length < 2 || looksLikeSttHallucination(text, !expectArabic)) return null;
   if (looksLikeSttRepetitionLoop(text)) return null;
   if (!expectArabic) return text;
   if (/[\u0600-\u06FF]/.test(text)) return text;
@@ -119,6 +132,7 @@ export async function startBrowserStt(
   recognition.continuous = IS_MOBILE ? false : true;
 
   const expectArabic = shouldForceArabicTranscription(options.sessionLang || 'AR');
+  const codeSwitch = (options.sessionLang || 'AR') === 'AUTO';
   const defaultLiveMax = IS_MOBILE ? 20_000 : 15_000;
   const maxMs = options.maxDurationMs ?? (isLiveCall ? defaultLiveMax : maxRecordDurationMs());
   const startedAt = Date.now();
@@ -178,7 +192,7 @@ export async function startBrowserStt(
     }
 
     const cleaned = collapseSttRepetition((payload || '').trim());
-    const valid = validateTranscript(cleaned, expectArabic);
+    const valid = validateTranscript(cleaned, expectArabic, codeSwitch);
     if (!valid) {
       options.onError('no-speech');
       return;
@@ -241,6 +255,14 @@ export async function startBrowserStt(
 
     if (latestTranscript.trim() && (event.error === 'network' || event.error === 'audio-capture')) {
       finish('result', latestTranscript);
+      return;
+    }
+
+    if (event.error === 'network') {
+      // Speech service unreachable — don't loop restarts; let the caller
+      // fall back to recorder + server transcription.
+      markBrowserSttRuntimeFailure();
+      finish('error', 'network');
       return;
     }
 

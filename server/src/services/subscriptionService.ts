@@ -4,14 +4,22 @@ import { prisma } from '../lib/prisma.js';
 export const FREE_ATTEMPTS_PER_CASE = 3;
 
 export const PLAN_CATALOG = {
-  FREE: { priceEgp: 0, casesQuota: 0, durationMonths: 0, labelEn: 'Free', labelAr: 'مجاني' },
-  PACKAGE_50: { priceEgp: 150, casesQuota: 50, durationMonths: 2, labelEn: 'Basic', labelAr: 'Basic' },
-  PACKAGE_150: { priceEgp: 300, casesQuota: 150, durationMonths: 4, labelEn: 'Pro', labelAr: 'Pro' },
-  PACKAGE_300: { priceEgp: 500, casesQuota: 300, durationMonths: 6, labelEn: 'Premium', labelAr: 'Premium' },
+  FREE: { priceEgp: 0, casesQuota: 3, durationMonths: 0, labelEn: 'Free', labelAr: 'مجاني' },
+  PACKAGE_50: { priceEgp: 150, casesQuota: 30, durationMonths: 2, labelEn: 'Basic', labelAr: 'Basic' },
+  PACKAGE_150: { priceEgp: 300, casesQuota: 60, durationMonths: 4, labelEn: 'Pro', labelAr: 'Pro' },
+  PACKAGE_300: { priceEgp: 500, casesQuota: 100, durationMonths: 6, labelEn: 'Premium', labelAr: 'Premium' },
   INSTITUTION: { priceEgp: 0, casesQuota: 999_999, durationMonths: 0, labelEn: 'Institution', labelAr: 'مؤسسة' },
 } as const;
 
 export type PlanCatalogKey = keyof typeof PLAN_CATALOG;
+
+/** Legacy quotas from the previous catalog — migrated automatically when still present in PlanConfig. */
+const LEGACY_PLAN_QUOTAS: Partial<Record<PlanCatalogKey, number>> = {
+  FREE: 0,
+  PACKAGE_50: 50,
+  PACKAGE_150: 150,
+  PACKAGE_300: 300,
+};
 
 export type PlanDefinition = {
   priceEgp: number;
@@ -32,20 +40,32 @@ export function isPaidPlan(plan: SubscriptionPlan): boolean {
 
 export async function ensurePlanConfigsSeeded() {
   const count = await prisma.planConfig.count();
-  if (count > 0) return;
-  let sortOrder = 0;
-  for (const [plan, cfg] of Object.entries(PLAN_CATALOG)) {
-    await prisma.planConfig.create({
-      data: {
-        plan: plan as SubscriptionPlan,
-        nameEn: cfg.labelEn,
-        nameAr: cfg.labelAr,
-        priceEgp: cfg.priceEgp,
-        casesQuota: cfg.casesQuota,
-        durationMonths: cfg.durationMonths,
-        isActive: true,
-        sortOrder: sortOrder++,
-      },
+  if (count === 0) {
+    let sortOrder = 0;
+    for (const [plan, cfg] of Object.entries(PLAN_CATALOG)) {
+      await prisma.planConfig.create({
+        data: {
+          plan: plan as SubscriptionPlan,
+          nameEn: cfg.labelEn,
+          nameAr: cfg.labelAr,
+          priceEgp: cfg.priceEgp,
+          casesQuota: cfg.casesQuota,
+          durationMonths: cfg.durationMonths,
+          isActive: true,
+          sortOrder: sortOrder++,
+        },
+      });
+    }
+    return;
+  }
+
+  // Migrate legacy case quotas to the new catalog when rows still hold old defaults.
+  for (const [plan, legacyQuota] of Object.entries(LEGACY_PLAN_QUOTAS) as [PlanCatalogKey, number][]) {
+    const nextQuota = PLAN_CATALOG[plan].casesQuota;
+    if (nextQuota === legacyQuota) continue;
+    await prisma.planConfig.updateMany({
+      where: { plan, casesQuota: legacyQuota },
+      data: { casesQuota: nextQuota },
     });
   }
 }
@@ -195,6 +215,7 @@ export async function getUserEntitlements(userId: string) {
     plan,
     isFree,
     freeAttemptsPerCase: FREE_ATTEMPTS_PER_CASE,
+    // Free entitlements stay attempt-based; paid plans use credit quotas.
     casesQuota: isFree ? 0 : casesQuota,
     casesUnlocked,
     casesRemaining: isFree ? 0 : Math.max(0, casesQuota - casesUnlocked),

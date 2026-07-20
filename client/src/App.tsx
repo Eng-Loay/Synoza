@@ -27,6 +27,7 @@ import ProfilePage from './pages/ProfilePage';
 import ResultsPage from './pages/ResultsPage';
 import AdminDashboard from './pages/AdminDashboard';
 import { PageTransition } from './components/PageTransition';
+import { ToastContainer } from './components/ToastContainer';
 import { releaseStuckUiLayers } from './lib/uiCleanup';
 
 function RouteUiCleanup() {
@@ -95,6 +96,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" />} />
           </Routes>
         </PageTransition>
+        <ToastContainer />
       </BrowserRouter>
     </AuthProvider>
   );

@@ -51,7 +51,7 @@ assert(JSON.stringify(qA) === JSON.stringify(qA2), 'same session gets same quest
 assert(JSON.stringify(qA) !== JSON.stringify(qB), 'different sessions get different questions');
 
 const opening = buildExaminerVivaOpening(sessionA, tarekCase);
-assert(/Question 1 of 5/i.test(opening), 'opening in English with Q1', opening);
+assert(!/Question\s+1\s+of\s+5/i.test(opening), 'opening has no question numbering', opening);
 assert(opening.includes(qA[0].question), 'opening uses first picked question');
 
 const stage = 'history:examiner';
@@ -59,7 +59,7 @@ const baseMessages = [
   { role: 'EXAMINER', stage, content: opening },
 ];
 
-assert(getCurrentVivaQuestionNumber(baseMessages, stage) === 1, 'tracks question 1 after opening');
+assert(getCurrentVivaQuestionNumber(baseMessages, stage, qA) === 1, 'tracks question 1 after opening');
 
 assert(studentGaveUp("I don't know doctor"), 'detects English give-up');
 assert(studentGaveUp("don't know"), 'detects bare "don\'t know"');
@@ -76,8 +76,8 @@ const wrongReply = await respondToHistoryVivaAnswer(
   stage,
   'i think with CBC',
 );
-assert(!/Question 2 of 5/i.test(wrongReply), 'wrong answer does not advance', wrongReply);
-assert(/not quite|try again|brief/i.test(wrongReply.toLowerCase()), 'wrong answer gives feedback', wrongReply);
+assert(!wrongReply.includes(qA[1].question), 'wrong answer does not advance', wrongReply);
+assert(/not complete|try again|brief|focused|systematically/i.test(wrongReply.toLowerCase()), 'wrong answer gives feedback', wrongReply);
 
 const giveUpReply = await respondToHistoryVivaAnswer(
   sessionA,
@@ -86,7 +86,7 @@ const giveUpReply = await respondToHistoryVivaAnswer(
   stage,
   "don't know",
 );
-assert(/Question 2 of 5/i.test(giveUpReply), 'bare give-up advances to Q2', giveUpReply);
+assert(giveUpReply.includes(qA[1].question), 'bare give-up advances to Q2', giveUpReply);
 
 const giveUpReply2 = await respondToHistoryVivaAnswer(
   sessionA,
@@ -95,7 +95,7 @@ const giveUpReply2 = await respondToHistoryVivaAnswer(
   stage,
   "I don't know",
 );
-assert(/Question 2 of 5/i.test(giveUpReply2), 'give-up advances to Q2', giveUpReply2);
+assert(giveUpReply2.includes(qA[1].question), 'give-up advances to Q2', giveUpReply2);
 
 let messages = [...baseMessages];
 for (let i = 0; i < VIVA_QUESTIONS_PER_SESSION - 1; i += 1) {
@@ -121,6 +121,20 @@ const closingReply = await respondToHistoryVivaAnswer(
   "I don't know",
 );
 assert(/completes the examiner viva/i.test(closingReply), 'closes after Q5', closingReply);
+
+const closingAr = await respondToHistoryVivaAnswer(
+  `${sessionA}-ar`,
+  tarekCase,
+  [
+    ...messages,
+    { role: 'STUDENT', stage, content: "I don't know" },
+    { role: 'EXAMINER', stage, content: closingReply },
+  ],
+  stage,
+  "مش عارف",
+  'AR',
+);
+assert(/بالتوفيق/.test(closingAr) || /خلصنا أسئلة/.test(closingAr), 'Arabic closing uses بالتوفيق', closingAr);
 
 const samiraQ = pickVivaQuestionsForSession(sessionA, samiraCase);
 assert(samiraQ[0].question !== qA[0].question || samiraQ[1].question !== qA[1].question, 'different case pool changes questions');
@@ -154,7 +168,8 @@ const asdReply = await respondToHistoryVivaAnswer(
   stage,
   'Atrial septal defect (ASD)',
 );
-assert(!/Question 2 of 5/i.test(asdReply), 'first partial point stays on Q1', asdReply);
+const vsdQuestions = pickVivaQuestionsForSession(vsdSession, vsdCase);
+assert(!/covered all/i.test(asdReply), 'first partial point stays on Q1', asdReply);
 assert(/good|correct/i.test(asdReply), 'partial point gets encouragement', asdReply);
 assert(/VSD|PDA|ventricular|patent/i.test(asdReply), 'partial point hints remaining causes', asdReply);
 
@@ -170,7 +185,7 @@ const vsdReply = await respondToHistoryVivaAnswer(
   stage,
   'Ventricular septal defect (VSD)',
 );
-assert(!/Question 2 of 5/i.test(vsdReply), 'second partial point stays on Q1', vsdReply);
+assert(!/covered all/i.test(vsdReply), 'second partial point stays on Q1', vsdReply);
 assert(/good|correct/i.test(vsdReply), 'second partial point gets encouragement', vsdReply);
 
 const vsdMessages3 = [
@@ -185,8 +200,48 @@ const pdaReply = await respondToHistoryVivaAnswer(
   stage,
   'Patent ductus arteriosus (PDA)',
 );
-assert(/Question 2 of 5/i.test(pdaReply), 'all points advance to Q2', pdaReply);
+assert(
+  /covered all|correct/i.test(pdaReply.toLowerCase()) && pdaReply.includes(vsdQuestions[1].question),
+  'all points advance to next question',
+  pdaReply,
+);
 assert(/correct|covered/i.test(pdaReply.toLowerCase()), 'full answer acknowledged', pdaReply);
+
+// Prose sample (comma list) — one cause must get partial credit, not a hard reject
+const pruritusCase = {
+  id: 'case-pruritus',
+  titleEn: 'Medical causes of pruritus',
+  finalDiagnosis: 'Obstructive jaundice',
+  examinerQuestions: JSON.stringify(
+    Array.from({ length: 5 }, (_, index) => ({
+      id: `pq${index + 1}`,
+      question: "Medical causes of 'pruritus'?",
+      sampleAnswer:
+        'Medical causes of pruritus include obstructive jaundice, bilharziasis and diabetes mellitus.',
+    })),
+  ),
+} as Case;
+const pruritusSession = 'session-pruritus-1';
+const pruritusOpening = buildExaminerVivaOpening(pruritusSession, pruritusCase);
+const pruritusMessages = [{ role: 'EXAMINER', stage, content: pruritusOpening }];
+const oneCauseReply = await respondToHistoryVivaAnswer(
+  pruritusSession,
+  pruritusCase,
+  pruritusMessages,
+  stage,
+  'obstructive jaundice',
+);
+assert(/correct|incomplete|still|hint|more/i.test(oneCauseReply.toLowerCase()), 'one cause gets partial credit', oneCauseReply);
+assert(!/not quite|does not address/i.test(oneCauseReply.toLowerCase()), 'one cause is not hard-rejected', oneCauseReply);
+
+const idkWithSample = await respondToHistoryVivaAnswer(
+  pruritusSession,
+  pruritusCase,
+  pruritusMessages,
+  stage,
+  'مش عارف',
+);
+assert(/expected answer|obstructive jaundice/i.test(idkWithSample), 'give-up reveals sample answer', idkWithSample);
 
 const thrillSampleAnswer = `Causes of a thrill include:
 - **Apical systolic thrill:** Mitral regurgitation.
@@ -206,10 +261,14 @@ const thrillEval = await import('../src/services/aiService.js').then((m) =>
 );
 assert(!thrillEval.advance, 'single thrill point does not advance', thrillEval.feedback);
 assert(/apical systolic thrill/i.test(thrillEval.feedback), 'credits MR thrill point', thrillEval.feedback);
-const creditedPart = thrillEval.feedback.split(/keep going|one more|still need/i)[0] ?? thrillEval.feedback;
 assert(
-  !/diastolic thrill|mitral stenosis/i.test(creditedPart),
-  'does not falsely credit MS thrill point',
+  /correct|incomplete|still|hint|more/i.test(thrillEval.feedback),
+  'partial thrill answer encourages completion',
+  thrillEval.feedback,
+);
+assert(
+  !/mitral stenosis/i.test(thrillEval.feedback),
+  'does not reveal the MS model answer verbatim',
   thrillEval.feedback,
 );
 

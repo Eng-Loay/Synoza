@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   BookMarked,
@@ -38,7 +38,16 @@ type QbankModule = {
   priceEgp: number;
   sortOrder: number;
   isActive: boolean;
+  universityIds?: string[];
+  universities?: Array<{ id: string; nameEn: string; nameAr: string }>;
   _count?: { questions: number };
+};
+
+type PartnerUniversityOption = {
+  id: string;
+  nameEn: string;
+  nameAr: string;
+  isActive?: boolean;
 };
 
 type LookupRow = {
@@ -97,7 +106,8 @@ const EMPTY_QUESTION = {
 };
 
 export function AdminQbankTab() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const isAr = i18n.language?.startsWith('ar');
   const [section, setSection] = useState<Section>('terms');
   const [terms, setTerms] = useState<QbankTerm[]>([]);
   const [selectedTermId, setSelectedTermId] = useState('');
@@ -105,6 +115,7 @@ export function AdminQbankTab() {
   const [selectedModuleId, setSelectedModuleId] = useState('');
   const [chapters, setChapters] = useState<LookupRow[]>([]);
   const [references, setReferences] = useState<LookupRow[]>([]);
+  const [partnerUniversities, setPartnerUniversities] = useState<PartnerUniversityOption[]>([]);
   const [questions, setQuestions] = useState<QbankQuestion[]>([]);
   const [questionTotal, setQuestionTotal] = useState(0);
   const [error, setError] = useState('');
@@ -125,6 +136,7 @@ export function AdminQbankTab() {
     priceEgp: 50,
     sortOrder: 0,
     isActive: true,
+    universityIds: [] as string[],
   });
   const [editingModuleId, setEditingModuleId] = useState<string | null>(null);
 
@@ -141,6 +153,13 @@ export function AdminQbankTab() {
   const [importMode, setImportMode] = useState<'csv' | 'structured'>('structured');
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [selectedImportSubject, setSelectedImportSubject] = useState('');
+
+  const selectedModule = useMemo(
+    () => modules.find((m) => m.id === selectedModuleId) ?? null,
+    [modules, selectedModuleId],
+  );
+  const importSubjects = selectedModule?.subjects ?? [];
 
   const loadTerms = useCallback(async () => {
     const r = await api.get('/admin/qbank/terms');
@@ -160,12 +179,14 @@ export function AdminQbankTab() {
   }, [selectedModuleId]);
 
   const loadLookups = useCallback(async () => {
-    const [ch, ref] = await Promise.all([
+    const [ch, ref, uni] = await Promise.all([
       api.get('/admin/qbank/chapters'),
       api.get('/admin/qbank/references'),
+      api.get('/admin/universities'),
     ]);
     setChapters(ch.data.chapters);
     setReferences(ref.data.references);
+    setPartnerUniversities(uni.data.universities ?? []);
   }, []);
 
   const loadQuestions = useCallback(async (termId: string, moduleId: string) => {
@@ -186,6 +207,13 @@ export function AdminQbankTab() {
   useEffect(() => {
     if (selectedTermId) void loadModules(selectedTermId).catch(() => setError(t('adminQbankLoadError')));
   }, [selectedTermId, loadModules, t]);
+
+  useEffect(() => {
+    if (!selectedImportSubject) return;
+    if (!importSubjects.includes(selectedImportSubject)) {
+      setSelectedImportSubject('');
+    }
+  }, [importSubjects, selectedImportSubject]);
 
   useEffect(() => {
     if (section === 'questions') {
@@ -238,6 +266,7 @@ export function AdminQbankTab() {
         priceEgp: 50,
         sortOrder: 0,
         isActive: true,
+        universityIds: [],
       });
       setEditingModuleId(null);
       await loadModules(selectedTermId);
@@ -344,6 +373,7 @@ export function AdminQbankTab() {
         content: structuredContent,
         termId: selectedTermId,
         moduleId: selectedModuleId,
+        subject: selectedImportSubject || undefined,
         autoCreateLookups: true,
       });
       setImportPreview(r.data);
@@ -369,6 +399,7 @@ export function AdminQbankTab() {
         content: structuredContent,
         termId: selectedTermId,
         moduleId: selectedModuleId,
+        subject: selectedImportSubject || undefined,
         autoCreateLookups: true,
       });
       setImportResult({
@@ -463,6 +494,7 @@ export function AdminQbankTab() {
                   <tr className="text-left text-slate-500 border-b">
                     <th className="py-2">ID</th>
                     <th>Name</th>
+                    <th>Universities</th>
                     <th>Price</th>
                     <th>Qs</th>
                     <th />
@@ -473,6 +505,13 @@ export function AdminQbankTab() {
                     <tr key={mod.id} className="border-b border-slate-100 dark:border-slate-800">
                       <td className="py-2 font-mono text-xs">{mod.id}</td>
                       <td>{mod.nameEn}{mod.free ? ' (free)' : ''}{mod.bundled ? ' (bundled)' : ''}</td>
+                      <td className="text-xs text-slate-500 max-w-[180px]">
+                        {!mod.universityIds?.length
+                          ? t('adminQbankGlobalModule')
+                          : (mod.universities ?? [])
+                              .map((u) => (isAr ? u.nameAr : u.nameEn))
+                              .join(', ')}
+                      </td>
                       <td>{mod.priceEgp} EGP</td>
                       <td>{mod._count?.questions ?? 0}</td>
                       <td className="text-end">
@@ -490,6 +529,7 @@ export function AdminQbankTab() {
                             priceEgp: mod.priceEgp,
                             sortOrder: mod.sortOrder,
                             isActive: mod.isActive,
+                            universityIds: mod.universityIds ?? [],
                           });
                         }}>
                           <Pencil size={14} />
@@ -518,6 +558,32 @@ export function AdminQbankTab() {
                   onChange={(subjects) => setModuleForm({ ...moduleForm, subjects })}
                   placeholder={t('adminQbankModuleSubjectsPlaceholder')}
                 />
+              </div>
+              <div className="sm:col-span-2">
+                <p className="text-sm font-medium mb-1">{t('adminQbankModuleUniversities')}</p>
+                <p className="text-xs text-slate-500 mb-2">{t('adminQbankModuleUniversitiesHint')}</p>
+                <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 p-3">
+                  {partnerUniversities.filter((u) => u.isActive !== false).map((uni) => {
+                    const checked = moduleForm.universityIds.includes(uni.id);
+                    return (
+                      <label key={uni.id} className="flex items-center gap-2 text-sm rounded-lg border border-slate-100 dark:border-slate-800 px-2 py-1">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setModuleForm((prev) => ({
+                              ...prev,
+                              universityIds: checked
+                                ? prev.universityIds.filter((id) => id !== uni.id)
+                                : [...prev.universityIds, uni.id],
+                            }));
+                          }}
+                        />
+                        {isAr ? uni.nameAr : uni.nameEn}
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
               <input type="number" className="input-field" placeholder="Price EGP" value={moduleForm.priceEgp} onChange={(e) => setModuleForm({ ...moduleForm, priceEgp: Number(e.target.value) })} />
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={moduleForm.free} onChange={(e) => setModuleForm({ ...moduleForm, free: e.target.checked })} /> Free</label>
@@ -701,7 +767,7 @@ export function AdminQbankTab() {
           {importMode === 'structured' ? (
             <>
               <p className="text-sm text-slate-600 dark:text-slate-400">{t('adminQbankStructuredHint')}</p>
-              <div className="grid sm:grid-cols-2 gap-3">
+              <div className="grid sm:grid-cols-3 gap-3">
                 <select className="input-field" value={selectedTermId} onChange={(e) => setSelectedTermId(e.target.value)}>
                   <option value="">{t('adminQbankSelectTerm')}</option>
                   {terms.map((term) => <option key={term.id} value={term.id}>{term.titleEn} ({term.id})</option>)}
@@ -712,7 +778,21 @@ export function AdminQbankTab() {
                     <option key={mod.id} value={mod.id}>{mod.nameEn} ({mod.id})</option>
                   ))}
                 </select>
+                <select
+                  className="input-field"
+                  value={selectedImportSubject}
+                  onChange={(e) => setSelectedImportSubject(e.target.value)}
+                  disabled={!selectedModuleId}
+                >
+                  <option value="">{t('adminQbankSelectSubject')}</option>
+                  {importSubjects.map((subject) => (
+                    <option key={subject} value={subject}>{subject}</option>
+                  ))}
+                </select>
               </div>
+              {selectedModuleId && importSubjects.length === 0 && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">{t('adminQbankNoModuleSubjects')}</p>
+              )}
               <textarea
                 className="input-field min-h-[320px] font-mono text-xs"
                 placeholder={t('adminQbankStructuredPlaceholder')}

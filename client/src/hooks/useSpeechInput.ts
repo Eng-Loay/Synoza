@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { shouldUseBrowserStt, startBrowserStt, type BrowserSttSession } from '../lib/browserStt';
+import { markBrowserSttRuntimeFailure, shouldUseBrowserStt, startBrowserStt, type BrowserSttSession } from '../lib/browserStt';
 import {
   getMicConstraints,
   IS_MOBILE,
@@ -49,9 +49,10 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
   langRef.current = lang;
   sessionLangRef.current = sessionLang;
 
-  const useBrowserStt = shouldUseBrowserStt();
-  // Prefer device STT; server/OpenAI transcription only when Web Speech API is unavailable (e.g. Firefox).
-  const isSupported = useBrowserStt || isAudioRecordingSupported();
+  // Prefer device STT; server transcription when Web Speech API is unavailable
+  // (e.g. Firefox) or failed at runtime (e.g. Google speech servers unreachable).
+  const isSupported = shouldUseBrowserStt() || isAudioRecordingSupported();
+  const startRecorderListeningRef = useRef<(() => Promise<void>) | null>(null);
 
   const releaseStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -74,7 +75,7 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
     browserSttRef.current?.abort();
     browserSttRef.current = null;
     abortActiveSpeechRecognition();
-    releaseMicrophoneStream();
+    releaseMicrophoneStream(true);
 
     const recorder = mediaRecorderRef.current;
     mediaRecorderRef.current = null;
@@ -159,6 +160,13 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
         browserSttRef.current = null;
         setIsListening(false);
         setIsProcessing(false);
+        if ((code === 'network' || code === 'start-failed') && isAudioRecordingSupported()) {
+          // Web Speech API failed at runtime — retry immediately with the
+          // recorder + server transcription path so the user can keep talking.
+          markBrowserSttRuntimeFailure();
+          void startRecorderListeningRef.current?.();
+          return;
+        }
         if (code === 'transcription-invalid') {
           onErrorRef.current?.('micArabicFailed');
         } else {
@@ -281,16 +289,18 @@ export function useSpeechInput({ lang, sessionLang = 'AR', onInterim, onComplete
     }
   }, [armProcessingTimeout, clearProcessingTimer, releaseStream, stopRecording]);
 
+  startRecorderListeningRef.current = startRecorderListening;
+
   const startListening = useCallback(async () => {
     if (isListening || isProcessing) return;
 
-    if (useBrowserStt) {
+    if (shouldUseBrowserStt()) {
       await startBrowserListening();
       return;
     }
 
     await startRecorderListening();
-  }, [isListening, isProcessing, startBrowserListening, startRecorderListening, useBrowserStt]);
+  }, [isListening, isProcessing, startBrowserListening, startRecorderListening]);
 
   const toggleListening = useCallback(() => {
     if (isProcessing) {

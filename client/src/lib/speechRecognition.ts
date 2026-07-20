@@ -41,7 +41,12 @@ export function getSpeechRecognitionCtor(): (new () => SpeechRecognitionLike) | 
 
 let activeRecognition: SpeechRecognitionLike | null = null;
 let sharedMicStream: MediaStream | null = null;
+let sharedMicRefCount = 0;
 let lastRecognitionEndedAt = 0;
+
+export function isSpeechRecognitionActive(): boolean {
+  return activeRecognition !== null;
+}
 
 export function markRecognitionEnded() {
   lastRecognitionEndedAt = Date.now();
@@ -97,13 +102,17 @@ export function waitForSpeechRecognition(ms = 200): Promise<void> {
 
 /** Keep the mic stream open while listening — stopping tracks too early breaks recognition on many devices. */
 export async function acquireMicrophoneStream(): Promise<'granted' | 'denied' | 'unavailable'> {
-  if (sharedMicStream?.active) return 'granted';
+  if (sharedMicStream?.active) {
+    sharedMicRefCount += 1;
+    return 'granted';
+  }
   if (!navigator.mediaDevices?.getUserMedia) return 'unavailable';
 
   try {
     sharedMicStream = await navigator.mediaDevices.getUserMedia({
       audio: getMicConstraints(),
     });
+    sharedMicRefCount = 1;
     return 'granted';
   } catch (err) {
     const name = err instanceof DOMException ? err.name : '';
@@ -112,7 +121,20 @@ export async function acquireMicrophoneStream(): Promise<'granted' | 'denied' | 
   }
 }
 
-export function releaseMicrophoneStream() {
+/**
+ * Release the shared mic stream.
+ * - Skips release while Web Speech recognition is active (unless force).
+ * - Uses ref-counting so concurrent owners (browser STT + live call handoff) don't yank the mic.
+ */
+export function releaseMicrophoneStream(force = false) {
+  if (!force && activeRecognition) return;
+
+  if (!force && sharedMicRefCount > 1) {
+    sharedMicRefCount -= 1;
+    return;
+  }
+
+  sharedMicRefCount = 0;
   sharedMicStream?.getTracks().forEach((track) => track.stop());
   sharedMicStream = null;
 }

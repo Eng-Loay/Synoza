@@ -1,9 +1,11 @@
 import axios from 'axios';
+import i18n from 'i18next';
 import {
   clearAuthSession,
   getStoredToken,
   setAuthSession,
 } from './authStorage';
+import { showToast } from './toast';
 
 const API_TIMEOUT_MS = 20_000;
 
@@ -46,8 +48,21 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Read-only or self-reporting admin endpoints that should not trigger a toast.
+const TOAST_EXCLUDED_URLS = ['/admin/cases/import/parse'];
+
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    const method = String(res.config.method || '').toLowerCase();
+    const url = String(res.config.url || '');
+    const isMutation = ['post', 'put', 'patch', 'delete'].includes(method);
+    const isAdmin = url.startsWith('/admin');
+    const excluded = TOAST_EXCLUDED_URLS.some((u) => url.startsWith(u));
+    if (isMutation && isAdmin && !excluded) {
+      showToast(i18n.t(method === 'delete' ? 'toastDeleted' : 'toastSaved'), 'success');
+    }
+    return res;
+  },
   async (err) => {
     const status = err.response?.status;
     const original = err.config as (typeof err.config & { _authRetry?: boolean }) | undefined;

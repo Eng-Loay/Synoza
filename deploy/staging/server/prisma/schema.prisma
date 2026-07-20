@@ -64,6 +64,17 @@ enum KnowledgeType {
   TEACHING
 }
 
+enum AiKnowledgeRole {
+  PATIENT
+  EXAMINER
+}
+
+enum AiKnowledgeKind {
+  PROMPT
+  FILE
+  MEDIA
+}
+
 model KnowledgeCategory {
   id          String              @id @default(cuid())
   parentId    String?
@@ -77,7 +88,33 @@ model KnowledgeCategory {
   parent      KnowledgeCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
   children    KnowledgeCategory[] @relation("CategoryTree")
   items       KnowledgeItem[]
+  aiKnowledge AiKnowledgeEntry[]
   cases       Case[]
+}
+
+/// Admin-managed AI knowledge for patient/examiner behaviour (prompt, file, or media).
+model AiKnowledgeEntry {
+  id           String          @id @default(cuid())
+  role         AiKnowledgeRole
+  kind         AiKnowledgeKind
+  titleEn      String
+  titleAr      String          @default("")
+  content      String          @default("") @db.LongText
+  fileUrl      String?
+  fileName     String?
+  mimeType     String?
+  categoryId   String?
+  caseId       String?
+  isActive     Boolean         @default(true)
+  sortOrder    Int             @default(0)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  category     KnowledgeCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  case         Case?              @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([role, isActive])
+  @@index([categoryId, role])
+  @@index([caseId, role])
 }
 
 model KnowledgeItem {
@@ -184,6 +221,7 @@ model Case {
   category            KnowledgeCategory? @relation(fields: [categoryId], references: [id])
   sessions            Session[]
   caseAccess          CaseAccess[]
+  aiKnowledge         AiKnowledgeEntry[]
 }
 
 model Session {

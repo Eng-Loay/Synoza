@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Save } from 'lucide-react';
 import api from '../../lib/api';
+import { PlanMarketingCards, type PlanOption } from '../PlanMarketingCards';
 
 type PlanRow = {
   id: string;
@@ -14,6 +15,8 @@ type PlanRow = {
   sortOrder: number;
 };
 
+const VISUAL_PLAN_IDS = new Set(['FREE', 'PACKAGE_50', 'PACKAGE_150', 'PACKAGE_300']);
+
 export function AdminPricingTab() {
   const { t } = useTranslation();
   const [plans, setPlans] = useState<PlanRow[]>([]);
@@ -23,6 +26,21 @@ export function AdminPricingTab() {
   useEffect(() => {
     void api.get('/admin/plans').then((r) => setPlans(r.data.plans || []));
   }, []);
+
+  const previewPlans: PlanOption[] = useMemo(
+    () =>
+      plans
+        .filter((p) => VISUAL_PLAN_IDS.has(p.id))
+        .map((p) => ({
+          id: p.id,
+          priceEgp: p.priceEgp,
+          casesQuota: p.casesQuota,
+          durationMonths: p.durationMonths,
+          labelEn: p.labelEn,
+          labelAr: p.labelAr,
+        })),
+    [plans],
+  );
 
   const save = async () => {
     setSaving(true);
@@ -53,8 +71,8 @@ export function AdminPricingTab() {
 
   return (
     <div className="space-y-6">
-      <div className="card p-6">
-        <div className="flex items-center justify-between gap-3 mb-4">
+      <div className="card p-6 space-y-6">
+        <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="font-semibold text-slate-900 dark:text-white">{t('adminPricing')}</h2>
             <p className="text-sm text-slate-500">{t('adminPricingDesc')}</p>
@@ -67,6 +85,15 @@ export function AdminPricingTab() {
           </div>
         </div>
 
+        <div>
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-1">{t('adminPricingPreview')}</h3>
+          <p className="text-xs text-slate-500 mb-4">{t('adminPricingPreviewDesc')}</p>
+          <PlanMarketingCards plans={previewPlans} mode="preview" />
+        </div>
+      </div>
+
+      <div className="card p-6">
+        <h3 className="font-semibold text-slate-900 dark:text-white mb-4">{t('adminPricingEdit')}</h3>
         <div className="space-y-4">
           {plans.map((plan) => (
             <div key={plan.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { shouldUseBrowserStt, startBrowserStt, type BrowserSttSession } from '../lib/browserStt';
+import { markBrowserSttRuntimeFailure, shouldUseBrowserStt, startBrowserStt, type BrowserSttSession } from '../lib/browserStt';
 import { primeSpeechOutput, speakText, stopSpeaking } from '../lib/speech';
 import { abortActiveSpeechRecognition, releaseMicrophoneStream, waitForSpeechRecognition } from '../lib/speechRecognition';
 import {
@@ -110,8 +110,8 @@ export function useLiveVoiceCall({
     setIsSpeaking(active);
   }, []);
 
-  const useBrowserStt = shouldUseBrowserStt();
-  const isSupported = typeof window !== 'undefined' && (useBrowserStt || isAudioRecordingSupported());
+  const isSupported =
+    typeof window !== 'undefined' && (shouldUseBrowserStt() || isAudioRecordingSupported());
 
   const clearTimers = useCallback(() => {
     if (vadFrameRef.current !== null) {
@@ -193,8 +193,9 @@ export function useLiveVoiceCall({
   const ensureStream = useCallback(async (): Promise<MediaStream | null> => {
     if (streamRef.current?.active) return streamRef.current;
 
-    // Drop browser-STT shared mic so MediaRecorder can open the device on mobile.
-    releaseMicrophoneStream();
+    // Only drop the shared browser-STT mic when recognition is idle.
+    // Forcing a release mid-recognition causes live-call / mic races on mobile.
+    releaseMicrophoneStream(false);
 
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: getMicConstraints(),
@@ -241,8 +242,8 @@ export function useLiveVoiceCall({
     browserSttRef.current?.abort();
     browserSttRef.current = null;
     abortActiveSpeechRecognition();
-    // Keep shared mic stream during live call turns; release only when call ends.
-    releaseMicrophoneStream();
+    // Keep shared mic stream during live call turns; force-release only when call ends.
+    releaseMicrophoneStream(true);
     clearTimers();
     clearBusyWatchdog();
     stopRecorder();
@@ -348,7 +349,8 @@ export function useLiveVoiceCall({
       await waitForSpeechRecognition(BROWSER_STT_RESTART_DELAY_MS);
     }
 
-    releaseMicrophoneStream();
+    // Do not yank an active shared mic; browser STT claims recognition ownership itself.
+    releaseMicrophoneStream(false);
     listeningRef.current = true;
     setIsMicListening(true);
 
@@ -398,6 +400,13 @@ export function useLiveVoiceCall({
           stopCall();
           return;
         }
+        if ((code === 'network' || code === 'start-failed') && isAudioRecordingSupported()) {
+          // Web Speech API failed — continue the call on the recorder +
+          // server transcription path (next listenOnce picks it up).
+          markBrowserSttRuntimeFailure();
+          scheduleListen(150);
+          return;
+        }
         scheduleListen(IS_MOBILE ? 700 : 300);
       },
     });
@@ -412,7 +421,7 @@ export function useLiveVoiceCall({
   }, [disabled, endBusy, processTextTurn, scheduleListen, setListening, startBusy, stopCall]);
 
   const listenOnce = useCallback(async () => {
-    if (useBrowserStt) {
+    if (shouldUseBrowserStt()) {
       await listenOnceWithBrowser();
       return;
     }
@@ -580,7 +589,6 @@ export function useLiveVoiceCall({
     endBusy,
     scheduleListen,
     setListening,
-    useBrowserStt,
     listenOnceWithBrowser,
   ]);
 
@@ -614,7 +622,7 @@ export function useLiveVoiceCall({
       browserSttRef.current?.abort();
       browserSttRef.current = null;
       abortActiveSpeechRecognition();
-      releaseMicrophoneStream();
+      releaseMicrophoneStream(true);
       stopRecorder();
       closeAudioContext();
       releaseStream();

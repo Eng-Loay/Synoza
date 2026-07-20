@@ -29,7 +29,7 @@ export default function RegisterPage() {
     firstName: '',
     lastName: '',
     phone: '',
-    university: '',
+    universityId: '',
     studentId: '',
   });
   const [error, setError] = useState('');
@@ -147,10 +147,10 @@ export default function RegisterPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1.5">{t('university')}</label>
-                <select className="input-field" value={form.university} onChange={(e) => setForm({ ...form, university: e.target.value })} required>
+                <select className="input-field" value={form.universityId} onChange={(e) => setForm({ ...form, universityId: e.target.value })} required>
                   <option value="">{t('selectUniversity')}</option>
                   {universities.map((u) => (
-                    <option key={u.id} value={isAr ? u.nameAr : u.nameEn}>
+                    <option key={u.id} value={u.id}>
                       {isAr ? u.nameAr : u.nameEn}
                     </option>
                   ))}

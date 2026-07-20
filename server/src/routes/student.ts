@@ -140,8 +140,8 @@ router.get('/results/:sessionId', async (req, res) => {
   res.json({ result });
 });
 
-router.get('/qbank/terms', async (_req, res) => {
-  const terms = await getActiveTerms();
+router.get('/qbank/terms', async (req, res) => {
+  const terms = await getActiveTerms(req.user!.id);
   res.json({ terms });
 });
 

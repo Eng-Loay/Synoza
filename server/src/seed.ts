@@ -84,7 +84,7 @@ async function main() {
         data: { status: 'CANCELLED', endDate: new Date() },
       });
       const months = s.plan === 'PACKAGE_50' ? 2 : s.plan === 'PACKAGE_150' ? 4 : 6;
-      const casesQuota = s.plan === 'PACKAGE_50' ? 50 : s.plan === 'PACKAGE_150' ? 150 : 300;
+      const casesQuota = s.plan === 'PACKAGE_50' ? 30 : s.plan === 'PACKAGE_150' ? 60 : 100;
       const priceEgp = s.plan === 'PACKAGE_50' ? 150 : s.plan === 'PACKAGE_150' ? 300 : 500;
       const endDate = new Date();
       endDate.setMonth(endDate.getMonth() + months);

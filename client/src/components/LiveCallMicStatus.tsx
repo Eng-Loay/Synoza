@@ -6,6 +6,7 @@ export interface LiveCallMicStatusProps {
   isBusy?: boolean;
   isMicListening?: boolean;
   isSpeaking?: boolean;
+  error?: string;
 }
 
 export function LiveCallMicStatus({
@@ -13,10 +14,19 @@ export function LiveCallMicStatus({
   isBusy,
   isMicListening,
   isSpeaking,
+  error,
 }: LiveCallMicStatusProps) {
   const { t } = useTranslation();
 
-  if (!isLiveCall) return null;
+  if (!isLiveCall && !error) return null;
+
+  if (error) {
+    return (
+      <div className="px-4 py-2 border-t border-red-100 dark:border-red-900/40 bg-red-50/90 dark:bg-red-950/30">
+        <p className="text-xs font-medium text-red-700 dark:text-red-300">{error}</p>
+      </div>
+    );
+  }
 
   let label = t('liveCallMicReady');
   let dotClass = 'bg-slate-400';

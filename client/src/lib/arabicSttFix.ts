@@ -16,7 +16,7 @@ export function containsWrongScriptForArabic(text: string): boolean {
   return /[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]/.test(text);
 }
 
-export function looksLikeSttHallucination(text: string): boolean {
+export function looksLikeSttHallucination(text: string, allowLatinOnly = false): boolean {
   const normalized = text.trim();
   if (!normalized || normalized.length < 2) return true;
   if (containsWrongScriptForArabic(normalized)) return true;
@@ -29,6 +29,12 @@ export function looksLikeSttHallucination(text: string): boolean {
     return true;
   }
   if (/nancy|conker|نانسي|كونكر/i.test(normalized)) return true;
+  // Latin-only is fine for EN / AUTO (code-switching); only reject in forced-Arabic mode.
+  if (!allowLatinOnly) {
+    const arabic = (normalized.match(/[\u0600-\u06FF]/g) || []).length;
+    const latin = (normalized.match(/[a-zA-Z]/g) || []).length;
+    if (latin >= 5 && arabic === 0 && normalized.length < 100) return true;
+  }
   return false;
 }
 
@@ -37,6 +43,7 @@ export function transcriptionNeedsArabicFix(text: string, expectArabic: boolean)
   const normalized = text.trim();
   if (!normalized) return true;
   if (containsWrongScriptForArabic(normalized)) return true;
+  // Mixed Arabic + English is valid code-switching — only reject pure Latin.
   if (/[\u0600-\u06FF]/.test(normalized)) return false;
   return /[a-zA-Z]/.test(normalized);
 }
@@ -44,15 +51,24 @@ export function transcriptionNeedsArabicFix(text: string, expectArabic: boolean)
 export function isValidArabicSessionTranscript(text: string, expectArabic: boolean): boolean {
   const normalized = text.trim();
   if (!normalized) return false;
-  if (!expectArabic) return true;
-  if (looksLikeSttHallucination(normalized)) return false;
+  // EN / AUTO: accept Arabic, English, or mixed scripts.
+  if (!expectArabic) {
+    if (containsWrongScriptForArabic(normalized)) return false;
+    return !looksLikeSttHallucination(normalized, true);
+  }
+  if (looksLikeSttHallucination(normalized, false)) return false;
   if (transcriptionNeedsArabicFix(normalized, true)) return false;
   return /[\u0600-\u06FF]/.test(normalized);
 }
 
-export function fixArabicSpeechTranscript(text: string, expectArabic: boolean): string {
+export function fixArabicSpeechTranscript(
+  text: string,
+  expectArabic: boolean,
+  codeSwitch = false,
+): string {
   const normalized = text.trim().replace(/\s+/g, ' ');
-  if (!normalized || !expectArabic) return normalized;
+  if (!normalized) return normalized;
+  if (!expectArabic && !codeSwitch) return normalized;
   if (/[\u0600-\u06FF]/.test(normalized)) return normalized;
 
   for (const { pattern, replacement } of ARABIC_STT_FIXES) {
@@ -62,6 +78,11 @@ export function fixArabicSpeechTranscript(text: string, expectArabic: boolean): 
   return normalized;
 }
 
+/** Only force Arabic STT when the student explicitly chose Arabic. AUTO allows code-switching. */
 export function shouldForceArabicTranscription(sessionLang: string): boolean {
-  return sessionLang !== 'EN';
+  return sessionLang === 'AR';
+}
+
+export function allowsMixedLanguageTranscript(sessionLang: string): boolean {
+  return sessionLang !== 'AR';
 }

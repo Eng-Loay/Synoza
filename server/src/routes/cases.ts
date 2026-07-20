@@ -105,8 +105,17 @@ router.put('/:id', authenticate, authorize(Role.ADMIN), async (req, res) => {
 });
 
 router.delete('/:id', authenticate, authorize(Role.ADMIN), async (req, res) => {
-  await prisma.case.delete({ where: { id: String(req.params.id) } });
-  res.json({ message: 'Case deleted' });
+  try {
+    const caseId = String(req.params.id);
+    await prisma.$transaction([
+      prisma.session.deleteMany({ where: { caseId } }),
+      prisma.case.delete({ where: { id: caseId } }),
+    ]);
+    res.json({ message: 'Case deleted' });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Delete failed';
+    res.status(500).json({ error: message });
+  }
 });
 
 export default router;

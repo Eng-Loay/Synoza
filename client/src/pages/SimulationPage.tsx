@@ -18,6 +18,7 @@ import {
   ClipboardCheck,
   Loader2,
   CheckCircle2,
+  GraduationCap,
 } from "lucide-react";
 import api from "../lib/api";
 import { dispatchEntitlementsChanged } from "../lib/entitlementsEvents";
@@ -31,19 +32,21 @@ import chestAuscultationImg from "../assets/exam/chest-auscultation.svg?url";
 import { SimulationChatInput } from '../components/SimulationChatInput';
 import { LiveCallButton } from '../components/LiveCallButton';
 import { LiveCallMicStatus } from '../components/LiveCallMicStatus';
+import { SpeechLanguageToggle } from '../components/SpeechLanguageToggle';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useSpeechInput } from '../hooks/useSpeechInput';
 import { useLiveVoiceCall } from '../hooks/useLivePatientCall';
 import { stopSpeaking } from '../lib/speech';
 import { IS_MOBILE, unlockMobileAudio } from '../lib/mobileAudio';
 import type { VoiceTurnResponse } from '../lib/voiceTurn';
+import { isVivaClosingMessage } from '../lib/vivaClosing';
 import {
   XpBreakdownSection,
   parseRankSnapshot,
   type RankSnapshot,
 } from '../components/student/XpBreakdownSection';
 import { RankPromotionModal } from '../components/student/RankPromotionModal';
-import { parseStationConfig } from '../lib/stationConfig';
+import { getNextMainStageAfter, getSessionStationConfig, getSimulationStages, resolveManeuverLabel } from '../lib/stationConfig';
 
 interface Message {
   id: string;
@@ -73,6 +76,7 @@ interface Session {
   currentStage: string;
   activeManeuver: string | null;
   completedManeuvers: string;
+  resolvedStationConfig?: string;
   language: string;
   startedAt: string;
   case: {
@@ -93,20 +97,13 @@ interface Session {
   status?: string;
 }
 
-const STAGES = [
-  "history",
-  "examination",
-  "investigations",
-  "diagnosis",
-  "feedback",
-] as const;
 const STAGE_ICONS = {
   history: MessageSquare,
   examination: Search,
   investigations: FlaskConical,
   diagnosis: ClipboardList,
   feedback: Lightbulb,
-};
+} as const;
 
 const EXAM_MANEUVERS = [
   { id: "inspection", nameEn: "Inspection", nameAr: "الفحص البصري" },
@@ -114,6 +111,12 @@ const EXAM_MANEUVERS = [
   { id: "percussion", nameEn: "Percussion", nameAr: "النقر" },
   { id: "auscultation", nameEn: "Auscultation", nameAr: "الاستماع" },
 ] as const;
+
+type ExamManeuverMeta = {
+  id: (typeof EXAM_MANEUVERS)[number]["id"];
+  nameEn: string;
+  nameAr: string;
+};
 
 const STATION_SECONDS = 20 * 60;
 
@@ -213,12 +216,21 @@ export default function SimulationPage() {
   const sessionLocked = !!result || completing || secondsLeft <= 0;
 
   const stationConfig = useMemo(
-    () => parseStationConfig(session?.case?.stationConfig),
-    [session?.case?.stationConfig],
+    () => getSessionStationConfig(session ?? { case: { stationConfig: '{}' } }),
+    [session],
+  );
+  const visibleStages = useMemo(
+    () => getSimulationStages(stationConfig),
+    [stationConfig],
   );
   const caseManeuvers = useMemo(
-    () => EXAM_MANEUVERS.filter((m) => stationConfig.enabledManeuvers.includes(m.id)),
-    [stationConfig.enabledManeuvers],
+    () =>
+      EXAM_MANEUVERS.filter((m) => stationConfig.enabledManeuvers.includes(m.id)).map((m) => ({
+        ...m,
+        nameEn: resolveManeuverLabel(m.id, stationConfig, 'en'),
+        nameAr: resolveManeuverLabel(m.id, stationConfig, 'ar'),
+      })),
+    [stationConfig],
   );
   const enableHistoryExaminer = stationConfig.enableHistoryExaminer;
 
@@ -232,11 +244,14 @@ export default function SimulationPage() {
           : null;
 
   const examinerSpeechLang =
-    activeStage === 'examination' || (activeStage === 'history' && showExaminerPanel && enableHistoryExaminer)
+    lang === 'EN'
       ? 'en-US'
-      : lang === 'EN'
-        ? 'en-US'
-        : 'ar-EG';
+      : lang === 'AR'
+        ? 'ar-EG'
+        : // AUTO: follow context — patient Arabic, examiner prefer English with mixed STT acceptance
+          activeStage === 'examination' || (activeStage === 'history' && showExaminerPanel)
+            ? 'en-US'
+            : 'ar-EG';
   const listenLang = voiceCallContext === 'patient' ? 'ar-EG' : examinerSpeechLang;
   const speakLang = voiceCallContext === 'patient' ? 'ar-EG' : examinerSpeechLang;
 
@@ -343,8 +358,9 @@ export default function SimulationPage() {
     };
   }, [activeStage, activeManeuver, showExaminerPanel, enableHistoryExaminer]);
 
-  const micSpeechLang = voiceCallContext === 'patient' ? 'ar-EG' : lang === 'EN' ? 'en-US' : 'ar-EG';
-  const micSessionLang = voiceCallContext === 'patient' ? 'AR' : lang === 'AUTO' ? 'AR' : lang;
+  const micSpeechLang = voiceCallContext === 'patient' ? 'ar-EG' : listenLang;
+  // Pass AUTO through so STT validation allows code-switching; patient role stays Arabic-forced.
+  const micSessionLang = voiceCallContext === 'patient' ? 'AR' : lang;
 
   const { isListening, isProcessing, isSupported: isMicSupported, toggleListening, stopListening, forceReleaseMic } = useSpeechInput({
     lang: micSpeechLang,
@@ -527,6 +543,10 @@ export default function SimulationPage() {
     const res = await api.get(`/sessions/${sessionId}`);
     const s = res.data.session as Session;
     setSession(s);
+    const sessionLang = (s.language || 'AUTO').toUpperCase();
+    if (sessionLang === 'AR' || sessionLang === 'EN' || sessionLang === 'AUTO') {
+      setLang(sessionLang);
+    }
     setActiveManeuver(s.activeManeuver);
     setCompletedManeuvers(parseJsonArray(s.completedManeuvers, []));
     if (s.result) {
@@ -537,6 +557,20 @@ export default function SimulationPage() {
       setActiveStage(s.currentStage || "history");
     }
   }, [sessionId]);
+
+  const updateSpeechLanguage = useCallback(
+    async (next: "AUTO" | "AR" | "EN") => {
+      setLang(next);
+      if (!sessionId) return;
+      try {
+        await api.patch(`/sessions/${sessionId}/language`, { language: next });
+        setSession((prev) => (prev ? { ...prev, language: next } : prev));
+      } catch {
+        // Keep UI selection even if persist fails — STT still uses local lang.
+      }
+    },
+    [sessionId],
+  );
 
   useEffect(() => {
     loadSession();
@@ -708,7 +742,7 @@ export default function SimulationPage() {
               }
             : prev,
         );
-        changeStage("investigations");
+        changeStage(getNextMainStageAfter('examination', stationConfig));
       }
     } finally {
       setSending(false);
@@ -824,9 +858,7 @@ export default function SimulationPage() {
     : historyPatientMessages;
 
   const examinerVivaComplete = historyExaminerMessages.some(
-    (m) =>
-      m.role === "EXAMINER" &&
-      m.content.includes("completes the examiner viva"),
+    (m) => m.role === "EXAMINER" && isVivaClosingMessage(m.content),
   );
 
   const maneuverMessages = activeManeuver
@@ -917,7 +949,7 @@ export default function SimulationPage() {
 
         {/* Stage tabs */}
         <div className="flex gap-0 mt-2 -mb-px overflow-x-auto">
-          {STAGES.map((stage) => {
+          {visibleStages.map((stage) => {
             const Icon = STAGE_ICONS[stage];
             return (
               <button
@@ -1121,7 +1153,7 @@ export default function SimulationPage() {
                 completeManeuver={completeManeuver}
                 chatEndRef={chatEndRef}
                 lang={lang}
-                setLang={setLang}
+                setLang={updateSpeechLanguage}
                 isListening={isListening}
                 isProcessing={isProcessing}
                 isMicSupported={isMicSupported}
@@ -1153,6 +1185,8 @@ export default function SimulationPage() {
               completing={completing}
               completeError={completeError}
               chatEndRef={chatEndRef}
+              lang={lang}
+              setLang={updateSpeechLanguage}
               isListening={isListening}
               isProcessing={isProcessing}
               isMicSupported={isMicSupported}
@@ -1173,7 +1207,7 @@ export default function SimulationPage() {
               chatError={chatError}
               chatEndRef={chatEndRef}
               lang={lang}
-              setLang={setLang}
+              setLang={updateSpeechLanguage}
               showExaminerPanel={showExaminerPanel}
               setShowExaminerPanel={setShowExaminerPanel}
               enableHistoryExaminer={enableHistoryExaminer}
@@ -1208,7 +1242,7 @@ function ExaminationStepsBar({
   completedManeuvers: string[];
   onStartManeuver: (id: string) => void;
   sending: boolean;
-  caseManeuvers: readonly (typeof EXAM_MANEUVERS)[number][];
+  caseManeuvers: readonly ExamManeuverMeta[];
 }) {
   return (
     <div className="md:hidden bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 py-3 shrink-0">
@@ -1280,7 +1314,7 @@ function ExaminationView({
   isAr: boolean;
   t: (k: string, opts?: Record<string, unknown>) => string;
   activeManeuver: string | null;
-  activeManeuverMeta?: (typeof EXAM_MANEUVERS)[number];
+  activeManeuverMeta?: ExamManeuverMeta;
   vivaActive: boolean;
   examImages: ExamImage[];
   messages: Message[];
@@ -1300,7 +1334,7 @@ function ExaminationView({
   micError: string;
   completedManeuvers: string[];
   onStartManeuver: (id: string) => void;
-  caseManeuvers: readonly (typeof EXAM_MANEUVERS)[number][];
+  caseManeuvers: readonly ExamManeuverMeta[];
   isLiveCall?: boolean;
   isLiveCallBusy?: boolean;
   isLiveCallMicListening?: boolean;
@@ -1392,23 +1426,36 @@ function ExaminationView({
                   </p>
                 </div>
               </div>
-              <LiveCallButton
-                isLiveCall={isLiveCall}
-                isLiveCallBusy={isLiveCallBusy}
-                isLiveCallSupported={isLiveCallSupported}
-                onToggleLiveCall={onToggleLiveCall}
-                liveCallLabel={liveCallLabel}
-                endLiveCallLabel={endLiveCallLabel}
-                disabled={sending}
-              />
+              <div className="flex items-center gap-2 shrink-0">
+                <SpeechLanguageToggle
+                  value={lang}
+                  onChange={setLang}
+                  disabled={sending || isLiveCall}
+                  labels={{
+                    auto: t('speechLangAuto'),
+                    ar: t('speechLangAr'),
+                    en: t('speechLangEn'),
+                  }}
+                />
+                <LiveCallButton
+                  isLiveCall={isLiveCall}
+                  isLiveCallBusy={isLiveCallBusy}
+                  isLiveCallSupported={isLiveCallSupported}
+                  onToggleLiveCall={onToggleLiveCall}
+                  liveCallLabel={liveCallLabel}
+                  endLiveCallLabel={endLiveCallLabel}
+                  disabled={sending}
+                />
+              </div>
             </div>
 
-            {isLiveCall && (
+            {(isLiveCall || micError) && (
               <LiveCallMicStatus
                 isLiveCall={isLiveCall}
                 isBusy={isLiveCallBusy}
                 isMicListening={isLiveCallMicListening}
                 isSpeaking={isLiveCallSpeaking}
+                error={isLiveCall ? micError : undefined}
               />
             )}
           </div>
@@ -1639,6 +1686,16 @@ function HistoryChatView({
                 : `${t("interviewLog")}: ${session.case.patientName}`}
             </h3>
             <div className="flex items-center gap-2 shrink-0">
+              <SpeechLanguageToggle
+                value={lang}
+                onChange={setLang}
+                disabled={sending || isLiveCall}
+                labels={{
+                  auto: t('speechLangAuto'),
+                  ar: t('speechLangAr'),
+                  en: t('speechLangEn'),
+                }}
+              />
               <LiveCallButton
                 isLiveCall={isLiveCall}
                 isLiveCallBusy={isLiveCallBusy}
@@ -1651,12 +1708,13 @@ function HistoryChatView({
             </div>
           </div>
 
-          {isLiveCall && (
+          {(isLiveCall || micError) && (
             <LiveCallMicStatus
               isLiveCall={isLiveCall}
               isBusy={isLiveCallBusy}
               isMicListening={isLiveCallMicListening}
               isSpeaking={isLiveCallSpeaking}
+              error={isLiveCall ? micError : undefined}
             />
           )}
         </div>
@@ -1766,6 +1824,8 @@ function DiagnosisView({
   completing,
   completeError,
   chatEndRef,
+  lang,
+  setLang,
   isListening,
   isProcessing,
   isMicSupported,
@@ -1792,6 +1852,8 @@ function DiagnosisView({
   completing: boolean;
   completeError: string;
   chatEndRef: React.RefObject<HTMLDivElement | null>;
+  lang: "AUTO" | "AR" | "EN";
+  setLang: (l: "AUTO" | "AR" | "EN") => void;
   isListening: boolean;
   isProcessing: boolean;
   isMicSupported: boolean;
@@ -1830,6 +1892,12 @@ function DiagnosisView({
       setManagement("");
     }
     await completeSession();
+  };
+
+  const handleLearnWithExaminer = async () => {
+    const text = buildSubmission();
+    if (!text) return;
+    await sendMessage(`${text}\n\n${t("learnWithExaminerRequest")}`);
   };
 
   return (
@@ -1887,20 +1955,39 @@ function DiagnosisView({
           {(chatError || completeError) && (
             <p className="text-sm text-red-500 text-center">{chatError || completeError}</p>
           )}
-          <button
-            onClick={() => void handleCompleteAndEvaluate()}
-            disabled={completing || sending || sessionLocked}
-            className="btn-primary px-8 min-w-[220px] flex items-center justify-center gap-2"
-          >
-            {completing || sending ? (
-              <>
-                <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                {completing ? t("generatingFeedback") : t("examinerTyping")}
-              </>
-            ) : (
-              t("completeSession")
-            )}
-          </button>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+            <button
+              onClick={() => void handleCompleteAndEvaluate()}
+              disabled={completing || sending || sessionLocked}
+              className="btn-primary px-8 min-w-[220px] flex items-center justify-center gap-2"
+            >
+              {completing || sending ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                  {completing ? t("generatingFeedback") : t("examinerTyping")}
+                </>
+              ) : (
+                t("completeSession")
+              )}
+            </button>
+            <button
+              onClick={() => void handleLearnWithExaminer()}
+              disabled={
+                completing ||
+                sending ||
+                sessionLocked ||
+                (!impression.trim() && !management.trim())
+              }
+              className="btn-secondary px-6 min-w-[220px] flex items-center justify-center gap-2 disabled:opacity-50"
+              title={t("learnWithExaminerHint")}
+            >
+              <GraduationCap size={18} />
+              {t("learnWithExaminer")}
+            </button>
+          </div>
+          <p className="text-xs text-slate-400 text-center max-w-md">
+            {t("learnWithExaminerHint")}
+          </p>
         </div>
 
         <div className="card overflow-hidden mb-6 flex flex-col">
@@ -1909,23 +1996,36 @@ function DiagnosisView({
               <h3 className="text-xs font-bold text-slate-400 uppercase">
                 {t("clinicalExaminer")}
               </h3>
-              <LiveCallButton
-                isLiveCall={isLiveCall}
-                isLiveCallBusy={isLiveCallBusy}
-                isLiveCallSupported={isLiveCallSupported}
-                onToggleLiveCall={onToggleLiveCall}
-                liveCallLabel={liveCallLabel}
-                endLiveCallLabel={endLiveCallLabel}
-                disabled={sending || sessionLocked}
-              />
+              <div className="flex items-center gap-2 shrink-0">
+                <SpeechLanguageToggle
+                  value={lang}
+                  onChange={setLang}
+                  disabled={sending || isLiveCall || sessionLocked}
+                  labels={{
+                    auto: t('speechLangAuto'),
+                    ar: t('speechLangAr'),
+                    en: t('speechLangEn'),
+                  }}
+                />
+                <LiveCallButton
+                  isLiveCall={isLiveCall}
+                  isLiveCallBusy={isLiveCallBusy}
+                  isLiveCallSupported={isLiveCallSupported}
+                  onToggleLiveCall={onToggleLiveCall}
+                  liveCallLabel={liveCallLabel}
+                  endLiveCallLabel={endLiveCallLabel}
+                  disabled={sending || sessionLocked}
+                />
+              </div>
             </div>
 
-            {isLiveCall && (
+            {(isLiveCall || micError) && (
               <LiveCallMicStatus
                 isLiveCall={isLiveCall}
                 isBusy={isLiveCallBusy}
                 isMicListening={isLiveCallMicListening}
                 isSpeaking={isLiveCallSpeaking}
+                error={isLiveCall ? micError : undefined}
               />
             )}
           </div>

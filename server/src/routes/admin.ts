@@ -22,6 +22,7 @@ import {
 import { getRankProgress } from '../services/xpService.js';
 import adminQbankRoutes from './adminQbank.js';
 import adminCasesRoutes from './adminCases.js';
+import adminAiKnowledgeRoutes from './adminAiKnowledge.js';
 
 const router = Router();
 
@@ -906,5 +907,6 @@ router.put('/site-settings', async (req, res) => {
 
 router.use('/qbank', adminQbankRoutes);
 router.use('/cases', adminCasesRoutes);
+router.use('/ai-knowledge', adminAiKnowledgeRoutes);
 
 export default router;

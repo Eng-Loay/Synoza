@@ -53,11 +53,13 @@ export async function postVoiceTurn(
 ): Promise<VoiceTurnResponse> {
   const expectArabic = shouldForceArabicTranscription(sessionLang);
   const audioBase64 = await blobToBase64(blob);
+  const requestLanguage =
+    sessionLang === 'AUTO' ? 'auto' : expectArabic ? 'ar-EG' : language;
 
   const res = await api.post<VoiceTurnResponse>(`/sessions/${sessionId}/voice-turn`, {
     audioBase64,
     mimeType: blob.type || 'audio/webm',
-    language: expectArabic ? 'ar-EG' : language,
+    language: requestLanguage,
     forceArabic: expectArabic,
     endpoint: meta.endpoint,
     stage: meta.stage,

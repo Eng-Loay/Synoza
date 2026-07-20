@@ -1,5 +1,6 @@
 import type { PaymentProductType, SubscriptionPlan } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { resolveUserUniversityId } from '../../lib/universityScope.js';
 import { activatePlan, getActiveSubscription, getPlanConfig, isPaidPlan, PLAN_CATALOG } from '../subscriptionService.js';
 import { getModuleFromDb, grantModuleAccess, isPurchasableModule, userHasModuleAccess } from '../qbankService.js';
 import {
@@ -132,11 +133,12 @@ export async function createCheckout(userId: string, planId: CheckoutPlanId) {
 }
 
 export async function createModuleCheckout(userId: string, termId: string, moduleId: string) {
-  if (!(await isPurchasableModule(termId, moduleId))) {
+  if (!(await isPurchasableModule(userId, termId, moduleId))) {
     throw new Error('INVALID_MODULE');
   }
 
-  const mod = await getModuleFromDb(termId, moduleId);
+  const universityId = await resolveUserUniversityId(userId);
+  const mod = await getModuleFromDb(termId, moduleId, universityId);
   if (!mod) throw new Error('INVALID_MODULE');
 
   const alreadyOwned = await userHasModuleAccess(userId, termId, moduleId);

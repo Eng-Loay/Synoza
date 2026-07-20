@@ -64,6 +64,17 @@ enum KnowledgeType {
   TEACHING
 }
 
+enum AiKnowledgeRole {
+  PATIENT
+  EXAMINER
+}
+
+enum AiKnowledgeKind {
+  PROMPT
+  FILE
+  MEDIA
+}
+
 model KnowledgeCategory {
   id          String              @id @default(cuid())
   parentId    String?
@@ -77,7 +88,35 @@ model KnowledgeCategory {
   parent      KnowledgeCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
   children    KnowledgeCategory[] @relation("CategoryTree")
   items       KnowledgeItem[]
+  aiKnowledge AiKnowledgeEntry[]
   cases       Case[]
+}
+
+/// Admin-managed AI knowledge for patient/examiner behaviour (prompt, file, or media).
+/// Scoped to a knowledge category and/or a specific case.
+model AiKnowledgeEntry {
+  id           String          @id @default(cuid())
+  role         AiKnowledgeRole
+  kind         AiKnowledgeKind
+  titleEn      String
+  titleAr      String          @default("")
+  /// Prompt text, file excerpt/notes, or media caption used in AI context
+  content      String          @default("")
+  fileUrl      String?
+  fileName     String?
+  mimeType     String?
+  categoryId   String?
+  caseId       String?
+  isActive     Boolean         @default(true)
+  sortOrder    Int             @default(0)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  category     KnowledgeCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  case         Case?              @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([role, isActive])
+  @@index([categoryId, role])
+  @@index([caseId, role])
 }
 
 model KnowledgeItem {
@@ -101,6 +140,7 @@ model User {
   lastName      String
   phone         String?
   university    String?
+  universityId  String?
   studentId     String?        @unique
   avatarUrl     String?
   role          Role           @default(STUDENT)
@@ -123,6 +163,9 @@ model User {
   paymentOrders      PaymentOrder[]
   qbankModuleAccess  QbankModuleEntitlement[]
   aiUsageLogs        AiUsageLog[]
+  partnerUniversity  PartnerUniversity? @relation(fields: [universityId], references: [id], onDelete: SetNull)
+
+  @@index([universityId])
 }
 
 model Specialty {
@@ -184,17 +227,35 @@ model Case {
   category            KnowledgeCategory? @relation(fields: [categoryId], references: [id])
   sessions            Session[]
   caseAccess          CaseAccess[]
+  aiKnowledge         AiKnowledgeEntry[]
+  universityOverrides CaseUniversityOverride[]
+}
+
+model CaseUniversityOverride {
+  id            String            @id @default(cuid())
+  caseId        String
+  universityId  String
+  stationConfig String            @default("{}")
+  isActive      Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  case          Case              @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  university    PartnerUniversity @relation(fields: [universityId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, universityId])
+  @@index([universityId])
 }
 
 model Session {
-  id              String        @id @default(cuid())
-  userId          String
-  caseId          String
-  status          SessionStatus @default(IN_PROGRESS)
-  currentStage    String        @default("history")
-  activeManeuver  String?
-  completedManeuvers String     @default("[]")
-  language        Language      @default(AUTO)
+  id                     String        @id @default(cuid())
+  userId                 String
+  caseId                 String
+  status                 SessionStatus @default(IN_PROGRESS)
+  currentStage           String        @default("history")
+  activeManeuver         String?
+  completedManeuvers     String        @default("[]")
+  resolvedStationConfig  String        @default("{}")
+  language               Language      @default(AUTO)
   startedAt       DateTime      @default(now())
   completedAt     DateTime?
   durationSeconds Int           @default(0)
@@ -202,7 +263,7 @@ model Session {
   aiCompletionTokens Int        @default(0)
   aiTotalTokens      Int        @default(0)
   user            User          @relation(fields: [userId], references: [id])
-  case            Case          @relation(fields: [caseId], references: [id])
+  case            Case          @relation(fields: [caseId], references: [id], onDelete: Cascade)
   messages        Message[]
   result          Result?
 }
@@ -330,10 +391,22 @@ model QbankModule {
   isActive    Boolean         @default(true)
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
-  term        QbankTerm       @relation(fields: [termId], references: [id], onDelete: Cascade)
-  questions   QbankQuestion[]
+  term         QbankTerm               @relation(fields: [termId], references: [id], onDelete: Cascade)
+  questions    QbankQuestion[]
+  universities QbankModuleUniversity[]
 
   @@index([termId, isActive])
+}
+
+model QbankModuleUniversity {
+  id           String            @id @default(cuid())
+  moduleId     String
+  universityId String
+  module       QbankModule       @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  university   PartnerUniversity @relation(fields: [universityId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, universityId])
+  @@index([universityId])
 }
 
 model QbankChapter {
@@ -459,15 +532,18 @@ model SiteContent {
 }
 
 model PartnerUniversity {
-  id        String   @id @default(cuid())
-  nameEn    String
-  nameAr    String
-  logoUrl   String?
-  website   String?
-  sortOrder Int      @default(0)
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String                  @id @default(cuid())
+  nameEn       String
+  nameAr       String
+  logoUrl      String?
+  website      String?
+  sortOrder    Int                     @default(0)
+  isActive     Boolean                 @default(true)
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+  users                User[]
+  qbankModules           QbankModuleUniversity[]
+  caseUniversityOverrides CaseUniversityOverride[]
 }
 
 model SiteSettings {

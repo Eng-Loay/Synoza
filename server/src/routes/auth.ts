@@ -8,6 +8,7 @@ import { authenticate, verifyTokenForRefresh } from '../middleware/auth.js';
 import { issueAndSendOtp, verifyUserOtp } from '../services/otpService.js';
 import { isSmtpConfigured, sendPasswordResetEmail } from '../services/emailService.js';
 import { normalizeEmailLang } from '../services/emailTemplates.js';
+import { resolveUniversityFromInput } from '../lib/universityScope.js';
 
 const router = Router();
 
@@ -73,10 +74,11 @@ router.post(
       return res.status(503).json({ error: 'Email verification is not available' });
     }
 
-    const { email, password, firstName, lastName, phone, university, studentId, lang } = req.body;
+    const { email, password, firstName, lastName, phone, university, universityId, studentId, lang } = req.body;
     const preferredLang = normalizeEmailLang(lang);
     const normalizedStudentId = String(studentId).trim();
     const normalizedPhone = String(phone ?? '').replace(/\D/g, '');
+    const resolvedUniversity = await resolveUniversityFromInput({ universityId, university });
 
     const studentIdTaken = await prisma.user.findUnique({ where: { studentId: normalizedStudentId } });
     if (studentIdTaken && studentIdTaken.email !== email) {
@@ -95,7 +97,8 @@ router.post(
           firstName,
           lastName,
           phone: normalizedPhone,
-          university,
+          university: resolvedUniversity.university,
+          universityId: resolvedUniversity.universityId,
           studentId: normalizedStudentId,
           passwordHash: await bcrypt.hash(password, 12),
         },
@@ -124,7 +127,8 @@ router.post(
         firstName,
         lastName,
         phone: normalizedPhone,
-        university,
+        university: resolvedUniversity.university,
+        universityId: resolvedUniversity.universityId,
         studentId: normalizedStudentId,
         emailVerified: false,
         preferredLang,
@@ -347,11 +351,16 @@ router.post('/refresh', async (req: Request, res: Response) => {
 });
 
 router.put('/profile', authenticate, async (req: Request, res: Response) => {
-  const { firstName, lastName, phone, university, avatarUrl, academicYear } = req.body;
+  const { firstName, lastName, phone, university, universityId, avatarUrl, academicYear } = req.body;
 
   if (avatarUrl != null && avatarUrl !== '' && !isValidAvatarUrl(avatarUrl)) {
     return res.status(400).json({ error: 'Invalid profile photo' });
   }
+
+  const resolvedUniversity =
+    universityId !== undefined || university !== undefined
+      ? await resolveUniversityFromInput({ universityId, university })
+      : null;
 
   const user = await prisma.user.update({
     where: { id: req.user!.id },
@@ -359,7 +368,12 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
       firstName,
       lastName,
       phone,
-      university,
+      ...(resolvedUniversity
+        ? {
+            university: resolvedUniversity.university,
+            universityId: resolvedUniversity.universityId,
+          }
+        : {}),
       avatarUrl: avatarUrl === '' ? null : avatarUrl,
       ...(academicYear !== undefined ? { academicYear: academicYear || null } : {}),
     },
@@ -370,6 +384,7 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
       lastName: true,
       phone: true,
       university: true,
+      universityId: true,
       academicYear: true,
       studentId: true,
       avatarUrl: true,
