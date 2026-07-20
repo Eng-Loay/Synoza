@@ -19,7 +19,6 @@ import {
   ENTITLEMENTS_CHANGED_EVENT,
   readEntitlementsFromEvent,
 } from '../lib/entitlementsEvents';
-import { SubscriptionPlansSection, type PlanOption } from '../components/SubscriptionPlansSection';
 
 interface Case {
   id: string;
@@ -161,7 +160,6 @@ export default function StudentDashboard() {
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
   const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
   const [entitlements, setEntitlements] = useState<Entitlements | null>(null);
-  const [plans, setPlans] = useState<PlanOption[]>([]);
   const [startError, setStartError] = useState<string | null>(null);
   const [randomLoading, setRandomLoading] = useState<'all' | 'section' | null>(null);
   const [randomSectionId, setRandomSectionId] = useState('');
@@ -174,7 +172,6 @@ export default function StudentDashboard() {
     const loadEntitlements = () => {
       api.get('/student/entitlements').then((r) => {
         setEntitlements(r.data.entitlements);
-        setPlans(r.data.plans ?? []);
       });
     };
     const onEntitlementsChanged = (event: Event) => {
@@ -550,15 +547,6 @@ export default function StudentDashboard() {
           </div>
         )}
       </section>
-
-      {entitlements && (
-        <SubscriptionPlansSection
-          entitlements={entitlements}
-          plans={plans}
-          isAr={!!isAr}
-          compact
-        />
-      )}
 
       <PortalSupportCard isAr={!!isAr} topic="general" />
     </div>

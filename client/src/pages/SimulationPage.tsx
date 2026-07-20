@@ -1448,16 +1448,6 @@ function ExaminationView({
                 />
               </div>
             </div>
-
-            {(isLiveCall || micError) && (
-              <LiveCallMicStatus
-                isLiveCall={isLiveCall}
-                isBusy={isLiveCallBusy}
-                isMicListening={isLiveCallMicListening}
-                isSpeaking={isLiveCallSpeaking}
-                error={isLiveCall ? micError : undefined}
-              />
-            )}
           </div>
 
           <div
@@ -1501,6 +1491,15 @@ function ExaminationView({
                 <ChevronRight size={14} className="inline" />
               </button>
             </div>
+            {(isLiveCall || micError) && (
+              <LiveCallMicStatus
+                isLiveCall={isLiveCall}
+                isBusy={isLiveCallBusy}
+                isMicListening={isLiveCallMicListening}
+                isSpeaking={isLiveCallSpeaking}
+                error={isLiveCall ? micError : undefined}
+              />
+            )}
             <SimulationChatInput
               input={input}
               setInput={setInput}
@@ -1707,16 +1706,6 @@ function HistoryChatView({
               />
             </div>
           </div>
-
-          {(isLiveCall || micError) && (
-            <LiveCallMicStatus
-              isLiveCall={isLiveCall}
-              isBusy={isLiveCallBusy}
-              isMicListening={isLiveCallMicListening}
-              isSpeaking={isLiveCallSpeaking}
-              error={isLiveCall ? micError : undefined}
-            />
-          )}
         </div>
 
         <div
@@ -1788,6 +1777,15 @@ function HistoryChatView({
         </div>
 
         <div className="shrink-0 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+          {(isLiveCall || micError) && (
+            <LiveCallMicStatus
+              isLiveCall={isLiveCall}
+              isBusy={isLiveCallBusy}
+              isMicListening={isLiveCallMicListening}
+              isSpeaking={isLiveCallSpeaking}
+              error={isLiveCall ? micError : undefined}
+            />
+          )}
           <SimulationChatInput
             input={input}
             setInput={setInput}
@@ -2018,16 +2016,6 @@ function DiagnosisView({
                 />
               </div>
             </div>
-
-            {(isLiveCall || micError) && (
-              <LiveCallMicStatus
-                isLiveCall={isLiveCall}
-                isBusy={isLiveCallBusy}
-                isMicListening={isLiveCallMicListening}
-                isSpeaking={isLiveCallSpeaking}
-                error={isLiveCall ? micError : undefined}
-              />
-            )}
           </div>
 
           {messages.length > 0 && (
@@ -2054,6 +2042,15 @@ function DiagnosisView({
             </>
           )}
           <div className="shrink-0 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+            {(isLiveCall || micError) && (
+              <LiveCallMicStatus
+                isLiveCall={isLiveCall}
+                isBusy={isLiveCallBusy}
+                isMicListening={isLiveCallMicListening}
+                isSpeaking={isLiveCallSpeaking}
+                error={isLiveCall ? micError : undefined}
+              />
+            )}
             <SimulationChatInput
               input={input}
               setInput={setInput}
