@@ -121,14 +121,19 @@ export async function hasPatientAiKnowledge(opts: {
   if (categoryIds.length > 0) orFilters.push({ categoryId: { in: categoryIds } });
   if (orFilters.length === 0) return false;
 
-  const count = await prisma.aiKnowledgeEntry.count({
-    where: {
-      role: 'PATIENT',
-      isActive: true,
-      OR: orFilters,
-    },
-  });
-  return count > 0;
+  try {
+    const count = await prisma.aiKnowledgeEntry.count({
+      where: {
+        role: 'PATIENT',
+        isActive: true,
+        OR: orFilters,
+      },
+    });
+    return count > 0;
+  } catch {
+    // Local/dev schemas without AiKnowledgeEntry must not break chat.
+    return false;
+  }
 }
 
 /** Legacy category KB + new role-scoped AI knowledge. */

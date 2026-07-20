@@ -5,6 +5,7 @@ import {
   getManeuverExaminerResponse,
   getPatientResponse,
   sanitizeRealtimePatientTranscript,
+  unwrapExaminerPlainText,
 } from './aiService.js';
 import {
   isHistoryExaminerVivaStage,
@@ -131,6 +132,7 @@ async function completeTextTurn(
             session.language,
             { userId: session.userId, sessionId: session.id },
           );
+    replyText = unwrapExaminerPlainText(replyText);
     replyRole = MessageRole.EXAMINER;
   } else {
     const stageHistory = session.messages

@@ -11,7 +11,7 @@ APP_DIR = "/home/adminanmkavps/synoza.anmka.com"
 HOST = "77.237.232.181"
 PORT = 2222
 USER = "root"
-PASSWORD = '*1h*1£7N+oP"'
+PASSWORD = 'shtlIf9LAyf1yk3bKF4J'
 
 
 def run(client: paramiko.SSHClient, cmd: str, timeout: int = 600) -> str:
@@ -79,9 +79,8 @@ export SYNOZA_AI_KNOWLEDGE_ROOT=/home/adminanmkavps/synoza-media/knowledge
 npm install --omit=dev
 npm install prisma @prisma/client tsx --no-save
 npx prisma generate
-npx prisma db push
-# Do NOT run seed on deploy — it can overwrite production cases.
-# Do NOT use --accept-data-loss unless intentionally resetting schema.
+# Code-only deploy: never touch the database.
+# Do NOT run: prisma db push / migrate / seed / --accept-data-loss.
 cd "$APP"
 # Ensure packaged seed media also available under persistent root
 if [ -d "$APP/client/public/exam/cases" ]; then

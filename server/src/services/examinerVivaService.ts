@@ -1,5 +1,5 @@
 import type { Case } from "@prisma/client";
-import { evaluateHistoryVivaAnswer } from "./aiService.js";
+import { evaluateHistoryVivaAnswer, unwrapExaminerPlainText } from "./aiService.js";
 
 export const HISTORY_EXAMINER_STAGE = "history:examiner";
 export const VIVA_QUESTIONS_PER_SESSION = 5;
@@ -372,7 +372,8 @@ export async function respondToHistoryVivaAnswer(
         combinedStudentAnswer,
       );
 
-  const feedback = evaluation.feedback.trim();
+  // Never leak accidental model JSON into the Examiner Box chat.
+  const feedback = unwrapExaminerPlainText(evaluation.feedback);
 
   if (!evaluation.advance) {
     return feedback;

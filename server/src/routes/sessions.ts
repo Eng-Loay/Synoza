@@ -9,6 +9,7 @@ import {
   getManeuverExaminerResponse,
   resolveEvaluationLanguage,
   sanitizeRealtimePatientTranscript,
+  unwrapExaminerPlainText,
 } from '../services/aiService.js';
 import { checkCanStartCase, getUserEntitlements, recordCaseAttempt } from '../services/subscriptionService.js';
 import { serializeResolvedStationConfigForUser } from '../services/caseResolveService.js';
@@ -535,7 +536,7 @@ router.post('/:id/examiner', async (req, res) => {
     data: {
       sessionId: session.id,
       role: MessageRole.EXAMINER,
-      content: reply,
+      content: unwrapExaminerPlainText(reply),
       stage: effectiveStage,
     },
   });

@@ -212,6 +212,10 @@ export default function SimulationPage() {
   const [exiting, setExiting] = useState(false);
   const autoCompleteTriggeredRef = useRef(false);
   const refreshPromptCheckedRef = useRef(false);
+  /** When false, mic interim/complete must not refill the chat input (e.g. after Send). */
+  const acceptMicInputRef = useRef(true);
+  const forceReleaseMicRef = useRef<() => void>(() => {});
+  const stopListeningRef = useRef<() => void>(() => {});
 
   const sessionLocked = !!result || completing || secondsLeft <= 0;
 
@@ -259,6 +263,10 @@ export default function SimulationPage() {
     async (overrideText?: string): Promise<{ success: boolean; reply?: string }> => {
       const text = (overrideText ?? input).trim();
       if (!text || sending || sessionLocked) return { success: false };
+      // Stop mic and ignore late transcripts so voice text cannot reappear after Send.
+      acceptMicInputRef.current = false;
+      forceReleaseMicRef.current();
+      stopListeningRef.current();
       setSending(true);
       setChatError("");
       setInput("");
@@ -366,15 +374,17 @@ export default function SimulationPage() {
     lang: micSpeechLang,
     sessionLang: micSessionLang,
     onInterim: (text) => {
+      if (!acceptMicInputRef.current) return;
       setMicError('');
       if (text.trim()) setInput(text);
     },
     onComplete: (transcript) => {
+      if (!acceptMicInputRef.current) return;
       setMicError('');
       setInput(transcript.trim());
     },
     onError: (code) => {
-      setInput('');
+      if (acceptMicInputRef.current) setInput('');
       if (code === 'not-supported') setMicError(t('micNotSupported'));
       else if (code === 'not-allowed') setMicError(t('micPermissionDenied'));
       else if (code === 'no-speech') setMicError(t('micNoSpeech'));
@@ -387,6 +397,9 @@ export default function SimulationPage() {
       else setMicError(t('micError'));
     },
   });
+
+  forceReleaseMicRef.current = forceReleaseMic;
+  stopListeningRef.current = stopListening;
 
   const appendVoiceTurnMessages = useCallback((result: VoiceTurnResponse) => {
     setSession((prev) => {
@@ -483,8 +496,9 @@ export default function SimulationPage() {
     examinerLiveCall.stopCall();
     stopSpeaking();
     void unlockMobileAudio();
-    // Only release mic when starting a new recording — not when stopping (would skip onstop/transcribe).
+    // Starting a new recording may refill the input; allow mic text again.
     if (!isListening && !isProcessing) {
+      acceptMicInputRef.current = true;
       forceReleaseMic();
     }
     toggleListening();
