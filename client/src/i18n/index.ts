@@ -60,6 +60,7 @@ export default {
       portalTier: "Tier",
       portalOpenSimulator: "OPEN SIMULATOR",
       portalBackHome: "Homepage",
+      refundPolicyLink: "Refund & Return Policy",
       portalLoginTitle: "Medical Student Portal",
       portalLoginSubtitle: "Access Egyptian Clinical OSCE Stations & Q-Bank",
       portalCreateAccount: "Create Account / حساب جديد",
@@ -282,6 +283,10 @@ export default {
         "How do I unlock Pro cases using Vodafone Cash or InstaPay?",
       landingFaq4Answer:
         "Simply choose a plan in the 'Upgrade' section, send the required Egyptian Pounds to our displayed wallet, and type your transaction details.",
+      landingFaq5Question: "What is the refund & return policy?",
+      landingFaq5Answer:
+        "Digital subscriptions are final once activated. Full refunds apply only for duplicate charges, failed activation due to a platform error, or mistaken payment collection. Requests must be submitted within 7 days of payment.",
+      landingFaq5Link: "Read the full refund policy",
       landingSimulatorTitle: "Station_Simulator_02",
       landingSimulatorPatient: "Simulated Patient",
       landingChatDoctor:
@@ -1278,6 +1283,7 @@ export default {
       portalTier: "باقة",
       portalOpenSimulator: "فتح المحاكي",
       portalBackHome: "الصفحة الرئيسية",
+      refundPolicyLink: "سياسة الاسترجاع والاسترداد",
       portalLoginTitle: "بوابة طالب الطب",
       portalLoginSubtitle:
         "الوصول لمحطات OSCE السريرية وبنك الأسئلة للجامعات المصرية",
@@ -1491,6 +1497,10 @@ export default {
       landingFaq4Question: "إزاي أفتح حالات Pro بـ Vodafone Cash أو InstaPay؟",
       landingFaq4Answer:
         "اختار باقة من قسم Upgrade، ابعت المبلغ المطلوب بالجنيه المصري للمحفظة المعروضة، واكتب تفاصيل التحويل.",
+      landingFaq5Question: "إيه هي سياسة الاسترجاع والاسترداد؟",
+      landingFaq5Answer:
+        "الاشتراكات الرقمية نهائية بعد التفعيل. الاسترداد الكامل متاح فقط في حالات الخصم المكرر، أو عدم التفعيل بسبب خطأ تقني من المنصة، أو التحصيل الخاطئ. يجب إرسال الطلب خلال 7 أيام من الدفع.",
+      landingFaq5Link: "اقرأ سياسة الاسترجاع كاملة",
       landingSimulatorTitle: "Station_Simulator_02",
       landingSimulatorPatient: "مريض محاكى",
       landingChatDoctor:

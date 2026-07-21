@@ -2485,18 +2485,220 @@ function isLabeledDefinitionPoint(point: string): boolean {
   return label.split(/\s+/).length <= 5 && value.length >= 3;
 }
 
-/** Term/label only — never the full definition (used for coaching hints). */
+const REGION_FINDING_LABELS = new Set([
+  'abdomen',
+  'extremities',
+  'hands',
+  'eyes',
+  'face',
+  'facial',
+  'neck',
+  'legs',
+  'general',
+  'chest',
+  'chest inspection',
+  'skin',
+  'hair',
+  'apex',
+  'precordium',
+  'limbs',
+  'lower limbs',
+  'upper limbs',
+]);
+
+/** Short clinical cue for coaching — never dump the full definition. */
 function extractPointTerm(point: string): string {
   const cleaned = stripMarkdown(point).replace(/[.]+$/g, '').trim();
   if (isLabeledDefinitionPoint(cleaned)) {
-    return cleaned.split(/:\s*/)[0].trim().slice(0, 60);
+    const label = cleaned.split(/:\s*/)[0].trim();
+    const value = cleaned.split(/:\s*/).slice(1).join(':').trim();
+    if (REGION_FINDING_LABELS.has(label.toLowerCase()) && value.length >= 8) {
+      return shortFindingCue(value);
+    }
+    return label.slice(0, 60);
   }
-  return cleaned.slice(0, 60).trim();
+  return shortFindingCue(cleaned).slice(0, 60);
+}
+
+function shortFindingCue(value: string): string {
+  const cues: Array<[RegExp, string]> = [
+    [/^no\b.*\b(?:pallor|icterus|cyanosis)/i, 'no pallor/icterus/cyanosis'],
+    [/periorbital\s+puffiness|facial\s+(?:oedema|edema)|puffy\s+eyes/i, 'periorbital puffiness'],
+    [/everted\s+umbilicus/i, 'everted umbilicus'],
+    [/full\s+flanks/i, 'full flanks'],
+    [/distended|distension/i, 'abdominal distension'],
+    [/lower\s+limb|bilateral\s+(?:pitting\s+)?(?:oedema|edema|swelling)|pitting\s+(?:oedema|edema)/i, 'lower limb edema'],
+    [/palmar\s+erythema/i, 'palmar erythema'],
+    [/leukonychia/i, 'leukonychia'],
+    [/scleral\s+icterus|\bjaundice\b|\bicterus\b/i, 'scleral icterus'],
+    [/mid-?axillary/i, 'left mid-axillary line'],
+    [/chest\s+tube|\bscar\b|thoracotomy/i, 'scar'],
+    [/precordial\s+bulge/i, 'no precordial bulge'],
+    [/dilated.*veins|superficial\s+veins/i, 'no dilated veins'],
+    [/skin\s+lesions|normal\s+chest\s+wall/i, 'normal chest wall'],
+    [/no\s+pallor/i, 'no pallor'],
+    [/jvp|neck\s+veins/i, 'normal JVP'],
+  ];
+  for (const [re, label] of cues) {
+    if (re.test(value)) return label;
+  }
+  return value.split(/\s+/).slice(0, 5).join(' ').slice(0, 50).trim();
+}
+
+/**
+ * Split "Abdomen: ... Extremities: ... Hands: ..." physical-exam prose into
+ * progressive viva points (and atomize findings inside each region).
+ */
+function splitRegionLabeledFindings(text: string): string[] {
+  const cleaned = stripMarkdown(text).trim();
+  if (!cleaned) return [];
+
+  const re =
+    /(?:^|[.!?]\s+|\n+)([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,3})\s*:\s+/g;
+  const matches = [...cleaned.matchAll(re)].filter((m) =>
+    REGION_FINDING_LABELS.has(m[1].trim().toLowerCase()),
+  );
+  if (matches.length < 2) return [];
+
+  const points: string[] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const label = matches[i][1].trim();
+    const contentStart = (matches[i].index ?? 0) + matches[i][0].length;
+    const contentEnd =
+      i + 1 < matches.length ? (matches[i + 1].index ?? cleaned.length) : cleaned.length;
+    const value = cleaned
+      .slice(contentStart, contentEnd)
+      .trim()
+      .replace(/^[.\s]+|[.\s]+$/g, '')
+      .trim();
+    if (value.length < 3) continue;
+    const atoms = atomizeClinicalFindings(value);
+    if (atoms.length >= 2) {
+      for (const atom of atoms) points.push(`${label}: ${atom}`);
+    } else {
+      points.push(`${label}: ${value}`);
+    }
+  }
+  return points.length >= 2 ? points : [];
+}
+
+/** Break a findings paragraph into atomic clinical observations. */
+function atomizeClinicalFindings(value: string): string[] {
+  const cleaned = stripMarkdown(value).replace(/\s+/g, ' ').trim();
+  if (!cleaned) return [];
+
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.replace(/[.!?]+$/g, '').trim())
+    .filter((s) => s.length >= 6);
+
+  const source = sentences.length >= 1 ? sentences : [cleaned];
+  const atoms: string[] = [];
+
+  for (const sentence of source) {
+    // Skip thin demographic / posture filler as its own scored atom when richer findings exist.
+    if (
+      (/^(?:middle-aged|elderly|young|male|female|fully conscious|cooperative)\b/i.test(sentence) ||
+        /(?:mildly\s+)?tachypneic|sitting upright|cooperative adolescent/i.test(sentence)) &&
+      sentence.split(/\s+/).length <= 12 &&
+      !/(?:edema|oedema|puffiness|swelling|scar|jaundice|icterus|distend|bulge|vein|lesion)/i.test(
+        sentence,
+      )
+    ) {
+      continue;
+    }
+
+    const absNeg = sentence.match(/^there\s+is\s+absolutely\s+(.+)$/i);
+    const thereIs = absNeg ?? sentence.match(/^there\s+(?:is|are)\s+(.+)$/i);
+    if (thereIs?.[1] && /,|\band\b|\bno\b/i.test(thereIs[1])) {
+      const parts = thereIs[1]
+        .split(/\s*,\s*|\s+and\s+/i)
+        .map((p) => p.trim())
+        .filter((p) => p.length >= 5);
+      if (parts.length >= 2) {
+        atoms.push(...parts);
+        continue;
+      }
+    }
+
+    // Scar + anatomic site → two progressive points (video: "scar" then "left mid-axillary").
+    const scarSite = sentence.match(
+      /^(.+?\bscar\b.+?)\s+in\s+(left\s+mid-?axillary\s+line)\b/i,
+    );
+    if (scarSite) {
+      atoms.push(scarSite[1].trim());
+      atoms.push(scarSite[2].trim());
+      continue;
+    }
+
+    // "No precordial bulge, no dilated veins, no skin lesions" → separate progressive points.
+    if (/^no\b/i.test(sentence) && /,\s*no\b/i.test(sentence)) {
+      const parts = sentence
+        .split(/\s*,\s*(?=no\b)/i)
+        .map((p) => p.replace(/[.!?]+$/g, '').trim())
+        .filter((p) => p.length >= 5);
+      if (parts.length >= 2) {
+        atoms.push(...parts);
+        continue;
+      }
+    }
+
+    // Keep "No pallor, icterus, or cyanosis" as ONE screening finding (avoid 8+ micro-points).
+    if (/^no\b/i.test(sentence) && /,|\bor\b|\band\b/i.test(sentence)) {
+      atoms.push(
+        sentence
+          .replace(/\s+or\s+/gi, ', ')
+          .replace(/,\s*,+/g, ', ')
+          .replace(/\s+,/g, ',')
+          .replace(/,\s*$/g, '')
+          .trim(),
+      );
+      continue;
+    }
+
+    // Adjective skin lists ("smooth, pale, stretched, and shiny") stay one finding.
+    if (
+      /^(?:the\s+)?skin\b/i.test(sentence) ||
+      (sentence.split(/\s+/).length <= 10 &&
+        /^(?:[a-z]+,\s+){2,}[a-z]+(?:,?\s+and\s+[a-z]+)?$/i.test(sentence))
+    ) {
+      atoms.push(sentence);
+      continue;
+    }
+
+    // "distended abdomen with full flanks and an everted umbilicus"
+    if (/\bwith\b.+\band\b/i.test(sentence) && !/\bmust\b|\bshould\b|patient\b/i.test(sentence)) {
+      const parts = sentence
+        .split(/\s+with\s+|\s+and\s+/i)
+        .map((p) => p.replace(/^an\s+/i, '').trim())
+        .filter((p) => p.length >= 5 && p.split(/\s+/).length <= 10);
+      if (parts.length >= 2) {
+        atoms.push(...parts);
+        continue;
+      }
+    }
+
+    atoms.push(sentence);
+  }
+
+  const unique: string[] = [];
+  for (const atom of atoms) {
+    const key = atom.toLowerCase();
+    if (unique.some((u) => u.toLowerCase() === key)) continue;
+    unique.push(atom);
+  }
+  // If we skipped demographics and nothing remains, keep the original paragraph.
+  if (unique.length === 0 && cleaned) return [cleaned];
+  return unique.length >= 2 ? unique : cleaned ? [cleaned] : [];
 }
 
 function splitModelAnswerPoints(sampleAnswer: string): string[] {
   const raw = stripMarkdown(sampleAnswer).trim();
   if (!raw) return [];
+
+  // Physical-exam style: multiple anatomical regions with labels.
+  const regionPoints = splitRegionLabeledFindings(raw);
+  if (regionPoints.length >= 2) return regionPoints;
 
   const structured = raw
     .split(/\n+|(?:^|\n)\s*(?:[-*•]|\d+[.)])\s+/m)
@@ -2511,6 +2713,8 @@ function splitModelAnswerPoints(sampleAnswer: string): string[] {
     structured.length >= 2 && structured.filter(isLabeledDefinitionPoint).length >= 2;
   const colonList = raw.match(/^[^:\n]{3,120}:\s*(.+)$/s);
   if (colonList?.[1] && !looksLikeMultiLabeled) {
+    const atoms = atomizeClinicalFindings(colonList[1]);
+    if (atoms.length >= 2) return atoms;
     const listified = splitProseCauseList(colonList[1]);
     if (listified.length >= 2) return listified;
   }
@@ -2520,6 +2724,8 @@ function splitModelAnswerPoints(sampleAnswer: string): string[] {
     // like "Rigidity: Diffuse contraction (Peritonitis, classically ...)".
     const flattened = structured.flatMap((point) => {
       if (isLabeledDefinitionPoint(point)) return [stripMarkdown(point)];
+      const atoms = atomizeClinicalFindings(stripModelAnswerPreamble(point) || point);
+      if (atoms.length >= 2) return atoms;
       const nested = splitProseCauseList(stripModelAnswerPreamble(point));
       return nested.length >= 2 ? nested : [stripModelAnswerPreamble(point) || point];
     });
@@ -2527,6 +2733,8 @@ function splitModelAnswerPoints(sampleAnswer: string): string[] {
   }
 
   const single = stripModelAnswerPreamble(structured[0] || raw);
+  const singleAtoms = atomizeClinicalFindings(single);
+  if (singleAtoms.length >= 2) return singleAtoms;
   const listified = splitProseCauseList(single);
   if (listified.length >= 2) return listified;
 
@@ -2546,12 +2754,12 @@ function splitProseCauseList(text: string): string[] {
   const cleaned = stripModelAnswerPreamble(text);
   if (!cleaned) return [];
 
-  // Continuous OSCE prose sentences ("The patient must lie flat and flex...") must NOT
+  // Instruction-style OSCE prose ("The patient must lie flat and flex...") must NOT
   // be shredded on every "and" — that creates overlapping points and duplicate-credit bugs.
+  // Finding lists WITHOUT must/should should still split.
   const looksLikeProseSentence =
     /^(?:the\s+)?(?:patient|doctor|examiner|answer|aim|goal|purpose)\b/i.test(cleaned) ||
-    /\bmust\b|\bshould\b|\bin order to\b|\bso that\b/i.test(cleaned) ||
-    (!/,/.test(cleaned) && cleaned.split(/\s+/).length >= 12);
+    /\bmust\b|\bshould\b|\bin order to\b|\bso that\b/i.test(cleaned);
 
   if (looksLikeProseSentence) return [];
 
@@ -2667,13 +2875,29 @@ function requiredLabelTerms(label: string): string[] {
 function requiredValueTerms(value: string): string[] {
   const cleaned = stripMarkdown(value).toLowerCase();
   const abbreviation = cleaned.match(/\(([a-z]{2,8})\)/);
-  if (abbreviation) return [abbreviation[1]];
-
   const words = cleaned
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter((word) => word.length >= 4 && !GENERIC_MEDICAL_WORDS.has(word));
+  // Keep abbreviation as a strong cue, but do NOT drop the rest of the finding words
+  // (e.g. Neck/JVP answers should still match "neck veins are normal").
+  if (abbreviation) {
+    return [...new Set([abbreviation[1], ...words])];
+  }
   return words;
+}
+
+function normalizeVivaStudentText(text: string): string {
+  return text
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E]/g, '"')
+    .replace(/[\u060C\u066B\u066C]/g, ',')
+    .replace(/[\u061B]/g, ';')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function colonStructuredPointIsCovered(studentLower: string, point: string): boolean | null {
@@ -2684,6 +2908,7 @@ function colonStructuredPointIsCovered(studentLower: string, point: string): boo
   const label = parts[0].trim();
   const value = parts.slice(1).join(':');
   const labelLower = label.toLowerCase();
+  const isRegionLabel = REGION_FINDING_LABELS.has(labelLower);
   const labelTerms = requiredLabelTerms(label);
   const valueTerms = requiredValueTerms(value);
 
@@ -2692,16 +2917,31 @@ function colonStructuredPointIsCovered(studentLower: string, point: string): boo
     .replace(/[^a-z0-9\u0600-\u06ff\s]/g, ' ')
     .split(/\s+/)
     .filter((w) => w.length >= 4 && !VIVA_EVAL_STOP_WORDS.has(w));
-  if (labelWords.length > 0 && labelWords.every((w) => tokenPresent(studentLower, w))) {
+  // Region labels like "Legs"/"General" are too generic to count as full credit alone.
+  if (
+    !isRegionLabel &&
+    labelWords.length > 0 &&
+    labelWords.every((w) => tokenPresent(studentLower, w))
+  ) {
     return true;
   }
-  // Also accept a compact multi-word label phrase.
-  if (labelLower.length >= 5 && studentLower.includes(labelLower)) {
+  // Also accept a compact multi-word clinical label phrase (not bare region names).
+  if (!isRegionLabel && labelLower.length >= 5 && studentLower.includes(labelLower)) {
     return true;
   }
 
   if (labelTerms.length > 0 && !labelTerms.every((term) => studentLower.includes(term))) {
-    return false;
+    // Hard clinical labels (systolic/apical/...) must match; region labels fall through.
+    return isRegionLabel ? null : false;
+  }
+
+  // Abbreviation in the model answer (JVP, NAFLD, ...) is enough on its own.
+  const abbreviation = value.toLowerCase().match(/\(([a-z]{2,8})\)/);
+  if (abbreviation) {
+    const abbr = abbreviation[1];
+    if (new RegExp(`\\b${abbr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(studentLower)) {
+      return true;
+    }
   }
 
   const valuePhrase = value.toLowerCase().replace(/[.!?]/g, '').replace(/\s+/g, ' ').trim();
@@ -2709,17 +2949,22 @@ function colonStructuredPointIsCovered(studentLower: string, point: string): boo
     return true;
   }
 
-  if (valueTerms.length === 0) return false;
+  if (valueTerms.length === 0) return isRegionLabel ? null : false;
 
   // Soft match on definition: ≥ half of distinctive value terms, or 2+ hits.
   const valueHits = valueTerms.filter((term) => {
     if (term.length <= 5) {
       return new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(studentLower);
     }
-    return studentLower.includes(term);
+    return studentLower.includes(term) || tokenPresent(studentLower, term);
   });
-  if (valueTerms.length <= 2) return valueHits.length >= 1;
-  return valueHits.length >= 2 || valueHits.length / valueTerms.length >= 0.5;
+  if (valueTerms.length <= 2) {
+    if (valueHits.length >= 1) return true;
+    return isRegionLabel ? null : false;
+  }
+  if (valueHits.length >= 2 || valueHits.length / valueTerms.length >= 0.45) return true;
+  // Region findings: allow keyword/abbreviation fallback instead of hard reject.
+  return isRegionLabel ? null : false;
 }
 
 function pointKeywords(point: string): string[] {
@@ -2743,6 +2988,31 @@ function expandClinicalAliases(text: string): string {
     [/\bunintentional\s+weight\s*loss\b|\bweight\s*loss\b/g, ' unintentional weight loss '],
     [/\banemia\b|\banaemia\b/g, ' anemia '],
     [/\bmass\s+in\s+(?:the\s+)?epigastrium\b|\bepigastric\s+mass\b/g, ' epigastric mass '],
+    // Examination / inspection phrasing
+    [/\bpuffy\s+eyes\b|\bfacial\s+(?:oedema|edema)\b|\bperiorbital\s+(?:oedema|edema)\b|\bpuffiness\b/g, ' periorbital puffiness '],
+    [/\bdistension\b|\bdistended\b|\bswollen\s+abdomen\b/g, ' distended distension '],
+    [/\beverted\s+umbilicus\b|\bumbilicus\s+everted\b/g, ' everted umbilicus '],
+    [/\bfull\s+flanks\b|\bflanks?\s+full\b/g, ' full flanks '],
+    [
+      /\blower\s+limb\s+(?:oedema|edema)\b|\bleg\s+(?:oedema|edema)\b|\bleg\s+swelling\b|\bbilateral\s+(?:leg\s+)?swelling\b|\bpitting\s+(?:oedema|edema)\b/g,
+      ' lower limb edema bilateral swelling pitting ',
+    ],
+    [/\bnormal\s+chest\s+wall\b/g, ' no chest skin lesions '],
+    [/\bno\s+dilated\s+(?:superficial\s+)?veins\b/g, ' no dilated collateral superficial veins '],
+    [/\bleft\s+(?:side|chest|axilla)\b/g, ' left mid-axillary line '],
+    [/\b(?:there'?s|there\s+is)\s+a\s+scar\b|\bscar\b|\bndبة\b/g, ' scar chest tube '],
+    [/\bicterus\b|\bjaundice\b/g, ' scleral icterus jaundice icterus '],
+    [/\bjvp\b|\bjugular\s+(?:venous\s+)?pulse\b|\bneck\s+veins?\b/g, ' jvp neck veins normal '],
+    [/\bno\s+pallor\b|\bpallor\b/g, ' no pallor pallor '],
+    [/\bno\s+cyanosis\b|\bcyanosis\b/g, ' no cyanosis cyanosis '],
+    [
+      /\bsmooth\b.*\bpale\b|\bpale\b.*\bstretched\b|\bstretched\b.*\bshiny\b|\bshiny\s+skin\b/g,
+      ' smooth pale stretched shiny skin ',
+    ],
+    [
+      /\bno\s+redness\b|\bno\s+localized\s+redness\b|\bvaricose\s+veins\b|\bno\s+pigmentation\b/g,
+      ' no localized redness pigmentation varicose veins ',
+    ],
   ];
   for (const [pattern, replacement] of aliases) {
     out = out.replace(pattern, replacement);
@@ -2750,15 +3020,105 @@ function expandClinicalAliases(text: string): string {
   return out.replace(/\s+/g, ' ').trim();
 }
 
+/** Soft stem match so distension≈distended, edema≈oedematous, etc. */
+function tokensRoughlyMatch(studentToken: string, pointToken: string): boolean {
+  if (studentToken === pointToken) return true;
+  if (studentToken.length >= 5 && pointToken.length >= 5) {
+    const a = studentToken.slice(0, 6);
+    const b = pointToken.slice(0, 6);
+    if (a === b) return true;
+    if (studentToken.startsWith(pointToken.slice(0, 5)) || pointToken.startsWith(studentToken.slice(0, 5))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function tokenPresent(haystack: string, token: string): boolean {
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (token.length <= 4) {
     return new RegExp(`\\b${escaped}\\b`).test(haystack);
   }
-  return haystack.includes(token);
+  if (haystack.includes(token)) return true;
+  // Soft stem: allow distension≈distended inside the haystack tokens
+  const hayTokens = haystack
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0600-\u06ff\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  return hayTokens.some((ht) => tokensRoughlyMatch(ht, token.toLowerCase()));
+}
+
+/** Direct clinical anchors for examination findings — bypass brittle keyword ratios. */
+const EXAM_FINDING_ANCHORS: Array<{ pointHint: RegExp; studentTest: RegExp }> = [
+  {
+    pointHint: /periorbital|puffiness/i,
+    studentTest: /puffy\s+eyes|periorbital|puffiness|facial\s+(?:oedema|edema)/i,
+  },
+  {
+    pointHint: /(?:\bpallor\b|\bicterus\b|\bcyanosis\b)/i,
+    studentTest: /\bpallor\b|\bicterus\b|\bjaundice\b|\bcyanosis\b/i,
+  },
+  {
+    pointHint: /\bjvp\b|neck\s+veins|jugular/i,
+    studentTest: /\bjvp\b|neck\s+veins|jugular/i,
+  },
+  {
+    pointHint: /swelling|oedema|edema|mid-?thighs|dorsum of both feet/i,
+    studentTest: /(?:lower\s+limb\s+)?(?:oedema|edema)|swelling|pitting/i,
+  },
+  {
+    pointHint: /smooth|stretched|shiny/i,
+    studentTest: /\bsmooth\b|\bpale\b|\bstretched\b|\bshiny\b/i,
+  },
+  {
+    pointHint: /redness|pigmentation|varicose/i,
+    studentTest: /redness|pigmentation|varicose/i,
+  },
+  // AS+MR / chest inspection — allow short correct hits like "there's a scar".
+  {
+    pointHint: /\bscar\b|chest\s+tube|thoracotomy/i,
+    studentTest: /\bscar\b|\bndبة\b|chest\s+tube|thoracotomy/i,
+  },
+  {
+    pointHint: /mid-?axillary/i,
+    studentTest: /mid-?axillary|left\s+(?:side|chest|axilla)/i,
+  },
+  {
+    pointHint: /precordial\s+bulge/i,
+    studentTest: /precordial\s+bulge/i,
+  },
+  {
+    pointHint: /dilated.*veins|superficial\s+veins/i,
+    studentTest: /dilated\s+(?:superficial\s+)?veins|superficial\s+veins/i,
+  },
+  {
+    pointHint: /skin\s+lesions/i,
+    studentTest: /skin\s+lesions|normal\s+chest\s+wall/i,
+  },
+];
+
+function examFindingAnchorCovered(studentLower: string, point: string): boolean {
+  const pointText = stripMarkdown(point);
+  // Require at least 2 student hits for skin descriptors to avoid "pale" alone matching.
+  for (const { pointHint, studentTest } of EXAM_FINDING_ANCHORS) {
+    if (!pointHint.test(pointText)) continue;
+    if (!studentTest.test(studentLower)) continue;
+    if (/smooth|stretched|shiny/i.test(pointText)) {
+      const hits = ['smooth', 'pale', 'stretched', 'shiny'].filter((w) =>
+        new RegExp(`\\b${w}\\b`, 'i').test(studentLower),
+      );
+      if (hits.length < 2) continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 function pointIsCovered(studentLower: string, point: string): boolean {
+  // Fast path for OSCE inspection/palpation prose (Oedema, Ascites, etc.).
+  if (examFindingAnchorCovered(studentLower, point)) return true;
+
   const colonMatch = colonStructuredPointIsCovered(studentLower, point);
   if (colonMatch !== null) return colonMatch;
 
@@ -2801,6 +3161,18 @@ function pointIsCovered(studentLower: string, point: string): boolean {
   return hits.length / keywords.length >= 0.5;
 }
 
+/** Test/debug helpers — used by scripts/debug-*.ts only. */
+export function debugSplitVivaPoints(sampleAnswer: string): string[] {
+  return splitModelAnswerPoints(sampleAnswer);
+}
+
+export function debugScoreViva(
+  studentAnswer: string,
+  sampleAnswer: string,
+): { coverage: number; matched: string[]; missing: string[] } {
+  return scoreAnswerAgainstModel(studentAnswer, sampleAnswer);
+}
+
 function scoreAnswerAgainstModel(
   studentAnswer: string,
   sampleAnswer: string,
@@ -2809,7 +3181,7 @@ function scoreAnswerAgainstModel(
   if (points.length === 0) {
     return { coverage: 0, matched: [], missing: [] };
   }
-  const studentLower = expandClinicalAliases(studentAnswer.toLowerCase());
+  const studentLower = expandClinicalAliases(normalizeVivaStudentText(studentAnswer).toLowerCase());
   const matched: string[] = [];
   const missing: string[] = [];
   for (const point of points) {
@@ -2825,7 +3197,7 @@ function scoreAnswerAgainstModel(
 
 function shortPointLabel(point: string): string {
   // Always prefer the clinical TERM (Guarding / Rigidity) — never leak the definition text.
-  const term = extractPointTerm(point);
+  const term = extractPointTerm(point).replace(/\bno\s+or\b/gi, 'no').replace(/\s+/g, ' ').trim();
   if (term && term.length <= 40) return term;
   const cleaned = stripModelAnswerPreamble(stripMarkdown(point)).replace(/[.]+$/g, '').trim();
   const words = cleaned.split(/\s+/).filter(Boolean);
@@ -2845,18 +3217,31 @@ function shortPointLabel(point: string): string {
 function buildPartialCreditFeedback(
   matched: string[],
   missing: string[],
-  options?: { duplicateAttempt?: boolean; newlyMatched?: string[] },
+  options?: { duplicateAttempt?: boolean; newlyMatched?: string[]; noNewProgress?: boolean },
 ): string {
   if (missing.length === 0) {
+    const labels = matched.slice(0, 8).map(shortPointLabel).filter(Boolean);
+    if (labels.length >= 2) {
+      const list =
+        labels.length === 2
+          ? `${labels[0]} and ${labels[1]}`
+          : `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
+      return `Excellent! You've now covered all the expected findings: ${list}. Great job!`;
+    }
     return 'Correct — you covered all the expected key points. Great job!';
   }
 
   // Soft coaching only: acknowledge what is correct. Do NOT quote remaining definitions.
-  // At most nudge with a term NAME (not the answer text). Prefer a generic prompt.
   const highlight =
     options?.newlyMatched && options.newlyMatched.length > 0 ? options.newlyMatched : matched;
   const correctLabels = highlight.slice(0, 3).map(shortPointLabel).filter(Boolean);
   const remaining = missing.length;
+
+  if (options?.noNewProgress) {
+    return remaining === 1
+      ? `I didn't catch a new expected finding in that reply. You already have solid points — one more is still expected. Keep going.`
+      : `I didn't catch a new expected finding in that reply. Keep going systematically — ${remaining} expected points are still missing.`;
+  }
 
   if (options?.duplicateAttempt) {
     return remaining === 1
@@ -2867,18 +3252,21 @@ function buildPartialCreditFeedback(
   if (correctLabels.length === 0) {
     return remaining === 1
       ? `Not complete yet — try one clear clinical point, then we can build on it.`
-      : `Not complete yet — list the findings systematically, one point at a time.`;
+      : `Not complete yet — try listing the main clinical points systematically, one by one. I will coach you as you go.`;
   }
 
-  const acknowledged =
-    correctLabels.length === 1
-      ? `Good. You've mentioned ${correctLabels[0]}, which is correct.`
-      : `Well done! You've noted ${correctLabels.join('; ')}, which are correct.`;
+  // Video-style coaching: praise the hit, then ask for more — never dump remaining keys.
+  if (correctLabels.length === 1) {
+    return remaining === 1
+      ? `Good. You've mentioned ${correctLabels[0]}, which is an important observation. However, there is still one more expected point. Can you add it?`
+      : `Good. You've mentioned ${correctLabels[0]}, which is an important observation. Can you describe any other expected findings during your inspection?`;
+  }
 
+  const acknowledged = `Well done! You've noted ${correctLabels.join('; ')}, which are correct.`;
   const missingPart =
     remaining === 1
-      ? `However, there is still one more expected point. Can you add it?`
-      : `However, there are still ${remaining} expected points missing. Keep going — add the next one.`;
+      ? `However, there is still one more expected point that is missing. Can you think of what else might be important to mention?`
+      : `However, there are a few more key findings that are expected. Can you identify any additional observations?`;
 
   return `${acknowledged} ${missingPart}`.trim();
 }
@@ -2920,16 +3308,17 @@ function evaluateHistoryVivaAnswerFromModel(
   if (matched.length > 0 && missing.length === 0) {
     return {
       advance: true,
-      feedback: 'Correct — you covered all the expected key points. Great job!',
+      feedback: buildPartialCreditFeedback(matched, missing),
     };
   }
 
-  if (newlyMatched.length > 0 || (matched.length > 0 && !duplicateAttempt)) {
+  // New credit this turn → praise only what was newly covered (video style).
+  if (newlyMatched.length > 0) {
     return {
       advance: false,
       feedback: buildPartialCreditFeedback(matched, missing, {
         duplicateAttempt: false,
-        newlyMatched: newlyMatched.length > 0 ? newlyMatched : matched,
+        newlyMatched,
       }),
     };
   }
@@ -2944,8 +3333,24 @@ function evaluateHistoryVivaAnswerFromModel(
     };
   }
 
+  // Already has some credit, but this reply added nothing recognizable —
+  // do NOT re-emit the same praise (that looked like a "fixed" reply).
+  if (matched.length > 0 && missing.length > 0 && before.length > 0) {
+    return {
+      advance: false,
+      feedback: buildPartialCreditFeedback(matched, missing, {
+        noNewProgress: true,
+        newlyMatched: [],
+      }),
+    };
+  }
+
   const words = current.split(/\s+/).filter(Boolean);
-  if (words.length < 2) {
+  // Single distinctive clinical tokens ("scar", "edema") can still earn partial credit above.
+  if (
+    words.length < 2 &&
+    !/\b(scar|edema|oedema|murmur|thrill|jaundice|cyanosis|ندبة|clubbing)\b/i.test(current)
+  ) {
     return {
       advance: false,
       feedback:
@@ -3228,13 +3633,17 @@ export async function getManeuverExaminerResponse(
 
   // Cumulative student findings for this maneuver (same method as Examiner Box).
   const priorStudentTurns = history
-    .filter((m) => m.role === 'STUDENT' || m.role === 'user')
-    .map((m) => m.content.trim())
+    .filter((m) => {
+      const role = String(m.role || '').toUpperCase();
+      return role === 'STUDENT' || role === 'USER';
+    })
+    .map((m) => normalizeVivaStudentText(m.content))
     .filter(Boolean);
-  const combinedFindings = [...priorStudentTurns, question.trim()].filter(Boolean).join('\n');
+  const current = normalizeVivaStudentText(question);
+  const combinedFindings = [...priorStudentTurns, current].filter(Boolean).join('\n');
 
   // "I don't know" → reveal expected findings immediately.
-  if (studentGaveUpAnswer(question)) {
+  if (studentGaveUpAnswer(current)) {
     if (maneuverFindings) {
       return unwrapExaminerPlainText(
         `No problem — here are the expected ${name} findings:\n${maneuverFindings}`,
@@ -3246,7 +3655,7 @@ export async function getManeuverExaminerResponse(
   }
 
   const local = maneuverFindings
-    ? evaluateHistoryVivaAnswerFromModel(question, maneuverFindings, combinedFindings)
+    ? evaluateHistoryVivaAnswerFromModel(current, maneuverFindings, combinedFindings)
     : null;
 
   // Prefer progressive local scoring when findings exist (reliable partial credit).

@@ -494,7 +494,7 @@ router.post('/:id/examiner', async (req, res) => {
     return res.status(400).json({ error: 'Maneuver not enabled for this case' });
   }
 
-  await prisma.message.create({
+  const studentMessage = await prisma.message.create({
     data: {
       sessionId: session.id,
       role: MessageRole.STUDENT,
@@ -503,15 +503,22 @@ router.post('/:id/examiner', async (req, res) => {
     },
   });
 
-  const stageMessages = session.messages.filter((m) => m.stage === effectiveStage);
-  const examinerHistory = stageMessages.filter((m) => m.role !== MessageRole.PATIENT);
+  // Reload from DB so cumulative viva scoring always sees prior student turns
+  // (avoid relying on the pre-insert in-memory session.messages snapshot).
+  const stageMessages = await prisma.message.findMany({
+    where: { sessionId: session.id, stage: effectiveStage },
+    orderBy: { createdAt: 'asc' },
+  });
+  const examinerHistory = stageMessages.filter(
+    (m) => m.role !== MessageRole.PATIENT && m.id !== studentMessage.id,
+  );
 
   const reply = maneuverId
     ? await getManeuverExaminerResponse(
         session.case,
         maneuverId,
         message,
-        examinerHistory.map((m) => ({ role: m.role, content: m.content })),
+        examinerHistory.map((m) => ({ role: String(m.role), content: m.content })),
         session.language,
         { userId: req.user!.id, sessionId: session.id },
       )

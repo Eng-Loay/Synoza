@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ChevronDown, HelpCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { AnimateOnScroll } from '../AnimateOnScroll';
 
-const FAQ_KEYS = ['landingFaq1', 'landingFaq2', 'landingFaq3', 'landingFaq4'] as const;
+const FAQ_KEYS = ['landingFaq1', 'landingFaq2', 'landingFaq3', 'landingFaq4', 'landingFaq5'] as const;
 
 export function LandingFaqSection() {
   const { t } = useTranslation();
@@ -26,9 +27,10 @@ export function LandingFaqSection() {
         <ul className="space-y-3">
           {FAQ_KEYS.map((key, index) => {
             const isOpen = openIndex === index;
+            const isRefund = key === 'landingFaq5';
             return (
               <AnimateOnScroll key={key} delay={index * 50}>
-                <li>
+                <li id={isRefund ? 'refund-policy' : undefined}>
                   <div
                     className={`rounded-2xl border transition-colors shadow-sm ${
                       isOpen
@@ -53,8 +55,16 @@ export function LandingFaqSection() {
                       />
                     </button>
                     {isOpen && (
-                      <div className="px-5 sm:px-6 pb-5 sm:pb-6 -mt-1">
+                      <div className="px-5 sm:px-6 pb-5 sm:pb-6 -mt-1 space-y-3">
                         <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">{t(`${key}Answer`)}</p>
+                        {isRefund && (
+                          <Link
+                            to="/refund-policy"
+                            className="inline-flex text-sm font-semibold text-teal-700 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 transition-colors"
+                          >
+                            {t('landingFaq5Link')}
+                          </Link>
+                        )}
                       </div>
                     )}
                   </div>

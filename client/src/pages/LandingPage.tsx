@@ -192,7 +192,13 @@ export default function LandingPage() {
       </section>
 
       <footer className="py-8 border-t border-slate-100 dark:border-slate-800 text-center text-xs text-slate-400 dark:text-slate-500">
-        <p>© {new Date().getFullYear()} Synoza · {defaultSettings.contactPhone}</p>
+        <p className="mb-2">© {new Date().getFullYear()} Synoza · {defaultSettings.contactPhone}</p>
+        <Link
+          to="/refund-policy"
+          className="text-slate-500 dark:text-slate-400 hover:text-teal-700 dark:hover:text-teal-400 underline-offset-2 hover:underline"
+        >
+          {t('refundPolicyLink')}
+        </Link>
       </footer>
     </div>
   );

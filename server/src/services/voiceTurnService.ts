@@ -104,15 +104,29 @@ async function completeTextTurn(
   let replyRole: MessageRole;
 
   if (input.endpoint === 'examiner') {
-    const stageMessages = session.messages.filter((m) => m.stage === effectiveStage);
-    const examinerHistory = stageMessages.filter((m) => m.role !== MessageRole.PATIENT);
+    const studentMessage = await prisma.message.create({
+      data: {
+        sessionId: session.id,
+        role: MessageRole.STUDENT,
+        content: transcript,
+        stage: effectiveStage,
+      },
+    });
+
+    const stageMessages = await prisma.message.findMany({
+      where: { sessionId: session.id, stage: effectiveStage },
+      orderBy: { createdAt: 'asc' },
+    });
+    const examinerHistory = stageMessages.filter(
+      (m) => m.role !== MessageRole.PATIENT && m.id !== studentMessage.id,
+    );
 
     replyText = input.maneuverId
       ? await getManeuverExaminerResponse(
           session.case,
           input.maneuverId,
           transcript,
-          examinerHistory.map((m) => ({ role: m.role, content: m.content })),
+          examinerHistory.map((m) => ({ role: String(m.role), content: m.content })),
           session.language,
           { userId: session.userId, sessionId: session.id },
         )
@@ -128,12 +142,27 @@ async function completeTextTurn(
         : await getExaminerVivaResponse(
             session.case,
             transcript,
-            examinerHistory.map((m) => ({ role: m.role, content: m.content })),
+            examinerHistory.map((m) => ({ role: String(m.role), content: m.content })),
             session.language,
             { userId: session.userId, sessionId: session.id },
           );
     replyText = unwrapExaminerPlainText(replyText);
     replyRole = MessageRole.EXAMINER;
+
+    const replyMessage = await prisma.message.create({
+      data: {
+        sessionId: session.id,
+        role: replyRole,
+        content: replyText,
+        stage: effectiveStage,
+      },
+    });
+
+    return {
+      transcript,
+      studentMessage,
+      replyMessage,
+    };
   } else {
     const stageHistory = session.messages
       .filter((m) => m.stage === effectiveStage)

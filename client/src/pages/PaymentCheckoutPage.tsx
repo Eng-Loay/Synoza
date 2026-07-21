@@ -206,7 +206,13 @@ export default function PaymentCheckoutPage() {
               )}
 
               <p className="text-center text-xs text-slate-500 dark:text-slate-400 mt-4">
-                {t('paymentCheckoutFooter')}
+                {t('paymentCheckoutFooter')}{' '}
+                <Link
+                  to="/refund-policy"
+                  className="underline underline-offset-2 hover:text-teal-700 dark:hover:text-teal-400"
+                >
+                  {t('refundPolicyLink')}
+                </Link>
               </p>
             </>
           )}

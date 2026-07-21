@@ -6,6 +6,7 @@ import { GuestRoute } from './components/GuestRoute';
 import { StudentPortalShell } from './components/student/StudentPortalLayout';
 import { homePathForUser } from './lib/authStorage';
 import LandingPage from './pages/LandingPage';
+import RefundPolicyPage from './pages/RefundPolicyPage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
@@ -59,6 +60,7 @@ export default function App() {
         <PageTransition>
           <Routes>
           <Route path="/" element={<LandingPage />} />
+          <Route path="/refund-policy" element={<RefundPolicyPage />} />
           <Route path="/login" element={<GuestRoute><LoginPage /></GuestRoute>} />
           <Route path="/register" element={<GuestRoute><RegisterPage /></GuestRoute>} />
           <Route path="/forgot-password" element={<GuestRoute><ForgotPasswordPage /></GuestRoute>} />
