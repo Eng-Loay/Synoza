@@ -1615,7 +1615,7 @@ function getDeterministicPatientResponse(
     return `${caseData.familyHistory.split('.')[0].trim()}.`;
   }
 
-  if (asksAboutSymptoms(text) && !intents.includes('symptoms')) {
+  if (asksAboutSymptoms(text)) {
     const reply =
       asksSymptomDetails(text) ||
       isNearDuplicatePatientReply(patientComplaintPhrase(caseData, isArabic), history)
@@ -2474,6 +2474,26 @@ function stripModelAnswerPreamble(text: string): string {
     .trim();
 }
 
+/** True when a point is a labeled definition like "Guarding: Localized muscle contraction". */
+function isLabeledDefinitionPoint(point: string): boolean {
+  const cleaned = stripMarkdown(point);
+  const match = cleaned.match(/^([^:]{2,60}):\s+(.+)$/);
+  if (!match) return false;
+  const label = match[1].trim();
+  const value = match[2].trim();
+  // Short clinical term/label + a definition — keep atomic (do not comma-split).
+  return label.split(/\s+/).length <= 5 && value.length >= 3;
+}
+
+/** Term/label only — never the full definition (used for coaching hints). */
+function extractPointTerm(point: string): string {
+  const cleaned = stripMarkdown(point).replace(/[.]+$/g, '').trim();
+  if (isLabeledDefinitionPoint(cleaned)) {
+    return cleaned.split(/:\s*/)[0].trim().slice(0, 60);
+  }
+  return cleaned.slice(0, 60).trim();
+}
+
 function splitModelAnswerPoints(sampleAnswer: string): string[] {
   const raw = stripMarkdown(sampleAnswer).trim();
   if (!raw) return [];
@@ -2486,15 +2506,20 @@ function splitModelAnswerPoints(sampleAnswer: string): string[] {
     .filter((point) => !/:\s*$/.test(point) && !/^(causes|complications|signs|definition)\b/i.test(point));
 
   // "The alarm symptoms include: a, b, c" → split the list after the colon.
+  // Skip when the answer is already multiple labeled definitions (Guarding:/Rigidity:/...).
+  const looksLikeMultiLabeled =
+    structured.length >= 2 && structured.filter(isLabeledDefinitionPoint).length >= 2;
   const colonList = raw.match(/^[^:\n]{3,120}:\s*(.+)$/s);
-  if (colonList?.[1]) {
+  if (colonList?.[1] && !looksLikeMultiLabeled) {
     const listified = splitProseCauseList(colonList[1]);
     if (listified.length >= 2) return listified;
   }
 
   if (structured.length >= 2) {
-    // Flatten any remaining comma-lists inside a single bullet.
+    // Flatten comma-lists only for plain bullets — NEVER break labeled definitions
+    // like "Rigidity: Diffuse contraction (Peritonitis, classically ...)".
     const flattened = structured.flatMap((point) => {
+      if (isLabeledDefinitionPoint(point)) return [stripMarkdown(point)];
       const nested = splitProseCauseList(stripModelAnswerPreamble(point));
       return nested.length >= 2 ? nested : [stripModelAnswerPreamble(point) || point];
     });
@@ -2504,6 +2529,10 @@ function splitModelAnswerPoints(sampleAnswer: string): string[] {
   const single = stripModelAnswerPreamble(structured[0] || raw);
   const listified = splitProseCauseList(single);
   if (listified.length >= 2) return listified;
+
+  // Continuous prose: split into position / purpose / parenthetical concepts.
+  const proseConcepts = splitLongProseAnswer(structured[0] || raw);
+  if (proseConcepts.length >= 2) return proseConcepts;
 
   // Last resort: still try listifying the original with preamble stripped.
   const fromRaw = splitProseCauseList(stripModelAnswerPreamble(raw));
@@ -2516,6 +2545,16 @@ function splitModelAnswerPoints(sampleAnswer: string): string[] {
 function splitProseCauseList(text: string): string[] {
   const cleaned = stripModelAnswerPreamble(text);
   if (!cleaned) return [];
+
+  // Continuous OSCE prose sentences ("The patient must lie flat and flex...") must NOT
+  // be shredded on every "and" — that creates overlapping points and duplicate-credit bugs.
+  const looksLikeProseSentence =
+    /^(?:the\s+)?(?:patient|doctor|examiner|answer|aim|goal|purpose)\b/i.test(cleaned) ||
+    /\bmust\b|\bshould\b|\bin order to\b|\bso that\b/i.test(cleaned) ||
+    (!/,/.test(cleaned) && cleaned.split(/\s+/).length >= 12);
+
+  if (looksLikeProseSentence) return [];
+
   if (!/,|\band\b|\bor\b|\//i.test(cleaned)) return [];
 
   const parts = cleaned
@@ -2525,6 +2564,54 @@ function splitProseCauseList(text: string): string[] {
     .filter((part) => !/^(include|including|such as|e\.g\.?|etc|the|and)\b/i.test(part));
 
   return parts.length >= 2 ? parts : [];
+}
+
+/**
+ * Split a long single-paragraph model answer into clinical concept chunks
+ * (position / purpose / parenthetical explanation) for progressive viva credit.
+ */
+function splitLongProseAnswer(text: string): string[] {
+  const cleaned = stripMarkdown(text).replace(/[.?!]+$/g, '').trim();
+  if (!cleaned || cleaned.split(/\s+/).length < 8) return [];
+
+  const points: string[] = [];
+  const parentheticals = [...cleaned.matchAll(/\(([^)]{8,})\)/g)].map((m) => m[1].trim());
+  let main = cleaned.replace(/\([^)]{8,}\)/g, ' ').replace(/\s+/g, ' ').trim();
+  main = main
+    .replace(/^(?:the\s+)?patient\s+must\s+/i, '')
+    .replace(/^(?:the\s+)?patient\s+should\s+/i, '')
+    .trim();
+
+  // "X to Y" → action/position + purpose
+  const purposeSplit = main.split(/\s+to\s+/i);
+  if (purposeSplit.length >= 2) {
+    const action = purposeSplit[0].trim();
+    const purpose = purposeSplit.slice(1).join(' to ').trim();
+    if (action.length >= 5) points.push(action);
+    // Purpose may still list two concepts with "and the"
+    const purposeParts = purpose
+      .split(/\s+and\s+the\s+|\s+and\s+/i)
+      .map((p) => p.trim())
+      .filter((p) => p.length >= 5);
+    if (purposeParts.length >= 2) points.push(...purposeParts);
+    else if (purpose.length >= 5) points.push(purpose);
+  } else if (main.length >= 5) {
+    points.push(main);
+  }
+
+  for (const paren of parentheticals) {
+    const stripped = paren.replace(/^(?:since|because|as|i\.e\.?|e\.g\.?)\s+/i, '').trim();
+    if (stripped.length >= 8) points.push(stripped);
+  }
+
+  // Deduplicate near-identical chunks
+  const unique: string[] = [];
+  for (const point of points) {
+    const key = point.toLowerCase();
+    if (unique.some((u) => u.toLowerCase() === key)) continue;
+    unique.push(point);
+  }
+  return unique.length >= 2 ? unique : [];
 }
 
 const GENERIC_MEDICAL_WORDS = new Set([
@@ -2594,10 +2681,24 @@ function colonStructuredPointIsCovered(studentLower: string, point: string): boo
   const parts = cleaned.split(/:\s*/);
   if (parts.length < 2) return null;
 
-  const label = parts[0];
+  const label = parts[0].trim();
   const value = parts.slice(1).join(':');
+  const labelLower = label.toLowerCase();
   const labelTerms = requiredLabelTerms(label);
   const valueTerms = requiredValueTerms(value);
+
+  // Naming the clinical term itself (e.g. "Guarding", "Rebound tenderness") counts.
+  const labelWords = labelLower
+    .replace(/[^a-z0-9\u0600-\u06ff\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !VIVA_EVAL_STOP_WORDS.has(w));
+  if (labelWords.length > 0 && labelWords.every((w) => tokenPresent(studentLower, w))) {
+    return true;
+  }
+  // Also accept a compact multi-word label phrase.
+  if (labelLower.length >= 5 && studentLower.includes(labelLower)) {
+    return true;
+  }
 
   if (labelTerms.length > 0 && !labelTerms.every((term) => studentLower.includes(term))) {
     return false;
@@ -2610,12 +2711,15 @@ function colonStructuredPointIsCovered(studentLower: string, point: string): boo
 
   if (valueTerms.length === 0) return false;
 
-  return valueTerms.every((term) => {
+  // Soft match on definition: ≥ half of distinctive value terms, or 2+ hits.
+  const valueHits = valueTerms.filter((term) => {
     if (term.length <= 5) {
       return new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(studentLower);
     }
     return studentLower.includes(term);
   });
+  if (valueTerms.length <= 2) return valueHits.length >= 1;
+  return valueHits.length >= 2 || valueHits.length / valueTerms.length >= 0.5;
 }
 
 function pointKeywords(point: string): string[] {
@@ -2688,13 +2792,13 @@ function pointIsCovered(studentLower: string, point: string): boolean {
   if (keywords.length === 0) return false;
   const hits = keywords.filter((word) => tokenPresent(studentExpanded, word));
 
-  // Single distinctive clinical term (≥6 letters) counts — e.g. "dysphagia".
-  const strongHits = hits.filter((word) => word.length >= 6);
-  if (strongHits.length >= 1) return true;
-
+  // Short points (1–2 keywords): one distinctive hit is enough ("dysphagia", "guarding").
   if (keywords.length <= 2) return hits.length >= 1;
-  // Multi-word points: need 2 keyword hits (not verbatim full sentence).
-  return hits.length >= 2 || hits.length / keywords.length >= 0.5;
+
+  // Longer points: never credit from a single shared word like "abdominal".
+  // Require ≥2 keyword hits (or ≥ half of keywords).
+  if (hits.length >= 2) return true;
+  return hits.length / keywords.length >= 0.5;
 }
 
 function scoreAnswerAgainstModel(
@@ -2720,18 +2824,22 @@ function scoreAnswerAgainstModel(
 }
 
 function shortPointLabel(point: string): string {
+  // Always prefer the clinical TERM (Guarding / Rigidity) — never leak the definition text.
+  const term = extractPointTerm(point);
+  if (term && term.length <= 40) return term;
   const cleaned = stripModelAnswerPreamble(stripMarkdown(point)).replace(/[.]+$/g, '').trim();
-  // Prefer a short clinical cue, not a long sentence lead-in.
   const words = cleaned.split(/\s+/).filter(Boolean);
-  if (words.length <= 6) return cleaned.slice(0, 70).trim();
+  if (words.length <= 4) return cleaned.slice(0, 50).trim();
   const clinical = words.filter(
     (word) =>
       word.length >= 5 &&
       !VIVA_EVAL_STOP_WORDS.has(word.toLowerCase()) &&
-      !/^(include|symptoms?|alarm|findings?|features?)$/i.test(word),
+      !/^(include|symptoms?|alarm|findings?|features?|localized|diffuse|muscle|contraction|pain|release)$/i.test(
+        word,
+      ),
   );
-  if (clinical.length > 0) return clinical.slice(0, 4).join(' ').slice(0, 70);
-  return cleaned.slice(0, 70).trim();
+  if (clinical.length > 0) return clinical.slice(0, 3).join(' ').slice(0, 50);
+  return cleaned.slice(0, 40).trim();
 }
 
 function buildPartialCreditFeedback(
@@ -2743,33 +2851,34 @@ function buildPartialCreditFeedback(
     return 'Correct — you covered all the expected key points. Great job!';
   }
 
-  const missingLabels = missing.slice(0, 4).map(shortPointLabel);
-  const hintLabel = missingLabels[0];
+  // Soft coaching only: acknowledge what is correct. Do NOT quote remaining definitions.
+  // At most nudge with a term NAME (not the answer text). Prefer a generic prompt.
   const highlight =
     options?.newlyMatched && options.newlyMatched.length > 0 ? options.newlyMatched : matched;
-  const correctLabels = highlight.slice(0, 3).map(shortPointLabel);
+  const correctLabels = highlight.slice(0, 3).map(shortPointLabel).filter(Boolean);
+  const remaining = missing.length;
 
   if (options?.duplicateAttempt) {
-    return missing.length === 1
-      ? `Good so far — you already covered that point. One more expected finding remains. Hint: think about ${hintLabel}.`
-      : `Good so far — you already covered that point. Keep going: ${missing.length} expected points are still missing (hint: ${hintLabel}).`;
+    return remaining === 1
+      ? `Good so far — you already covered that point. One more related point is still expected. Keep going.`
+      : `Good so far — you already covered that point. Keep going: ${remaining} expected points are still missing.`;
   }
 
   if (correctLabels.length === 0) {
-    return missing.length === 1
-      ? `Not complete yet — try one clear clinical point. Hint: think about ${hintLabel}.`
-      : `Not complete yet — list the findings systematically. Hint: one expected area is ${hintLabel}.`;
+    return remaining === 1
+      ? `Not complete yet — try one clear clinical point, then we can build on it.`
+      : `Not complete yet — list the findings systematically, one point at a time.`;
   }
 
   const acknowledged =
     correctLabels.length === 1
-      ? `Good. You've mentioned ${correctLabels[0]}, which is an important observation.`
-      : `Well done! You've noted ${correctLabels.join('; ')}, which are correct findings.`;
+      ? `Good. You've mentioned ${correctLabels[0]}, which is correct.`
+      : `Well done! You've noted ${correctLabels.join('; ')}, which are correct.`;
 
   const missingPart =
-    missing.length === 1
-      ? `However, there is still one more expected point. Hint: think about ${hintLabel}.`
-      : `However, there are still ${missing.length} expected points missing. Hint: think about ${hintLabel}.`;
+    remaining === 1
+      ? `However, there is still one more expected point. Can you add it?`
+      : `However, there are still ${remaining} expected points missing. Keep going — add the next one.`;
 
   return `${acknowledged} ${missingPart}`.trim();
 }
@@ -2800,9 +2909,11 @@ function evaluateHistoryVivaAnswerFromModel(
   // Only treat as duplicate when THIS attempt itself re-hit already-covered points
   // and added nothing new. Unrecognized new answers must NOT say "already mentioned".
   const currentHits = scoreAnswerAgainstModel(current, sampleAnswer).matched;
+  const currentNewHits = currentHits.filter((point) => !prior.matched.includes(point));
   const duplicateAttempt =
     before.length > 0 &&
     newlyMatched.length === 0 &&
+    currentNewHits.length === 0 &&
     currentHits.length > 0 &&
     currentHits.every((point) => prior.matched.includes(point));
 
@@ -2813,12 +2924,22 @@ function evaluateHistoryVivaAnswerFromModel(
     };
   }
 
-  if (matched.length > 0) {
+  if (newlyMatched.length > 0 || (matched.length > 0 && !duplicateAttempt)) {
     return {
       advance: false,
       feedback: buildPartialCreditFeedback(matched, missing, {
-        duplicateAttempt,
-        newlyMatched,
+        duplicateAttempt: false,
+        newlyMatched: newlyMatched.length > 0 ? newlyMatched : matched,
+      }),
+    };
+  }
+
+  if (duplicateAttempt) {
+    return {
+      advance: false,
+      feedback: buildPartialCreditFeedback(matched, missing, {
+        duplicateAttempt: true,
+        newlyMatched: [],
       }),
     };
   }
@@ -2832,14 +2953,11 @@ function evaluateHistoryVivaAnswerFromModel(
     };
   }
 
-  // Student said something substantial but it didn't match the model key —
-  // encourage and give a soft thematic hint instead of a hard reject.
-  const softHint = missing[0] ? shortPointLabel(missing[0]) : '';
+  // Student said something substantial but it didn't match — encourage without leaking the key.
   return {
     advance: false,
-    feedback: softHint
-      ? `Not complete yet — try listing the main points systematically. Hint: one expected area is ${softHint}.`
-      : 'Not complete yet — try listing the main clinical points systematically, one by one.',
+    feedback:
+      'Not complete yet — try listing the main clinical points systematically, one by one. I will coach you as you go.',
   };
 }
 

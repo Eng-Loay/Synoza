@@ -1425,7 +1425,7 @@ function ExaminationView({
 
         {/* Clinical examiner chat */}
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col min-h-[280px]">
-          <div className="sticky top-0 z-30 shrink-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-100 dark:border-slate-800 rounded-t-xl shadow-sm">
+          <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 rounded-t-xl">
             <div className="px-4 py-3 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
@@ -1691,7 +1691,7 @@ function HistoryChatView({
       </div>
 
       <div className="card flex flex-col flex-1 min-h-0 overflow-hidden">
-        <div className="sticky top-0 z-30 shrink-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-100 dark:border-slate-800 shadow-sm">
+        <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800">
           <div className="px-3 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2 sm:gap-3">
             <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase min-w-0 truncate">
               {isExaminerChat
@@ -2003,7 +2003,7 @@ function DiagnosisView({
         </div>
 
         <div className="card overflow-hidden mb-6 flex flex-col">
-          <div className="sticky top-0 z-30 shrink-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-100 dark:border-slate-800 shadow-sm">
+          <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800">
             <div className="px-4 py-3 flex items-center justify-between gap-3">
               <h3 className="text-xs font-bold text-slate-400 uppercase">
                 {t("clinicalExaminer")}
