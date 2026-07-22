@@ -3116,34 +3116,63 @@ export function detectVivaStudentIntent(raw: string): VivaStudentIntent {
   return 'answer';
 }
 
-const OSCE_EXAMINER_BOX_RULES = `You are an experienced, fair, and supportive OSCE examiner. Assess clinical knowledge, reasoning, and medical accuracy — NOT memorization or exact wording.
+const OSCE_EXAMINER_RULES = `You are an experienced, fair, and supportive OSCE examiner. Assess clinical knowledge, reasoning, and medical accuracy — NOT memorization or exact wording.
 
-INTENT (do this first):
-- If the latest message is NOT an answer attempt (hint, clarify, repeat, casual chat, help), do NOT score it. Set advance=false and respond only to that request.
-- "I don't know" / give-up → advance=true with a brief reveal of the expected concept (teaching), not "wrong".
+# 1 INTENT FIRST
+Before scoring, determine intent: answering / hint / clarification / repeat / general question / casual chat / I don't know / skip.
+If NOT an answer attempt: do NOT score, do NOT mark correct/incorrect — respond only to the request. advance=false.
+"I don't know" = No Answer (teaching reveal allowed), NOT "Wrong".
 
-MEANING OVER KEYWORDS:
-- Evaluate MEDICAL MEANING. Never mark correct just because a keyword/term appeared.
-- If the student names a term but gives a WRONG definition, mark incorrect, explain the misconception briefly, and do NOT advance.
-- Accept synonyms, plain English, abbreviations, alternate structure, and minor spelling/grammar errors when the medical concept is the same.
-- Extra medically correct detail must NEVER reduce the score.
-- Order does not matter unless the question asks for sequence/priority.
-- Do not guess missing information the student did not state.
-- Reference/model answer is only an example — equivalent correct clinical concepts also count.
+# 2 MEANING OVER KEYWORDS (CRITICAL)
+Evaluate MEDICAL MEANING only. Never mark correct just because a keyword appeared.
+Example: "there's no scar" is NOT credit for a scar finding. "odynophagia is tibial tenderness" is WRONG even though the word odynophagia appears.
+Accept synonyms, plain English, abbreviations, alternate structure, equivalent clinical concepts, minor spelling/grammar errors.
+Reference/model answer is ONE example — not the only acceptable wording.
+Only mark incorrect when medical meaning is incorrect.
 
-PARTIAL vs FULL:
-- Partial: acknowledge ONLY what the student already said correctly. Encourage them to continue. advance=false.
-- Full: brief confirmation why it is correct. advance=true.
-- Incorrect: explain WHY it is wrong and the clinical misconception. Do NOT only say "Wrong."
+# 3 REASONING
+Reward correct clinical reasoning even if wording differs from the model answer.
+
+# 4–5 MULTIPLE / EXTRA
+Accept any medically correct alternative. Extra correct detail must never reduce the score.
+
+# 6 ORDER
+Order does not matter unless the question asks for sequence/priority.
+
+# 7 FULL
+If medically complete: advance=true, brief confirmation, no unnecessary extra wording.
+
+# 8 PARTIAL
+Acknowledge only what the student already said correctly. Encourage continuation. advance=false.
+Do NOT reveal missing answer items. Reveal specifics only on hint request or give-up.
+
+# 9 INCORRECT
+Do not say only "Wrong." Explain the misconception briefly and educationally. Never embarrass.
+
+# 10 MINOR VS MAJOR
+Supportive tone for minor omissions. Clearly identify major medical misconceptions.
+
+# 11–12 OPEN / NO GUESSING
+Credit every correct point mentioned. Never assume unstated meaning (e.g. "Calcium" ≠ Hypercalcemia).
+
+# 13–15 LANGUAGE / FAIRNESS
+Ignore minor language errors unless they change meaning. Be fair — not overly strict or generous.
+
+# 16–17 STYLE / BEHAVIOR
+Professional, supportive, educational. Vary phrasing naturally. English only in feedback. 2-4 short sentences.
+
+# 18 GOLD STANDARD
+Compare against the underlying medical concept — not reference wording.
 
 CRITICAL — NEVER LEAK THE KEY:
-- NEVER name, list, spell, or paraphrase remaining unanswered model-answer items.
-- NEVER say "mention X and Y" or "do you mean Z?" when Z/X/Y were not said by the student.
-- For partial answers, you may say only that more related causes/points are still expected — without naming them.
-- Reveal specific expected items ONLY if the student clearly gave up / said they don't know.
+- NEVER name/list/paraphrase unanswered model items the student did not say.
+- NEVER say "mention X and Y" for remaining points.
+- For partial: say more points are expected — without naming them.
 
-FEEDBACK STYLE: professional, supportive, educational. English only in feedback. 2-4 short sentences.
 Return ONLY valid JSON: {"advance":true|false,"feedback":"..."}`;
+
+/** @deprecated use OSCE_EXAMINER_RULES */
+const OSCE_EXAMINER_BOX_RULES = OSCE_EXAMINER_RULES;
 
 /** True when feedback names missing model-answer content the student never said. */
 function feedbackLeaksMissingPoints(
@@ -3850,75 +3879,64 @@ function parseVivaAnswerEvaluation(
   }
 }
 
-/** Score a single history-station viva answer; advance only when correct enough or student gave up. */
-export async function evaluateHistoryVivaAnswer(
-  caseData: Case,
-  vivaQuestion: string,
-  questionNumber: number,
-  studentAnswer: string,
-  sampleAnswer = '',
-  combinedStudentAnswer?: string,
-): Promise<VivaAnswerEvaluation> {
+/** Shared meaning-first OSCE turn for Examiner Box + Examination. */
+async function evaluateOsceMeaningTurn(options: {
+  caseData: Case;
+  question: string;
+  studentAnswer: string;
+  combinedAnswer: string;
+  sampleAnswer: string;
+  questionNumber?: number;
+  stationLabel?: string;
+  usageMeta?: Omit<AiUsageMeta, 'feature'>;
+}): Promise<VivaAnswerEvaluation> {
+  const {
+    caseData,
+    question,
+    studentAnswer,
+    combinedAnswer,
+    sampleAnswer,
+    questionNumber,
+    stationLabel,
+    usageMeta,
+  } = options;
   const settings = await getAISettings();
   const provider = process.env.AI_PROVIDER || settings.provider;
-  const combined = (combinedStudentAnswer ?? studentAnswer).trim();
-  const fallback = () =>
-    mockEvaluateHistoryVivaAnswer(vivaQuestion, studentAnswer, sampleAnswer, combined);
+  const combined = combinedAnswer.trim();
+  const current = studentAnswer.trim();
+  const local = mockEvaluateHistoryVivaAnswer(question, current, sampleAnswer, combined);
 
-  const intent = detectVivaStudentIntent(studentAnswer);
+  const intent = detectVivaStudentIntent(current);
   if (intent === 'hint') {
     return {
       advance: false,
       feedback:
-        'Hint: focus on the underlying clinical concept the question is asking about — synonyms and plain English are fine. I will not mark this message as an answer attempt.',
+        'Hint: focus on the underlying clinical concept — synonyms and plain English are fine. I will not mark this message as an answer attempt.',
     };
   }
   if (intent === 'repeat') {
-    return {
-      advance: false,
-      feedback: `Of course. Here is the question again:\n${vivaQuestion}`,
-    };
+    return { advance: false, feedback: `Of course. Here is the question again:\n${question}` };
   }
   if (intent === 'clarify') {
     return {
       advance: false,
-      feedback: `Happy to clarify. The question is asking for the clinical meaning/concepts involved — not exact wording:\n${vivaQuestion}`,
+      feedback: `Happy to clarify — explain the clinical concept in your own words (synonyms are fine):\n${question}`,
     };
   }
   if (intent === 'off_topic') {
-    return {
-      advance: false,
-      feedback: `Let's stay with this viva question:\n${vivaQuestion}`,
-    };
+    return { advance: false, feedback: `Let's stay with this viva question:\n${question}` };
   }
 
-  const local = fallback();
+  // Hard local safety: wrong labeled definition / negated positive finding.
+  if (sampleAnswer.trim()) {
+    const wrongDefinitionFeedback = findWrongLabeledDefinitionFeedback(current, sampleAnswer);
+    if (wrongDefinitionFeedback) {
+      return { advance: false, feedback: unwrapExaminerPlainText(wrongDefinitionFeedback) };
+    }
+  }
 
   if (provider === 'mock' || provider === 'demo') {
     return { advance: local.advance, feedback: unwrapExaminerPlainText(local.feedback) };
-  }
-
-  // With a model answer: local progressive scoring is the source of truth for credit.
-  // This stops the LLM from leaking remaining list items (e.g. naming TR/TS unprompted).
-  if (sampleAnswer.trim()) {
-    const wrongDefinitionFeedback = findWrongLabeledDefinitionFeedback(
-      studentAnswer,
-      sampleAnswer,
-    );
-    if (wrongDefinitionFeedback) {
-      return {
-        advance: false,
-        feedback: unwrapExaminerPlainText(wrongDefinitionFeedback),
-      };
-    }
-
-    const localCoverage = scoreAnswerAgainstModel(combined, sampleAnswer);
-    if (local.advance || localCoverage.matched.length > 0) {
-      return {
-        advance: local.advance,
-        feedback: unwrapExaminerPlainText(local.feedback),
-      };
-    }
   }
 
   const knowledgeContext = await getRoleKnowledgeContext({
@@ -3926,36 +3944,51 @@ export async function evaluateHistoryVivaAnswer(
     caseId: caseData.id,
     role: 'examiner',
   });
+
+  const localCoverage = sampleAnswer.trim()
+    ? scoreAnswerAgainstModel(combined, sampleAnswer)
+    : { coverage: 0, matched: [] as string[], missing: [] as string[] };
+
+  const coverageHint = sampleAnswer.trim()
+    ? `\nINTERNAL COVERAGE HINT (do not mention these labels to the student unless they already said them):\n- Likely covered so far: ${
+        localCoverage.matched.map(shortPointLabel).filter(Boolean).join('; ') || '(none detected locally)'
+      }\n- Still outstanding (DO NOT NAME): ${localCoverage.missing.length} point(s)\n`
+    : '';
+
   const modelAnswerBlock = sampleAnswer.trim()
-    ? `\nREFERENCE ANSWER (internal marking key only — NEVER quote, list, or name unanswered items to the student unless they gave up):\n${sampleAnswer.trim()}`
+    ? `\nREFERENCE ANSWER (internal marking key only — evaluate MEANING; NEVER quote/list unanswered items unless student gave up):\n${sampleAnswer.trim()}`
     : '';
 
   const priorAttempts =
-    combinedStudentAnswer && combinedStudentAnswer.trim() !== studentAnswer.trim()
-      ? combinedStudentAnswer
+    combined && combined !== current
+      ? combined
           .split('\n')
           .map((line) => line.trim())
-          .filter((line) => line && line !== studentAnswer.trim())
+          .filter((line) => line && line !== current)
       : [];
-
   const attemptBlock =
     priorAttempts.length > 0
-      ? `\nPrevious attempts for this SAME question (score meaning cumulatively with the latest attempt):\n${priorAttempts.map((attempt, index) => `${index + 1}. ${attempt}`).join('\n')}\n`
+      ? `\nPrevious attempts for this SAME question (score meaning cumulatively):\n${priorAttempts
+          .map((attempt, index) => `${index + 1}. ${attempt}`)
+          .join('\n')}\n`
       : '';
+
+  const stationLine = stationLabel ? `\nSTATION / CONTEXT: ${stationLabel}` : '';
+  const qNumLine =
+    typeof questionNumber === 'number' ? `\nVIVA QUESTION NUMBER: ${questionNumber}` : '';
 
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content: `${OSCE_EXAMINER_BOX_RULES}
+      content: `${OSCE_EXAMINER_RULES}
 
 CASE: ${caseData.titleEn}
-DIAGNOSIS (reference only — do not reveal to student): ${caseData.finalDiagnosis}
-VIVA QUESTION NUMBER: ${questionNumber}
-${modelAnswerBlock}${knowledgeContext}`,
+DIAGNOSIS (reference only — do not reveal to student): ${caseData.finalDiagnosis}${stationLine}${qNumLine}
+${modelAnswerBlock}${coverageHint}${knowledgeContext}`,
     },
     {
       role: 'user',
-      content: `Viva question: ${vivaQuestion}${attemptBlock}\nLatest student attempt: ${studentAnswer}\n\nCombined answer so far:\n${combined}`,
+      content: `Viva / examination prompt: ${question}${attemptBlock}\nLatest student attempt: ${current}\n\nCombined answer so far:\n${combined || '(none)'}`,
     },
   ];
 
@@ -3963,25 +3996,27 @@ ${modelAnswerBlock}${knowledgeContext}`,
     messages,
     settings.examinerModel,
     0.2,
-    320,
+    360,
     () => JSON.stringify(local),
-    { feature: 'examiner_viva' },
+    { feature: 'examiner_viva', userId: usageMeta?.userId, sessionId: usageMeta?.sessionId },
   );
 
   const parsed = parseVivaAnswerEvaluation(raw, () => local);
 
-  // Hard safety net: never advance when this turn has a clearly wrong labeled definition.
-  const wrongDefinitionFeedback = sampleAnswer.trim()
-    ? findWrongLabeledDefinitionFeedback(studentAnswer, sampleAnswer)
-    : null;
-  if (wrongDefinitionFeedback && parsed.advance) {
-    return {
-      advance: false,
-      feedback: unwrapExaminerPlainText(wrongDefinitionFeedback),
-    };
+  // If local already has full coverage, prefer completion (synonyms may be clearer locally).
+  if (sampleAnswer.trim() && local.advance) {
+    return { advance: true, feedback: unwrapExaminerPlainText(local.feedback) };
   }
 
-  // Hard safety net: drop LLM replies that leak unanswered model points.
+  // Hard safety: wrong definition / negation must never advance.
+  if (sampleAnswer.trim()) {
+    const wrongDefinitionFeedback = findWrongLabeledDefinitionFeedback(current, sampleAnswer);
+    if (wrongDefinitionFeedback) {
+      return { advance: false, feedback: unwrapExaminerPlainText(wrongDefinitionFeedback) };
+    }
+  }
+
+  // Hard safety: drop leaked remaining keys.
   if (
     sampleAnswer.trim() &&
     feedbackLeaksMissingPoints(parsed.feedback, combined, sampleAnswer)
@@ -3992,10 +4027,47 @@ ${modelAnswerBlock}${knowledgeContext}`,
     };
   }
 
+  // If LLM claims complete but local still sees many uncovered points, stay partial.
+  if (
+    sampleAnswer.trim() &&
+    parsed.advance &&
+    localCoverage.missing.length >= 2 &&
+    localCoverage.coverage < 0.75
+  ) {
+    return {
+      advance: false,
+      feedback: unwrapExaminerPlainText(
+        local.feedback ||
+          'Good progress so far. Keep going — more expected points are still missing.',
+      ),
+    };
+  }
+
   return {
     advance: parsed.advance,
     feedback: unwrapExaminerPlainText(parsed.feedback),
   };
+}
+
+/** Score a single history-station viva answer; advance only when correct enough or student gave up. */
+export async function evaluateHistoryVivaAnswer(
+  caseData: Case,
+  vivaQuestion: string,
+  questionNumber: number,
+  studentAnswer: string,
+  sampleAnswer = '',
+  combinedStudentAnswer?: string,
+): Promise<VivaAnswerEvaluation> {
+  const combined = (combinedStudentAnswer ?? studentAnswer).trim();
+  return evaluateOsceMeaningTurn({
+    caseData,
+    question: vivaQuestion,
+    studentAnswer,
+    combinedAnswer: combined,
+    sampleAnswer,
+    questionNumber,
+    stationLabel: 'Examiner Box (History Viva)',
+  });
 }
 
 export async function getExaminerVivaResponse(
@@ -4013,8 +4085,8 @@ export async function getExaminerVivaResponse(
   if (provider === 'mock' || provider === 'demo') {
     return finalizeExaminerReply(
       lang === 'AR'
-      ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
-      : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`,
+        ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
+        : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`,
       lang,
     );
   }
@@ -4058,12 +4130,8 @@ RULES:
         ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
         : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`,
     { feature: 'examiner_viva', userId: usageMeta?.userId, sessionId: usageMeta?.sessionId },
-    { timeoutMs: VOICE_TIMEOUT_MS, stream: true },
   );
-  const finalized = finalizeExaminerReply(reply, lang);
-  return finalized.trim() || (lang === 'AR'
-    ? `محاولة كويسة. في حالة ${caseTitle}، فكّر في التشخيصات التفريقية والتحاليل اللي بعد كده.`
-    : `Good attempt. For this case (${caseTitle}), consider also discussing differential diagnoses and next investigation steps.`);
+  return finalizeExaminerReply(unwrapExaminerPlainText(reply), lang);
 }
 
 function maneuverLabel(
@@ -4098,16 +4166,11 @@ export async function getManeuverExaminerResponse(
   _language: Language,
   usageMeta?: Omit<AiUsageMeta, 'feature'>,
 ): Promise<string> {
-  const lang = examinationExaminerLanguage();
-  const settings = await getAISettings();
-  const provider = process.env.AI_PROVIDER || settings.provider;
   const name = maneuverLabel(maneuverId, false, caseData.stationConfig);
-  const caseTitle = caseData.titleEn;
   const physicalExam = parsePhysicalExamForm(caseData.physicalExam);
   const maneuverFindings =
     physicalExam[maneuverId as keyof typeof physicalExam]?.trim() || '';
 
-  // Cumulative student findings for this maneuver (same method as Examiner Box).
   const priorStudentTurns = history
     .filter((m) => {
       const role = String(m.role || '').toUpperCase();
@@ -4118,7 +4181,6 @@ export async function getManeuverExaminerResponse(
   const current = normalizeVivaStudentText(question);
   const combinedFindings = [...priorStudentTurns, current].filter(Boolean).join('\n');
 
-  // "I don't know" → reveal expected findings immediately.
   if (studentGaveUpAnswer(current)) {
     if (maneuverFindings) {
       return unwrapExaminerPlainText(
@@ -4130,87 +4192,24 @@ export async function getManeuverExaminerResponse(
     );
   }
 
-  const local = maneuverFindings
-    ? evaluateHistoryVivaAnswerFromModel(current, maneuverFindings, combinedFindings)
-    : null;
+  const prompt = `You are evaluating the student's spoken findings for the "${name}" physical-examination step. Score clinical MEANING against the expected findings — not keywords alone.`;
 
-  // Prefer progressive local scoring when findings exist (reliable partial credit).
-  // Keep the encouraging video style: praise covered points, hint what's missing, only
-  // congratulate when all expected findings are covered — never dump the full key early.
-  if (local?.feedback?.trim()) {
-    if (local.advance) {
-      return unwrapExaminerPlainText(
-        `${local.feedback} Let's move on when you're ready — you can refine technique or continue to the next examination step.`,
-      );
-    }
-    // For live AI providers, optionally polish tone with LLM while keeping local gating.
-    if (provider !== 'mock' && provider !== 'demo') {
-      // Local feedback is already the source of truth for credit — return it directly
-      // so replies stay consistent and never leak JSON / full model answers.
-      return unwrapExaminerPlainText(local.feedback);
-    }
-    return unwrapExaminerPlainText(local.feedback);
-  }
+  const evaluation = await evaluateOsceMeaningTurn({
+    caseData,
+    question: prompt,
+    studentAnswer: current,
+    combinedAnswer: combinedFindings,
+    sampleAnswer: maneuverFindings,
+    stationLabel: `Examination — ${name}`,
+    usageMeta,
+  });
 
-  if (provider === 'mock' || provider === 'demo') {
+  if (evaluation.advance) {
     return unwrapExaminerPlainText(
-      `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`,
+      `${evaluation.feedback} Let's move on when you're ready — you can refine technique or continue to the next examination step.`,
     );
   }
-
-  const knowledgeContext = await getRoleKnowledgeContext({
-    categoryId: caseData.categoryId,
-    caseId: caseData.id,
-    role: 'examiner',
-  });
-  const promptHistory = chatContextWindow(history, settings.maxContextMessages, true);
-
-  const messages: ChatMessage[] = [
-    {
-      role: 'system',
-      content: `You are a senior OSCE clinical examiner conducting an oral viva for the "${name}" step of the physical examination.
-
-CASE: ${caseTitle}
-DIAGNOSIS (hidden from student): ${caseData.finalDiagnosis}
-EXPECTED FINDINGS FOR ${name.toUpperCase()} (marking key from case author — do not read verbatim):
-${maneuverFindings || '(No specific findings configured — use diagnosis context only)'}
-
-STUDENT FINDINGS SO FAR (score cumulatively across turns):
-${combinedFindings || '(none yet)'}
-
-RULES:
-1. Evaluate the student's spoken findings for ${name} only, against the expected findings above.
-2. PARTIAL CREDIT IS REQUIRED: if the student correctly states even part of the expected findings, acknowledge what was correct and give a progressive hint for what is missing. Never mark the whole answer wrong when any point is correct.
-3. Ask one focused follow-up question OR give brief constructive feedback (2-3 short sentences).
-4. Do NOT reveal the full diagnosis or full model findings immediately.
-5. Do NOT return JSON. Reply with plain examiner speech only.
-6. Probe technique, expected findings, and clinical reasoning.
-7. Keep replies concise for live voice turns.
-8. ${examinerLangRule(lang)}${knowledgeContext}${adminSystemPromptSuffix(settings, lang, 'examiner')}`,
-    },
-    ...promptHistory.map((m) => ({
-      role: (m.role === 'STUDENT' ? 'user' : 'assistant') as 'user' | 'assistant',
-      content: m.content,
-    })),
-    { role: 'user', content: question },
-  ];
-
-  const reply = await callOpenAISafe(
-    messages,
-    process.env.OPENAI_VOICE_MODEL || settings.examinerModel,
-    Math.min(settings.temperature, 0.4),
-    Math.min(settings.maxTokens, CHAT_EXAMINER_MAX_TOKENS),
-    () =>
-      local?.feedback?.trim() ||
-      `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`,
-    { feature: 'examiner_viva', userId: usageMeta?.userId, sessionId: usageMeta?.sessionId },
-    { timeoutMs: VOICE_TIMEOUT_MS, stream: true },
-  );
-  const finalized = finalizeExaminerReply(reply, lang);
-  return (
-    finalized.trim() ||
-    `Good attempt on ${name}. Consider differential diagnoses and the next examination step.`
-  );
+  return unwrapExaminerPlainText(evaluation.feedback);
 }
 
 const GAVE_UP_ANSWER_PATTERNS = [
@@ -4227,3 +4226,4 @@ function studentGaveUpAnswer(answer: string): boolean {
   if (!normalized) return false;
   return GAVE_UP_ANSWER_PATTERNS.some((pattern) => pattern.test(normalized));
 }
+
