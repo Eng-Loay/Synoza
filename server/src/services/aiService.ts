@@ -2531,8 +2531,8 @@ function shortFindingCue(value: string): string {
     [/palmar\s+erythema/i, 'palmar erythema'],
     [/leukonychia/i, 'leukonychia'],
     [/scleral\s+icterus|\bjaundice\b|\bicterus\b/i, 'scleral icterus'],
-    [/mid-?axillary/i, 'left mid-axillary line'],
     [/chest\s+tube|\bscar\b|thoracotomy/i, 'scar'],
+    [/mid-?axillary/i, 'left mid-axillary line'],
     [/precordial\s+bulge/i, 'no precordial bulge'],
     [/dilated.*veins|superficial\s+veins/i, 'no dilated veins'],
     [/skin\s+lesions|normal\s+chest\s+wall/i, 'normal chest wall'],
@@ -3208,6 +3208,9 @@ function expandClinicalAliases(text: string): string {
     [/\bnormal\s+chest\s+wall\b/g, ' no chest skin lesions '],
     [/\bno\s+dilated\s+(?:superficial\s+)?veins\b/g, ' no dilated collateral superficial veins '],
     [/\bleft\s+(?:side|chest|axilla)\b/g, ' left mid-axillary line '],
+    // Negated scar must NOT expand into a positive scar hit ("there's no scar").
+    [/\bthere(?:'s|\s+is)\s+no\s+(?:a\s+|any\s+)?scar\b/g, ' negated_scar_finding '],
+    [/\b(?:no|without|absent|denies?)\s+(?:a\s+|any\s+|visible\s+)?scar\b/g, ' negated_scar_finding '],
     [/\b(?:there'?s|there\s+is)\s+a\s+scar\b|\bscar\b|\bndبة\b/g, ' scar chest tube '],
     [/\bicterus\b|\bjaundice\b/g, ' scleral icterus jaundice icterus '],
     [/\bjvp\b|\bjugular\s+(?:venous\s+)?pulse\b|\bneck\s+veins?\b/g, ' jvp neck veins normal '],
@@ -3298,7 +3301,7 @@ const EXAM_FINDING_ANCHORS: Array<{ pointHint: RegExp; studentTest: RegExp }> = 
     pointHint: /redness|pigmentation|varicose/i,
     studentTest: /redness|pigmentation|varicose/i,
   },
-  // AS+MR / chest inspection — allow short correct hits like "there's a scar".
+  // AS+MR / chest inspection — positive scar mentions (negation handled separately).
   {
     pointHint: /\bscar\b|chest\s+tube|thoracotomy/i,
     studentTest: /\bscar\b|\bndبة\b|chest\s+tube|thoracotomy/i,
@@ -3321,6 +3324,31 @@ const EXAM_FINDING_ANCHORS: Array<{ pointHint: RegExp; studentTest: RegExp }> = 
   },
 ];
 
+function studentNegatesTerm(studentLower: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return (
+    new RegExp(
+      `\\b(?:no|without|absent|denies?|negative\\s+for)\\s+(?:a\\s+|any\\s+|visible\\s+|obvious\\s+)?${escaped}\\b`,
+      'i',
+    ).test(studentLower) ||
+    new RegExp(`\\bthere(?:'s|\\s+is|\\s+are)\\s+no\\s+(?:a\\s+|any\\s+)?${escaped}\\b`, 'i').test(
+      studentLower,
+    ) ||
+    new RegExp(
+      `\\b${escaped}\\s+(?:is|are)\\s+(?:absent|not\\s+present|not\\s+seen|not\\s+visible)\\b`,
+      'i',
+    ).test(studentLower)
+  );
+}
+
+/** True when the model point expects a POSITIVE finding (scar present), not "no X". */
+function modelPointExpectsPositiveFinding(point: string): boolean {
+  const p = stripMarkdown(point).toLowerCase().trim();
+  if (/^no\b/i.test(p)) return false;
+  if (/\bno\s+(?:precordial|dilated|chest\s+skin|pallor|localized|or)\b/i.test(p)) return false;
+  return true;
+}
+
 function examFindingAnchorCovered(studentLower: string, point: string): boolean {
   const pointText = stripMarkdown(point);
   // Require at least 2 student hits for skin descriptors to avoid "pale" alone matching.
@@ -3333,6 +3361,16 @@ function examFindingAnchorCovered(studentLower: string, point: string): boolean 
       );
       if (hits.length < 2) continue;
     }
+    // "there's no scar" must never credit a positive scar / chest-tube finding.
+    if (
+      /\bscar\b|chest\s+tube|thoracotomy|ندبة/i.test(pointText) &&
+      modelPointExpectsPositiveFinding(pointText) &&
+      (studentNegatesTerm(studentLower, 'scar') ||
+        studentNegatesTerm(studentLower, 'ندبة') ||
+        /\bnegated_scar_finding\b/i.test(studentLower))
+    ) {
+      continue;
+    }
     return true;
   }
   return false;
@@ -3340,16 +3378,38 @@ function examFindingAnchorCovered(studentLower: string, point: string): boolean 
 
 function pointIsCovered(studentLower: string, point: string, studentRawLower?: string): boolean {
   const rawLower = studentRawLower ?? studentLower;
+  const cleaned = stripMarkdown(point);
+  const pointLower = cleaned.toLowerCase();
+
+  // Hard rule: negating a positive finding is never credit for that finding.
+  if (
+    modelPointExpectsPositiveFinding(cleaned) &&
+    (/\bscar\b|chest\s+tube|thoracotomy/i.test(pointLower)
+      ? studentNegatesTerm(rawLower, 'scar') ||
+        studentNegatesTerm(rawLower, 'ندبة') ||
+        /\bnegated_scar_finding\b/i.test(studentLower)
+      : false)
+  ) {
+    return false;
+  }
+
   // Fast path for OSCE inspection/palpation prose (Oedema, Ascites, etc.).
   if (examFindingAnchorCovered(studentLower, point)) return true;
 
   const colonMatch = colonStructuredPointIsCovered(studentLower, point, rawLower);
   if (colonMatch !== null) return colonMatch;
 
-  const cleaned = stripMarkdown(point);
-  const pointLower = cleaned.toLowerCase();
   // Expand only the student text — never inflate the model point with shared filler words.
   const studentExpanded = expandClinicalAliases(studentLower);
+
+  // After alias expansion, negated scar must still not match positive scar points.
+  if (
+    modelPointExpectsPositiveFinding(cleaned) &&
+    /\bscar\b|chest\s+tube|thoracotomy/i.test(pointLower) &&
+    /\bnegated_scar_finding\b/i.test(studentExpanded)
+  ) {
+    return false;
+  }
 
   const abbreviation = cleaned.match(/\(([A-Za-z]{2,8})\)/);
   if (abbreviation) {
@@ -3701,6 +3761,21 @@ function evaluateHistoryVivaAnswerFromModel(
   }
 
   // Student said something substantial but it didn't match — encourage without leaking the key.
+  // Special case: denying an expected positive scar finding.
+  if (
+    (studentNegatesTerm(current.toLowerCase(), 'scar') ||
+      studentNegatesTerm(current.toLowerCase(), 'ندبة')) &&
+    splitModelAnswerPoints(sampleAnswer).some(
+      (p) => /\bscar\b|chest\s+tube|thoracotomy/i.test(p) && modelPointExpectsPositiveFinding(p),
+    )
+  ) {
+    return {
+      advance: false,
+      feedback:
+        'Not quite — saying there is no scar is incorrect for this case. Look again at the clinical images and describe the positive findings you see.',
+    };
+  }
+
   return {
     advance: false,
     feedback:
