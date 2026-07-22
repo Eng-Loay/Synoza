@@ -1,5 +1,9 @@
 import type { Case } from "@prisma/client";
-import { evaluateHistoryVivaAnswer, unwrapExaminerPlainText } from "./aiService.js";
+import {
+  detectVivaStudentIntent,
+  evaluateHistoryVivaAnswer,
+  unwrapExaminerPlainText,
+} from "./aiService.js";
 
 export const HISTORY_EXAMINER_STAGE = "history:examiner";
 export const VIVA_QUESTIONS_PER_SESSION = 5;
@@ -333,6 +337,21 @@ function buildGaveUpFeedback(sampleAnswer: string, language?: string): string {
     : `No problem — here is the expected answer:\n${model}`;
 }
 
+function buildHintFeedback(question: string, sampleAnswer: string): string {
+  const model = sampleAnswer.trim();
+  if (!model) {
+    return `Hint: focus on the clinical concept behind this question — plain English and synonyms are acceptable. Question:\n${question}`;
+  }
+  // Topic-only cue from the first labeled term / first short phrase — never dump full definitions.
+  const firstLine = model.split(/\n/)[0]?.trim() ?? model;
+  const label = firstLine.split(/:\s*/)[0]?.trim() ?? '';
+  const topic =
+    label && label.length <= 40 && label.split(/\s+/).length <= 5
+      ? label
+      : firstLine.split(/\s+/).slice(0, 4).join(' ');
+  return `Hint: think about the clinical meaning related to "${topic}" — explain the concept in your own words. I will not score this hint request as an answer.`;
+}
+
 export async function respondToHistoryVivaAnswer(
   sessionId: string,
   caseData: Case,
@@ -358,7 +377,21 @@ export async function respondToHistoryVivaAnswer(
       currentQuestion.question,
     );
 
-  const evaluation = studentGaveUp(studentAnswer)
+  const intent = detectVivaStudentIntent(studentAnswer);
+  if (intent === 'hint') {
+    return buildHintFeedback(currentQuestion.question, currentQuestion.sampleAnswer);
+  }
+  if (intent === 'repeat') {
+    return `Of course. Here is the question again:\n${currentQuestion.question}`;
+  }
+  if (intent === 'clarify') {
+    return `Happy to clarify — explain the clinical concept in your own words (synonyms are fine):\n${currentQuestion.question}`;
+  }
+  if (intent === 'off_topic') {
+    return `Let's stay with this viva question:\n${currentQuestion.question}`;
+  }
+
+  const evaluation = intent === 'give_up' || studentGaveUp(studentAnswer)
     ? {
         advance: true,
         feedback: buildGaveUpFeedback(currentQuestion.sampleAnswer, language),

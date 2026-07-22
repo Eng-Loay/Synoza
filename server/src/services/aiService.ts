@@ -2900,7 +2900,11 @@ function normalizeVivaStudentText(text: string): string {
     .trim();
 }
 
-function colonStructuredPointIsCovered(studentLower: string, point: string): boolean | null {
+function colonStructuredPointIsCovered(
+  studentLower: string,
+  point: string,
+  studentRawLower?: string,
+): boolean | null {
   const cleaned = stripMarkdown(point);
   const parts = cleaned.split(/:\s*/);
   if (parts.length < 2) return null;
@@ -2911,27 +2915,38 @@ function colonStructuredPointIsCovered(studentLower: string, point: string): boo
   const isRegionLabel = REGION_FINDING_LABELS.has(labelLower);
   const labelTerms = requiredLabelTerms(label);
   const valueTerms = requiredValueTerms(value);
+  const defSource = (studentRawLower ?? studentLower).toLowerCase();
 
-  // Naming the clinical term itself (e.g. "Guarding", "Rebound tenderness") counts.
   const labelWords = labelLower
     .replace(/[^a-z0-9\u0600-\u06ff\s]/g, ' ')
     .split(/\s+/)
     .filter((w) => w.length >= 4 && !VIVA_EVAL_STOP_WORDS.has(w));
-  // Region labels like "Legs"/"General" are too generic to count as full credit alone.
-  if (
-    !isRegionLabel &&
-    labelWords.length > 0 &&
-    labelWords.every((w) => tokenPresent(studentLower, w))
-  ) {
-    return true;
+  const labelMentioned =
+    (!isRegionLabel &&
+      labelWords.length > 0 &&
+      labelWords.every((w) => tokenPresent(studentLower, w) || tokenPresent(defSource, w))) ||
+    (!isRegionLabel && labelLower.length >= 5 && (studentLower.includes(labelLower) || defSource.includes(labelLower)));
+
+  // If the student defines the term, score the DEFINITION meaning — never the bare keyword.
+  // Use RAW text so alias expansion does not destroy phrases like "difficulty swallowing".
+  const studentDef = extractStudentDefinitionForLabel(defSource, label);
+  if (studentDef && !isRegionLabel) {
+    return definitionMatchesExpectedValue(studentDef, value, valueTerms);
   }
-  // Also accept a compact multi-word clinical label phrase (not bare region names).
-  if (!isRegionLabel && labelLower.length >= 5 && studentLower.includes(labelLower)) {
+
+  // Synonym / plain-English description of the concept without naming the label.
+  if (!isRegionLabel && valueTerms.length > 0) {
+    const valueHits = valueTerms.filter((term) => tokenPresent(studentLower, term));
+    if (valueTerms.length <= 2 && valueHits.length >= 1) return true;
+    if (valueHits.length >= 2 || valueHits.length / valueTerms.length >= 0.45) return true;
+  }
+
+  // Naming the clinical term alone is OK only when they did NOT attach a wrong definition.
+  if (labelMentioned) {
     return true;
   }
 
   if (labelTerms.length > 0 && !labelTerms.every((term) => studentLower.includes(term))) {
-    // Hard clinical labels (systolic/apical/...) must match; region labels fall through.
     return isRegionLabel ? null : false;
   }
 
@@ -2951,7 +2966,6 @@ function colonStructuredPointIsCovered(studentLower: string, point: string): boo
 
   if (valueTerms.length === 0) return isRegionLabel ? null : false;
 
-  // Soft match on definition: ≥ half of distinctive value terms, or 2+ hits.
   const valueHits = valueTerms.filter((term) => {
     if (term.length <= 5) {
       return new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(studentLower);
@@ -2963,8 +2977,202 @@ function colonStructuredPointIsCovered(studentLower: string, point: string): boo
     return isRegionLabel ? null : false;
   }
   if (valueHits.length >= 2 || valueHits.length / valueTerms.length >= 0.45) return true;
-  // Region findings: allow keyword/abbreviation fallback instead of hard reject.
   return isRegionLabel ? null : false;
+}
+
+/** Pull "Term is/means/:= ..." definition text from the student reply, if present. */
+function extractStudentDefinitionForLabel(studentLower: string, label: string): string | null {
+  const labelLower = label.toLowerCase().trim();
+  if (labelLower.length < 3) return null;
+  const escaped = labelLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns = [
+    new RegExp(
+      `\\b${escaped}\\b\\s*(?:is|=|:|means|meaning|refers\\s+to|defined\\s+as|يعني|هي|هو)\\s+([^.;\\n]+)`,
+      'i',
+    ),
+    new RegExp(`\\b${escaped}\\b\\s*[—–-]\\s*([^.;\\n]+)`, 'i'),
+  ];
+  for (const re of patterns) {
+    const match = studentLower.match(re);
+    if (match?.[1]?.trim() && match[1].trim().split(/\s+/).length >= 2) {
+      return match[1].trim();
+    }
+  }
+  return null;
+}
+
+function definitionMatchesExpectedValue(
+  studentDef: string,
+  expectedValue: string,
+  valueTerms: string[],
+): boolean {
+  const expectedLower = expectedValue.toLowerCase();
+  const expectedPhrase = expectedLower.replace(/[.!?]/g, '').replace(/\s+/g, ' ').trim();
+  // Check raw + alias-expanded forms. Alias expansion can replace phrases like
+  // "difficulty swallowing" → "dysphagia", so we must not rely on expanded text alone.
+  const pools = [
+    studentDef.toLowerCase(),
+    expandClinicalAliases(studentDef.toLowerCase()).replace(/\s+/g, ' ').trim(),
+  ];
+
+  for (const defLower of pools) {
+    if (expectedPhrase.length >= 8 && defLower.includes(expectedPhrase)) return true;
+
+    if (valueTerms.length === 0) {
+      const expectedWords = expectedLower
+        .replace(/[^a-z0-9\u0600-\u06ff\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 4 && !VIVA_EVAL_STOP_WORDS.has(w) && !GENERIC_MEDICAL_WORDS.has(w));
+      const hits = expectedWords.filter((w) => tokenPresent(defLower, w));
+      if (hits.length >= 1 && hits.length / Math.max(expectedWords.length, 1) >= 0.4) return true;
+      continue;
+    }
+
+    const hits = valueTerms.filter((term) => tokenPresent(defLower, term));
+    if (valueTerms.length <= 2) {
+      if (hits.length >= 1) return true;
+    } else if (hits.length >= 2 || hits.length / valueTerms.length >= 0.45) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findWrongLabeledDefinitionFeedback(
+  studentAnswer: string,
+  sampleAnswer: string,
+): string | null {
+  // Use RAW text — alias expansion can rewrite correct definitions into false negatives.
+  const studentRaw = normalizeVivaStudentText(studentAnswer).toLowerCase();
+  const points = splitModelAnswerPoints(sampleAnswer);
+  for (const point of points) {
+    if (!isLabeledDefinitionPoint(point)) continue;
+    const cleaned = stripMarkdown(point);
+    const [label, ...rest] = cleaned.split(/:\s*/);
+    const value = rest.join(':').trim();
+    if (!label || !value) continue;
+    const studentDef = extractStudentDefinitionForLabel(studentRaw, label);
+    if (!studentDef) continue;
+    const valueTerms = requiredValueTerms(value);
+    if (definitionMatchesExpectedValue(studentDef, value, valueTerms)) continue;
+
+    const term = extractPointTerm(point);
+    return (
+      `Not quite — ${term} is not "${studentDef.trim()}". ` +
+      `That mixes up the clinical meaning. Think about what ${term} actually describes in clinical practice, then try again.`
+    );
+  }
+  return null;
+}
+
+export type VivaStudentIntent =
+  | 'answer'
+  | 'hint'
+  | 'clarify'
+  | 'repeat'
+  | 'give_up'
+  | 'off_topic';
+
+/** Classify Examiner Box messages before scoring — never mark help/chat as wrong answers. */
+export function detectVivaStudentIntent(raw: string): VivaStudentIntent {
+  const text = normalizeVivaStudentText(raw);
+  if (!text) return 'off_topic';
+  if (studentGaveUpAnswer(text)) return 'give_up';
+
+  const lower = text.toLowerCase();
+  // Avoid \\b with Arabic — it does not treat Arabic letters as word chars.
+  if (
+    /^(hint|help|coach|مساعدة|ساعدني|لمح|لمّح|تلميح|دربني|درّبني)(\s|$)/i.test(text) ||
+    /\b(give\s+me\s+(a\s+)?hint|can\s+you\s+help|coach\s+me|teach\s+me|guide\s+me|what\s+should\s+i\s+(say|write|answer))\b/i.test(
+      lower,
+    ) ||
+    /(عايز|عاوز)\s*(تلميح|مساعدة|hint|coach)/i.test(text)
+  ) {
+    return 'hint';
+  }
+  if (
+    /\b(repeat(\s+the)?\s+question|say\s+(it\s+)?again|ask\s+again)\b/i.test(lower) ||
+    /^(repeat|again)(\s|$)/i.test(text) ||
+    /^(أعد|كرر|قول\s*تاني|السؤال\s*تاني)/i.test(text) ||
+    /(أعد|كرر).*(سؤال)/i.test(text)
+  ) {
+    return 'repeat';
+  }
+  if (
+    /\b(i\s+don'?t\s+understand|what\s+do\s+you\s+mean|clarify|rephrase|explain\s+the\s+question)\b/i.test(
+      lower,
+    ) ||
+    /(مش\s*فاهم|مو\s*فاهم|وضح|اشرح\s*السؤال)/i.test(text)
+  ) {
+    return 'clarify';
+  }
+  if (
+    (/^(hi|hello|hey|thanks|thank\s+you|ok|okay)(\s|$)/i.test(text) ||
+      /^(مرحبا|السلام|شكرا|شكراً|تمام)(\s|$)/i.test(text)) &&
+    text.split(/\s+/).length <= 4
+  ) {
+    return 'off_topic';
+  }
+  return 'answer';
+}
+
+const OSCE_EXAMINER_BOX_RULES = `You are an experienced, fair, and supportive OSCE examiner. Assess clinical knowledge, reasoning, and medical accuracy — NOT memorization or exact wording.
+
+INTENT (do this first):
+- If the latest message is NOT an answer attempt (hint, clarify, repeat, casual chat, help), do NOT score it. Set advance=false and respond only to that request.
+- "I don't know" / give-up → advance=true with a brief reveal of the expected concept (teaching), not "wrong".
+
+MEANING OVER KEYWORDS:
+- Evaluate MEDICAL MEANING. Never mark correct just because a keyword/term appeared.
+- If the student names a term but gives a WRONG definition, mark incorrect, explain the misconception briefly, and do NOT advance.
+- Accept synonyms, plain English, abbreviations, alternate structure, and minor spelling/grammar errors when the medical concept is the same.
+- Extra medically correct detail must NEVER reduce the score.
+- Order does not matter unless the question asks for sequence/priority.
+- Do not guess missing information the student did not state.
+- Reference/model answer is only an example — equivalent correct clinical concepts also count.
+
+PARTIAL vs FULL:
+- Partial: acknowledge ONLY what the student already said correctly. Encourage them to continue. advance=false.
+- Full: brief confirmation why it is correct. advance=true.
+- Incorrect: explain WHY it is wrong and the clinical misconception. Do NOT only say "Wrong."
+
+CRITICAL — NEVER LEAK THE KEY:
+- NEVER name, list, spell, or paraphrase remaining unanswered model-answer items.
+- NEVER say "mention X and Y" or "do you mean Z?" when Z/X/Y were not said by the student.
+- For partial answers, you may say only that more related causes/points are still expected — without naming them.
+- Reveal specific expected items ONLY if the student clearly gave up / said they don't know.
+
+FEEDBACK STYLE: professional, supportive, educational. English only in feedback. 2-4 short sentences.
+Return ONLY valid JSON: {"advance":true|false,"feedback":"..."}`;
+
+/** True when feedback names missing model-answer content the student never said. */
+function feedbackLeaksMissingPoints(
+  feedback: string,
+  studentAnswer: string,
+  sampleAnswer: string,
+): boolean {
+  if (!feedback.trim() || !sampleAnswer.trim()) return false;
+  const studentLower = normalizeVivaStudentText(studentAnswer).toLowerCase();
+  const combinedStudent = expandClinicalAliases(studentLower);
+  const { missing } = scoreAnswerAgainstModel(studentAnswer, sampleAnswer);
+  const fb = feedback.toLowerCase();
+  for (const point of missing) {
+    const term = shortPointLabel(point).toLowerCase().trim();
+    if (term.length < 5) continue;
+    // Student already said this term → not a leak.
+    if (combinedStudent.includes(term) || studentLower.includes(term)) continue;
+    // Distinctive multi-word clinical labels in feedback = leak.
+    if (term.split(/\s+/).length >= 2 && fb.includes(term)) return true;
+    // Single strong clinical tokens (regurgitation, stenosis, constrictive...)
+    const tokens = term
+      .replace(/[^a-z0-9\u0600-\u06ff\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 7);
+    if (tokens.some((t) => new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(fb))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function pointKeywords(point: string): string[] {
@@ -3023,13 +3231,28 @@ function expandClinicalAliases(text: string): string {
 /** Soft stem match so distension≈distended, edema≈oedematous, etc. */
 function tokensRoughlyMatch(studentToken: string, pointToken: string): boolean {
   if (studentToken === pointToken) return true;
-  if (studentToken.length >= 5 && pointToken.length >= 5) {
-    const a = studentToken.slice(0, 6);
-    const b = pointToken.slice(0, 6);
-    if (a === b) return true;
-    if (studentToken.startsWith(pointToken.slice(0, 5)) || pointToken.startsWith(studentToken.slice(0, 5))) {
-      return true;
+  if (studentToken.length < 5 || pointToken.length < 5) return false;
+
+  // Shared stem with different clinical endings must NOT match
+  // (pericardial ≠ pericarditis, regurgitation ≠ regurgitant is OK via stem).
+  const shorter = studentToken.length <= pointToken.length ? studentToken : pointToken;
+  const longer = studentToken.length <= pointToken.length ? pointToken : studentToken;
+  let shared = 0;
+  while (shared < shorter.length && shorter[shared] === longer[shared]) shared += 1;
+  if (shared >= 6) {
+    const endShort = shorter.slice(shared);
+    const endLong = longer.slice(shared);
+    // Distinct suffixes after a long shared stem → different terms.
+    if (endShort.length >= 2 && endLong.length >= 2 && endShort !== endLong) {
+      return false;
     }
+  }
+
+  const a = studentToken.slice(0, 6);
+  const b = pointToken.slice(0, 6);
+  if (a === b) return true;
+  if (studentToken.startsWith(pointToken.slice(0, 5)) || pointToken.startsWith(studentToken.slice(0, 5))) {
+    return true;
   }
   return false;
 }
@@ -3115,11 +3338,12 @@ function examFindingAnchorCovered(studentLower: string, point: string): boolean 
   return false;
 }
 
-function pointIsCovered(studentLower: string, point: string): boolean {
+function pointIsCovered(studentLower: string, point: string, studentRawLower?: string): boolean {
+  const rawLower = studentRawLower ?? studentLower;
   // Fast path for OSCE inspection/palpation prose (Oedema, Ascites, etc.).
   if (examFindingAnchorCovered(studentLower, point)) return true;
 
-  const colonMatch = colonStructuredPointIsCovered(studentLower, point);
+  const colonMatch = colonStructuredPointIsCovered(studentLower, point, rawLower);
   if (colonMatch !== null) return colonMatch;
 
   const cleaned = stripMarkdown(point);
@@ -3152,8 +3376,11 @@ function pointIsCovered(studentLower: string, point: string): boolean {
   if (keywords.length === 0) return false;
   const hits = keywords.filter((word) => tokenPresent(studentExpanded, word));
 
-  // Short points (1–2 keywords): one distinctive hit is enough ("dysphagia", "guarding").
-  if (keywords.length <= 2) return hits.length >= 1;
+  // One-word points: a single distinctive hit is enough ("dysphagia", "guarding").
+  if (keywords.length === 1) return hits.length >= 1;
+  // Two-word clinical labels ("constrictive pericarditis"): require BOTH — never credit
+  // from a soft-stem cousin like pericardial ≈ pericarditis alone.
+  if (keywords.length === 2) return hits.length >= 2;
 
   // Longer points: never credit from a single shared word like "abdominal".
   // Require ≥2 keyword hits (or ≥ half of keywords).
@@ -3173,6 +3400,14 @@ export function debugScoreViva(
   return scoreAnswerAgainstModel(studentAnswer, sampleAnswer);
 }
 
+export function debugEvaluateHistoryVivaLocal(
+  studentAnswer: string,
+  sampleAnswer: string,
+  combinedStudentAnswer?: string,
+): VivaAnswerEvaluation {
+  return evaluateHistoryVivaAnswerFromModel(studentAnswer, sampleAnswer, combinedStudentAnswer);
+}
+
 function scoreAnswerAgainstModel(
   studentAnswer: string,
   sampleAnswer: string,
@@ -3181,11 +3416,12 @@ function scoreAnswerAgainstModel(
   if (points.length === 0) {
     return { coverage: 0, matched: [], missing: [] };
   }
-  const studentLower = expandClinicalAliases(normalizeVivaStudentText(studentAnswer).toLowerCase());
+  const studentRaw = normalizeVivaStudentText(studentAnswer).toLowerCase();
+  const studentLower = expandClinicalAliases(studentRaw);
   const matched: string[] = [];
   const missing: string[] = [];
   for (const point of points) {
-    if (pointIsCovered(studentLower, point)) matched.push(point);
+    if (pointIsCovered(studentLower, point, studentRaw)) matched.push(point);
     else missing.push(point);
   }
   return {
@@ -3214,6 +3450,77 @@ function shortPointLabel(point: string): string {
   return cleaned.slice(0, 40).trim();
 }
 
+function pickVariedPhrase(seed: string, options: string[]): string {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return options[(hash >>> 0) % options.length] ?? options[0];
+}
+
+function praiseSinglePoint(label: string, remaining: number, seedExtra = ''): string {
+  const seed = `${label}|${remaining}|${seedExtra}`;
+  const openers = [
+    `You've correctly identified ${label}.`,
+    `Good — ${label} is correct.`,
+    `Nice point: ${label}.`,
+    `Well spotted — ${label}.`,
+    `Correct on ${label}.`,
+    `Good. You've mentioned ${label}, which is an important observation.`,
+    `Yes — ${label} is one of the expected points.`,
+  ];
+  const open = pickVariedPhrase(seed, openers);
+  const followUpsOne = [
+    `However, there is still one more expected point. Can you add it?`,
+    `One more related point is still expected — what else would you include?`,
+    `Almost there: one expected point is still missing. Keep going.`,
+  ];
+  const followUpsMany = [
+    `Can you add any other expected points?`,
+    `What else belongs on this list?`,
+    `Keep going systematically — more expected points are still missing.`,
+    `Good start. Add the next expected point.`,
+  ];
+  const follow =
+    remaining === 1
+      ? pickVariedPhrase(`${seed}|ask`, followUpsOne)
+      : pickVariedPhrase(`${seed}|ask`, followUpsMany);
+  return `${open} ${follow}`.trim();
+}
+
+function praiseMultiplePoints(labels: string[], remaining: number, seedExtra = ''): string {
+  const list =
+    labels.length === 2
+      ? `${labels[0]} and ${labels[1]}`
+      : `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
+  const seed = `${list}|${remaining}|${seedExtra}`;
+  const openers = [
+    `Well done — you've correctly covered ${list}.`,
+    `Good progress: ${list} are correct.`,
+    `Nice work noting ${list}.`,
+    `You've got ${list} right so far.`,
+  ];
+  const open = pickVariedPhrase(seed, openers);
+  const follow =
+    remaining === 1
+      ? pickVariedPhrase(
+          `${seed}|ask`,
+          [
+            `However, there is still one more expected point that is missing. Can you add it?`,
+            `One final expected point is still missing — can you think of it?`,
+          ],
+        )
+      : pickVariedPhrase(
+          `${seed}|ask`,
+          [
+            `However, a few more expected points are still missing. Keep going.`,
+            `Continue with the next expected point — without repeating what you already said.`,
+          ],
+        );
+  return `${open} ${follow}`.trim();
+}
+
 function buildPartialCreditFeedback(
   matched: string[],
   missing: string[],
@@ -3226,9 +3533,19 @@ function buildPartialCreditFeedback(
         labels.length === 2
           ? `${labels[0]} and ${labels[1]}`
           : `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
-      return `Excellent! You've now covered all the expected findings: ${list}. Great job!`;
+      return pickVariedPhrase(
+        `done|${list}`,
+        [
+          `Excellent! You've now covered all the expected findings: ${list}. Great job!`,
+          `Perfect — all expected points are covered: ${list}. Well done!`,
+          `That's complete. You covered ${list}. Excellent work!`,
+        ],
+      );
     }
-    return 'Correct — you covered all the expected key points. Great job!';
+    return pickVariedPhrase('done|single', [
+      'Correct — you covered all the expected key points. Great job!',
+      'Excellent — that completes the expected answer. Well done!',
+    ]);
   }
 
   // Soft coaching only: acknowledge what is correct. Do NOT quote remaining definitions.
@@ -3236,17 +3553,42 @@ function buildPartialCreditFeedback(
     options?.newlyMatched && options.newlyMatched.length > 0 ? options.newlyMatched : matched;
   const correctLabels = highlight.slice(0, 3).map(shortPointLabel).filter(Boolean);
   const remaining = missing.length;
+  const varietySeed = `${matched.length}:${remaining}:${correctLabels.join('|')}`;
 
   if (options?.noNewProgress) {
     return remaining === 1
-      ? `I didn't catch a new expected finding in that reply. You already have solid points — one more is still expected. Keep going.`
-      : `I didn't catch a new expected finding in that reply. Keep going systematically — ${remaining} expected points are still missing.`;
+      ? pickVariedPhrase(
+          `noprog|1|${varietySeed}`,
+          [
+            `I didn't catch a new expected finding in that reply. You already have solid points — one more is still expected. Keep going.`,
+            `That reply didn't add a new expected point. One more is still missing — try another angle.`,
+          ],
+        )
+      : pickVariedPhrase(
+          `noprog|n|${varietySeed}`,
+          [
+            `I didn't catch a new expected finding in that reply. Keep going systematically — ${remaining} expected points are still missing.`,
+            `No new expected point there. Continue — ${remaining} points are still outstanding.`,
+          ],
+        );
   }
 
   if (options?.duplicateAttempt) {
     return remaining === 1
-      ? `Good so far — you already covered that point. One more related point is still expected. Keep going.`
-      : `Good so far — you already covered that point. Keep going: ${remaining} expected points are still missing.`;
+      ? pickVariedPhrase(
+          `dup|1|${varietySeed}`,
+          [
+            `Good so far — you already covered that point. One more related point is still expected. Keep going.`,
+            `You already mentioned that. One expected point is still missing — add something new.`,
+          ],
+        )
+      : pickVariedPhrase(
+          `dup|n|${varietySeed}`,
+          [
+            `Good so far — you already covered that point. Keep going: ${remaining} expected points are still missing.`,
+            `That point is already credited. Add a new one — ${remaining} expected points remain.`,
+          ],
+        );
   }
 
   if (correctLabels.length === 0) {
@@ -3255,20 +3597,11 @@ function buildPartialCreditFeedback(
       : `Not complete yet — try listing the main clinical points systematically, one by one. I will coach you as you go.`;
   }
 
-  // Video-style coaching: praise the hit, then ask for more — never dump remaining keys.
   if (correctLabels.length === 1) {
-    return remaining === 1
-      ? `Good. You've mentioned ${correctLabels[0]}, which is an important observation. However, there is still one more expected point. Can you add it?`
-      : `Good. You've mentioned ${correctLabels[0]}, which is an important observation. Can you describe any other expected findings during your inspection?`;
+    return praiseSinglePoint(correctLabels[0], remaining, varietySeed);
   }
 
-  const acknowledged = `Well done! You've noted ${correctLabels.join('; ')}, which are correct.`;
-  const missingPart =
-    remaining === 1
-      ? `However, there is still one more expected point that is missing. Can you think of what else might be important to mention?`
-      : `However, there are a few more key findings that are expected. Can you identify any additional observations?`;
-
-  return `${acknowledged} ${missingPart}`.trim();
+  return praiseMultiplePoints(correctLabels, remaining, varietySeed);
 }
 
 function priorCombinedAnswer(combined: string, current: string): string {
@@ -3304,6 +3637,15 @@ function evaluateHistoryVivaAnswerFromModel(
     currentNewHits.length === 0 &&
     currentHits.length > 0 &&
     currentHits.every((point) => prior.matched.includes(point));
+
+  // Wrong medical definition attached to a labeled term → educate, never award the keyword.
+  const wrongDefinitionFeedback = findWrongLabeledDefinitionFeedback(current, sampleAnswer);
+  if (wrongDefinitionFeedback && newlyMatched.length === 0) {
+    return {
+      advance: false,
+      feedback: wrongDefinitionFeedback,
+    };
+  }
 
   if (matched.length > 0 && missing.length === 0) {
     return {
@@ -3448,15 +3790,60 @@ export async function evaluateHistoryVivaAnswer(
   const fallback = () =>
     mockEvaluateHistoryVivaAnswer(vivaQuestion, studentAnswer, sampleAnswer, combined);
 
-  if (sampleAnswer.trim()) {
-    // Same progressive method as Examination: local cumulative scoring, plain feedback.
-    const local = evaluateHistoryVivaAnswerFromModel(studentAnswer, sampleAnswer, combined);
+  const intent = detectVivaStudentIntent(studentAnswer);
+  if (intent === 'hint') {
+    return {
+      advance: false,
+      feedback:
+        'Hint: focus on the underlying clinical concept the question is asking about — synonyms and plain English are fine. I will not mark this message as an answer attempt.',
+    };
+  }
+  if (intent === 'repeat') {
+    return {
+      advance: false,
+      feedback: `Of course. Here is the question again:\n${vivaQuestion}`,
+    };
+  }
+  if (intent === 'clarify') {
+    return {
+      advance: false,
+      feedback: `Happy to clarify. The question is asking for the clinical meaning/concepts involved — not exact wording:\n${vivaQuestion}`,
+    };
+  }
+  if (intent === 'off_topic') {
+    return {
+      advance: false,
+      feedback: `Let's stay with this viva question:\n${vivaQuestion}`,
+    };
+  }
+
+  const local = fallback();
+
+  if (provider === 'mock' || provider === 'demo') {
     return { advance: local.advance, feedback: unwrapExaminerPlainText(local.feedback) };
   }
 
-  if (provider === 'mock' || provider === 'demo') {
-    const local = fallback();
-    return { advance: local.advance, feedback: unwrapExaminerPlainText(local.feedback) };
+  // With a model answer: local progressive scoring is the source of truth for credit.
+  // This stops the LLM from leaking remaining list items (e.g. naming TR/TS unprompted).
+  if (sampleAnswer.trim()) {
+    const wrongDefinitionFeedback = findWrongLabeledDefinitionFeedback(
+      studentAnswer,
+      sampleAnswer,
+    );
+    if (wrongDefinitionFeedback) {
+      return {
+        advance: false,
+        feedback: unwrapExaminerPlainText(wrongDefinitionFeedback),
+      };
+    }
+
+    const localCoverage = scoreAnswerAgainstModel(combined, sampleAnswer);
+    if (local.advance || localCoverage.matched.length > 0) {
+      return {
+        advance: local.advance,
+        feedback: unwrapExaminerPlainText(local.feedback),
+      };
+    }
   }
 
   const knowledgeContext = await getRoleKnowledgeContext({
@@ -3465,7 +3852,7 @@ export async function evaluateHistoryVivaAnswer(
     role: 'examiner',
   });
   const modelAnswerBlock = sampleAnswer.trim()
-    ? `\nMODEL ANSWER (marking key from case author — NEVER reveal verbatim to student):\n${sampleAnswer.trim()}\n\nUse this as the primary marking key. Score each key point in the model answer.`
+    ? `\nREFERENCE ANSWER (internal marking key only — NEVER quote, list, or name unanswered items to the student unless they gave up):\n${sampleAnswer.trim()}`
     : '';
 
   const priorAttempts =
@@ -3478,27 +3865,18 @@ export async function evaluateHistoryVivaAnswer(
 
   const attemptBlock =
     priorAttempts.length > 0
-      ? `\nPrevious attempts for this SAME question (score together with the latest attempt):\n${priorAttempts.map((attempt, index) => `${index + 1}. ${attempt}`).join('\n')}\n`
+      ? `\nPrevious attempts for this SAME question (score meaning cumulatively with the latest attempt):\n${priorAttempts.map((attempt, index) => `${index + 1}. ${attempt}`).join('\n')}\n`
       : '';
 
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content: `You are a senior OSCE examiner marking one history viva answer.
+      content: `${OSCE_EXAMINER_BOX_RULES}
 
 CASE: ${caseData.titleEn}
 DIAGNOSIS (reference only — do not reveal to student): ${caseData.finalDiagnosis}
-${modelAnswerBlock}
-
-RULES:
-1. Respond in English only in the feedback field (2-4 sentences).
-2. The student may answer across MULTIPLE attempts for the SAME question. Score ALL attempts together.
-3. advance=true ONLY when every key point in the model answer is covered across all attempts.
-4. PARTIAL CREDIT (critical): if the student gives ONE correct cause/point when several are expected, advance=false. Say clearly that this point is CORRECT but the answer is still incomplete, then give a short hint toward what is missing (category/topic only — NEVER quote the full model answer). Never say the whole answer is wrong when part of it is right.
-5. advance=false if the latest attempt is substantially wrong, off-topic, or too vague — unless earlier attempts already covered enough points. Prefer "not complete yet" over "not quite / wrong".
-6. When advance=false with partial credit: praise what is already correct cumulatively; do NOT ask for points they already gave in earlier attempts. If they repeat the same point, say so briefly and ask for the next category only.
-7. When advance=true: brief acknowledgement only (e.g. "Correct — all key points covered.") — never include the next question text and never write "Question N of M".
-8. Return ONLY valid JSON: {"advance":true|false,"feedback":"..."}${knowledgeContext}`,
+VIVA QUESTION NUMBER: ${questionNumber}
+${modelAnswerBlock}${knowledgeContext}`,
     },
     {
       role: 'user',
@@ -3509,13 +3887,36 @@ RULES:
   const raw = await callOpenAISafe(
     messages,
     settings.examinerModel,
-    0.25,
-    220,
-    () => JSON.stringify(fallback()),
+    0.2,
+    320,
+    () => JSON.stringify(local),
     { feature: 'examiner_viva' },
   );
 
-  const parsed = parseVivaAnswerEvaluation(raw, fallback);
+  const parsed = parseVivaAnswerEvaluation(raw, () => local);
+
+  // Hard safety net: never advance when this turn has a clearly wrong labeled definition.
+  const wrongDefinitionFeedback = sampleAnswer.trim()
+    ? findWrongLabeledDefinitionFeedback(studentAnswer, sampleAnswer)
+    : null;
+  if (wrongDefinitionFeedback && parsed.advance) {
+    return {
+      advance: false,
+      feedback: unwrapExaminerPlainText(wrongDefinitionFeedback),
+    };
+  }
+
+  // Hard safety net: drop LLM replies that leak unanswered model points.
+  if (
+    sampleAnswer.trim() &&
+    feedbackLeaksMissingPoints(parsed.feedback, combined, sampleAnswer)
+  ) {
+    return {
+      advance: local.advance,
+      feedback: unwrapExaminerPlainText(local.feedback),
+    };
+  }
+
   return {
     advance: parsed.advance,
     feedback: unwrapExaminerPlainText(parsed.feedback),
